@@ -1,0 +1,353 @@
+"""校验 SubAgent:引用闭环校验 + 修正,对齐 produces/consumes 标签。
+
+解决 R8g 引用一致 0.00 最后一层失配:
+  ① LLM produces/consumes 标签与 _capture_produced/_resolve_placeholders 的
+     _norm_name 归一不对齐(如 "new_pet_id" vs "new_pet" 风格漂移)
+  ② LLM 过产(每表产多 op 或 mail 3 intent)
+  ③ eval consumer 字段读取漏(item 0.00 bug)
+
+职责边界:
+  - 输入: list[SplitIntent] + LocatorResult(FK 边供校验)
+  - 输出: {ok, issues, fixes, intents}(修正后 intents)
+  - 安全网: 失败时返回原 intents 不变(produces_inference 作兜底)
+
+规则层校验为主(类型/required/unique 走 PipelineVerifier),本 Agent 专注:
+  produces 闭环 + 字段一致性 + 抑制过产。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from typing import Optional
+
+from .base import SubAgent
+from .llm_agent import LLMSubAgent
+from .locator_agent import LocatorResult, FKEdge
+
+logger = logging.getLogger(__name__)
+
+
+def _norm_name(s: str) -> str:
+    """归一标签名:对齐 produces_inference._norm + orchestrator._norm_name 风格。
+
+    去尖括号/空白/下划线后缀/大小写,供 produces 标签与 consumes 占位符匹配。
+    """
+    if not s:
+        return ""
+    s = str(s).strip()
+    if s.startswith("<") and s.endswith(">"):
+        s = s[1:-1].strip()
+    s = s.split(":")[0]
+    return re.sub(r"\s+", "", s).lower()
+
+
+def _label_from_consumes(value) -> Optional[str]:
+    """从 consumes 占位符值提取标签名:<new_pet_id> → "new_pet_id"。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s.startswith("<") and s.endswith(">") and len(s) >= 2:
+        return s[1:-1].strip()
+    return None
+
+
+class ValidatorAgent(LLMSubAgent):
+    """校验 Agent:produces 闭环 + 抑制过产 + 修正。
+
+    规则为主,LLM 仅在规则无法判定时裁决(如语义层引用合理性)。
+    """
+
+    def __init__(self, parser=None, thinking_sink=None, cli=None):
+        super().__init__("ValidatorAgent", parser=parser,
+                         thinking_sink=thinking_sink,
+                         prompt_template="引用闭环校验 + 修正")
+        self._cli = cli
+
+    def validate(self, intents: list, locator_result: LocatorResult = None) -> dict:
+        """主入口:校验 + 修正 intents。
+
+        Args:
+            intents: SplitIntent 列表(原地修正)
+            locator_result: LocatorAgent 产出(FK 边供校验)
+
+        Returns:
+            {"ok": bool, "issues": [str], "fixes": [str], "intents": intents}
+            失败时 ok=False 但 intents 保留原样(调用方降级走 produces_inference)。
+        """
+        if not intents:
+            return {"ok": True, "issues": [], "fixes": [], "intents": intents}
+        self.add_thinking("校验", f"ValidatorAgent 开始校验 {len(intents)} 条意图")
+        issues: list[str] = []
+        fixes: list[str] = []
+
+        # 1. 抑制过产:每表仅一 op（env 开关,默认 on,便于 A/B 对比 LLM 裁决增益）
+        if os.getenv("CODEMAKER_VALIDATOR_SUPPRESS_OVER_PRODUCE", "1") != "0":
+            over_produced = self._suppress_over_produce(intents)
+            if over_produced:
+                fixes.append(f"抑制过产:合并/丢弃 {over_produced} 条冗余 op")
+
+        # 2. produces 标签对齐 _norm_name（env 开关）
+        if os.getenv("CODEMAKER_VALIDATOR_ALIGN_PRODUCES", "1") != "0":
+            label_fixes = self._align_produces_labels(intents)
+            fixes.extend(label_fixes)
+
+        # 3. consumes 占位符匹配 produces 标签（env 开关）
+        if os.getenv("CODEMAKER_VALIDATOR_CONSUMES_MATCH", "1") != "0":
+            consume_issues = self._validate_consumes_match(intents)
+            issues.extend(consume_issues)
+
+        # 4. FK 边覆盖校验（env 开关,warning 级）
+        if (os.getenv("CODEMAKER_VALIDATOR_FK_COVERAGE", "1") != "0"
+                and locator_result and locator_result.fk_edges):
+            fk_issues = self._validate_fk_coverage(intents, locator_result.fk_edges)
+            issues.extend(fk_issues)
+
+        # 5. LLM 前向引用裁决（opt-in,默认 off）:consumer FK 字段引用未在本批
+        #    produces 的 concrete id → LLM 判「需补建还是已存在」。rule 路径不触及,
+        #    开启后补充语义层校验。失败/不可达静默降级（不阻断）。
+        if (os.getenv("CODEMAKER_VALIDATOR_LLM_FORWARD_REFS", "0") == "1"
+                and locator_result and locator_result.fk_edges):
+            fr_issues = self._validate_forward_refs_llm(intents, locator_result)
+            issues.extend(fr_issues)
+
+        # issues 含 warning/建议 不阻断(语义层提示),仅 issues 含"断链"/"未建"/"失败"等硬错时 ok=False
+        hard_issues = [i for i in issues
+                       if "断链" in i or "失败" in i or "未建" in i]
+        ok = len(hard_issues) == 0
+        self.add_thinking("校验",
+                          f"Validator 完成:ok={ok}, {len(issues)} issues, {len(fixes)} fixes")
+        return {"ok": ok, "issues": issues, "fixes": fixes, "intents": intents}
+
+    # ── 抑制过产 ───────────────────────────────────────────────
+
+    def _suppress_over_produce(self, intents: list) -> int:
+        """每表仅一 op:同表多 op 时保留首个,后续标跳过。
+
+        返回跳过条数。原地修改 intents 列表。
+        """
+        if not intents:
+            return 0
+        seen: set[tuple] = set()
+        skip_idx: list[int] = []
+        for i, it in enumerate(intents):
+            stem = getattr(it, "table_hint", "") or ""
+            sheet = getattr(it, "sheet_hint", "") or ""
+            key = (stem, sheet)
+            if key in seen:
+                skip_idx.append(i)
+                continue
+            seen.add(key)
+        # 从后往前删,避免索引错位
+        for i in reversed(skip_idx):
+            intents.pop(i)
+        return len(skip_idx)
+
+    # ── produces 标签对齐 ──────────────────────────────────────
+
+    def _align_produces_labels(self, intents: list) -> list[str]:
+        """produces 标签对齐 _norm_name 归一 + 同步更新 consumes 占位符。
+
+        统一风格:新主键 produces 用 "new_<stem>_id"。
+        若 LLM 产风格漂移(如 "new_pet" / "pet_id"),归一为标准,
+        并同步把 fields 里引用旧标签的 <old_label> 占位符更新为 <new_label>。
+        返回 fixes 描述列表。
+        """
+        fixes: list[str] = []
+        # 先收集所有需要改的 (old_label → new_label) 映射
+        label_map: dict[str, str] = {}
+        for it in intents:
+            produces = getattr(it, "produces", None)
+            if not produces:
+                continue
+            stem = getattr(it, "table_hint", "") or ""
+            standard = f"new_{stem}_id" if stem else produces
+            if _norm_name(produces) != _norm_name(standard) and produces != standard:
+                label_map[produces] = standard
+        # 应用 produces 归一
+        for it in intents:
+            produces = getattr(it, "produces", None)
+            if produces and produces in label_map:
+                old = produces
+                it.produces = label_map[produces]
+                fixes.append(f"produces 标签归一:{old} → {it.produces}")
+        # 同步更新 consumes 占位符:<old_label> → <new_label>
+        if label_map:
+            for it in intents:
+                fields = getattr(it, "fields", None) or {}
+                if not isinstance(fields, dict):
+                    continue
+                for k in list(fields.keys()):
+                    v = fields[k]
+                    label = _label_from_consumes(v)
+                    if label and label in label_map:
+                        fields[k] = f"<{label_map[label]}>"
+                        fixes.append(f"consumes 占位符同步:{k} <{label}> → <{label_map[label]}>")
+        return fixes
+
+    # ── consumes 匹配 produces ─────────────────────────────────
+
+    def _validate_consumes_match(self, intents: list) -> list[str]:
+        """校验 consumes 占位符能否匹配到 produces 标签。
+
+        若有 consumes 指向不存在的 produces → 报 issue(引用断链)。
+        """
+        issues: list[str] = []
+        # 收集所有 produces 标签
+        produces_labels: set[str] = set()
+        for it in intents:
+            p = getattr(it, "produces", None)
+            if p:
+                produces_labels.add(_norm_name(p))
+        # 校验每个 consumes 占位符
+        for it in intents:
+            fields = getattr(it, "fields", None) or {}
+            if not isinstance(fields, dict):
+                continue
+            for k, v in fields.items():
+                label = _label_from_consumes(v)
+                if label is None:
+                    continue
+                if _norm_name(label) not in produces_labels:
+                    issues.append(
+                        f"引用断链:字段 {k} 消费 <{label}> 但无对应 produces")
+        return issues
+
+    # ── FK 边覆盖校验 ──────────────────────────────────────────
+
+    def _validate_fk_coverage(self, intents: list, fk_edges: list[FKEdge]) -> list[str]:
+        """校验 FK 边覆盖:每条 FK 边的 from 表应有 op,to 表应有 produces。
+
+        仅 warning 级(不阻断,因 FK 边可能不全适用于本次指令)。
+        """
+        issues: list[str] = []
+        op_stems = {getattr(it, "table_hint", "") or "" for it in intents}
+        produces_stems = {getattr(it, "table_hint", "") or ""
+                          for it in intents if getattr(it, "produces", None)}
+        for e in fk_edges:
+            if e.from_stem in op_stems and e.to_stem not in produces_stems:
+                issues.append(
+                    f"FK 边 {e.from_stem}.{e.from_column} → {e.to_stem} "
+                    f"建议 {e.to_stem} 声明 produces(供 {e.from_stem} 消费)")
+        return issues
+
+    # ── LLM 前向引用裁决（opt-in:CODEMAKER_VALIDATOR_LLM_FORWARD_REFS=1）─────
+
+    @staticmethod
+    def _field_matches_fk(field_key: str, fk_col: str) -> bool:
+        """字段名是否匹配 FK 列名（容忍点分键末段/类型后缀/中英文差异）。"""
+        fk = _norm_name(fk_col)
+        if not fk:
+            return False
+        k = _norm_name(str(field_key).split(".")[-1])
+        if not k:
+            return False
+        return k == fk or fk in k or k in fk
+
+    def _validate_forward_refs_llm(self, intents: list,
+                                   locator_result: LocatorResult) -> list[str]:
+        """LLM 裁决前向引用:consumer FK 字段引用未在本批 produces 的 concrete id。
+
+        仅对 concrete id 值（非占位符）的 FK 字段触发。LLM 看上下文判:
+          - 已存在（引用既存行）→ 不阻断
+          - 需补建（引用未建目标）→ 报 issue 建议补 producer
+        失败/不可达 → 静默返回空（不阻断,rule 路径兜底）。
+        """
+        if not self.parser or not locator_result or not locator_result.fk_edges:
+            return []
+        # 收集本批 produces 的 (to_stem, pk_value) —— producer fields 中 id 类字段的非占位符值
+        produced: set[tuple[str, str]] = set()
+        for it in intents:
+            stem = getattr(it, "table_hint", "") or ""
+            fields = getattr(it, "fields", None) or {}
+            if not isinstance(fields, dict):
+                continue
+            for k, v in fields.items():
+                if _label_from_consumes(v) is not None:
+                    continue
+                if v in (None, "", "<auto>"):
+                    continue
+                kl = str(k).lower()
+                if "id" in kl or "编号" in str(k):
+                    produced.add((stem, str(v)))
+        issues: list[str] = []
+        for it in intents:
+            stem = getattr(it, "table_hint", "") or ""
+            fields = getattr(it, "fields", None) or {}
+            if not isinstance(fields, dict):
+                continue
+            for e in locator_result.fk_edges:
+                if e.from_stem != stem:
+                    continue
+                for k, v in fields.items():
+                    if not self._field_matches_fk(k, e.from_column):
+                        continue
+                    if _label_from_consumes(v) is not None:
+                        continue  # 占位符由 _validate_consumes_match 处理
+                    if v in (None, "", "<auto>"):
+                        continue
+                    if (e.to_stem, str(v)) in produced:
+                        continue  # 本批产出,OK
+                    # 潜在悬空前向引用 → LLM 裁决
+                    verdict = self._llm_judge_forward_ref(e.to_stem, k, v)
+                    if verdict == "build":
+                        issues.append(
+                            f"前向引用未建:{stem}.{k}={v} 指向 {e.to_stem},"
+                            f"建议补建 {e.to_stem}(id={v})")
+        return issues
+
+    def _llm_judge_forward_ref(self, to_stem: str, field: str, value) -> str:
+        """LLM 判 concrete FK 引用是已存在还是需补建。
+
+        返回 'exists' | 'build' | ''（失败/不可达）。
+        复用 SubAgent._call_llm_raw（隔离 session,免 R7）。
+        """
+        sid = self._ensure_own_session()
+        if not sid:
+            return ""
+        prompt = (
+            f"配表引用校验。一个 add 操作的字段 {field}={value} 引用表 {to_stem} 的主键。\n"
+            f"本批操作未在 {to_stem} 产出 id={value}。\n"
+            f"判断:这个 id={value} 在 {to_stem} 表里是【已存在】"
+            f"（引用既存行,无需补建）还是【需补建】（引用未建目标,应加 producer）?\n"
+            f"仅输出 JSON: {{\"verdict\":\"exists\"或\"build\",\"reason\":\"简短理由\"}}"
+        )
+        try:
+            raw = self._call_llm_raw(prompt, timeout=30)
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return ""
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            return ""
+        v = str(d.get("verdict", "")).lower()
+        if v == "build":
+            return "build"
+        if v == "exists":
+            return "exists"
+        return ""
+
+    def _run_impl(self, prompt: str, skill_docs: list, context: dict):
+        """SubAgent 接口适配:从 context 取 intents + locator_result。"""
+        intents = context.get("intents") or context.get("split_intents")
+        locator_result = context.get("locator_result")
+        if not intents:
+            return None
+        result = self.validate(intents, locator_result)
+        return {
+            "sql_or_ops": [],
+            "produces": None,
+            "references": [],
+            "validation": result,
+            "target_table": "",
+            "target_sheet": "",
+        }
+
+
+__all__ = ["ValidatorAgent"]

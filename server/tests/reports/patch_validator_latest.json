@@ -1,0 +1,61 @@
+{
+  "round": "R9-C1",
+  "date": "2026-08-17",
+  "method": "C PATCH_CONFIG 声明式 schema 守门（5 坑硬规则）",
+  "wave": "第二波 P0 + hold 通道",
+  "ca_overview_ref": "§3.3 轻享服 5 个坑（merge 系统必须处理）+ §3.2 PATCH_CONFIG 格式 + §3.1 _capped 是补丁文件无 CONFIG",
+  "changes": [
+    {
+      "file": "server/engine/patch_validator.py（新建）",
+      "items": [
+        "Violation dataclass（rule/kind=patch_config/severity=hold/sheet/message/detail，to_dict 可序列化）",
+        "validate_capped_workbook(path, trunk_sheet_names) -> list[Violation]，5 条硬规则全 hold 级",
+        "规则①坑1：PATCH_CONFIG A 列 sheet 不在 trunk 主表 → hold",
+        "规则②坑5：PATCH_CONFIG A 列重复登记（先写者优先）→ hold",
+        "规则③坑3：_capped 无 PATCH_CONFIG sheet → hold（提前返回，规则①②⑤无法校验）",
+        "规则④坑4：_capped 有 CONFIG sheet（补丁文件无 CONFIG）→ hold",
+        "规则⑤§3.2：B 列融合方式不在 {PATCH_GEN, SHEET_GEN} → hold",
+        "trunk_sheet_names 空/None 时跳过规则①（无 trunk 参照）"
+      ]
+    },
+    {
+      "file": "server/routers/validate.py",
+      "items": [
+        "import validate_capped_workbook + Path/List/BaseModel",
+        "新增 CappedValidateRequest（path + trunk_sheets）",
+        "新增 POST /api/validate/capped 路由：返回 {ok, violations}，path 相对 RESOURCES_DIR 或绝对"
+      ]
+    },
+    {
+      "file": "server/tests/test_patch_validator.py（新建）",
+      "items": ["8 用例：合规 / 坑4 有 CONFIG / 坑3 无 PATCH_CONFIG / 坑1 sheet 不在 trunk / 坑5 重复登记 / §3.2 非法融合方式 / 无 trunk 跳过规则① / to_dict 可序列化"]
+    }
+  ],
+  "scope_first_version": {
+    "done": "5 坑硬规则校验函数 + 独立 POST 路由 + 8 单测（tmp_path 构造样例不污染 resources）",
+    "deferred": "C2 _validate_apply_refs 内补调用（apply 路径接入留后续，需确认 apply 何时写 _capped）",
+    "deferred_sample": "脱敏样例 sample_capped.xlsx 未放 resources（测试用 tmp_path 构造，避免污染脱敏目录）"
+  },
+  "rules_mapping": {
+    "rule_1_pit1": "sheet 名与基准 xlsx 对不上 → 融合结果不含该 sheet",
+    "rule_2_pit5": "PATCH_CONFIG 重复登记 sheet（先写者优先，后者静默忽略）",
+    "rule_3_pit3": "PATCH_CONFIG sheet 缺失 → 整个文件融合退化或失败",
+    "rule_4_pit4": "给 _capped 加了 CONFIG sheet → 格式破坏",
+    "rule_5_section_3_2": "B 列融合方式非法（仅 PATCH_GEN/SHEET_GEN 合法）"
+  },
+  "metrics": {
+    "pit_coverage": "5/5 全覆盖",
+    "new_tests": 8,
+    "new_tests_pass": 8,
+    "regression_tests": 53,
+    "regression_tests_pass": 53,
+    "regression_status": "zero_regression",
+    "regression_scope": "test_merge_preflight(7)+test_formula_gate(5)+test_comment_guard(5)+test_formula_cache(6)+test_save_cache_scope(3)+test_write_verification(5)+test_fast_apply_eligible(7)+test_merge_eval+test_merge_formula_cache+test_merge_progress_snapshot"
+  },
+  "verification": "python -m pytest tests/test_patch_validator.py ... → 8 passed; 全套回归 61 passed",
+  "next_upgrades": [
+    "C2 apply 路径接入：_validate_apply_refs 或 merge_branch apply 写盘前调 validate_capped_workbook（需确认 apply 何时写 _capped vs 全量表）",
+    "脱敏样例放 resources/sample_capped.xlsx 供前端联调（当前测试自构造）",
+    "违规接 pre_commit_hold（kind=patch_config），复用方法 B 通道"
+  ]
+}

@@ -1,0 +1,1412 @@
+{
+  "_header": {
+    "run_id": "20260811_143551_nogit",
+    "script": "table_case_eval",
+    "generated_at": "2026-08-11T14:35:51.848911",
+    "git_hash": "nogit"
+  },
+  "results": {
+    "summary": {
+      "n": 6,
+      "n_total": 6,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.1667,
+      "truth_ok_rate": 0.0,
+      "error_rate": 0.8333,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.2928,
+      "coverage": 0.1286,
+      "field_accuracy": 0.1548,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 7.3333,
+      "avg_elapsed_ms": 176450.8,
+      "p50_elapsed_ms": 164868.6,
+      "p95_elapsed_ms": 260715.1,
+      "total_elapsed_s": 1058.7,
+      "error_type_distribution": {
+        "unknown": 4,
+        "type_mismatch": 1
+      },
+      "total_llm_calls": 148,
+      "total_tokens": 125440,
+      "avg_llm_calls": 24.7,
+      "success_path_calls": 148,
+      "failure_path_calls": 0
+    },
+    "meta": {
+      "start": 106,
+      "end": 111,
+      "done": 6,
+      "span": 6,
+      "total_all": 111,
+      "last_cid": 111
+    },
+    "off": {
+      "n": 6,
+      "n_total": 6,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.1667,
+      "truth_ok_rate": 0.0,
+      "error_rate": 0.8333,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.4512,
+      "coverage": 0.3857,
+      "field_accuracy": 0.2229,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 4.6667,
+      "avg_elapsed_ms": 137844.1,
+      "p50_elapsed_ms": 118194.9,
+      "p95_elapsed_ms": 279262.1,
+      "total_elapsed_s": 827.1,
+      "error_type_distribution": {
+        "type_mismatch": 1,
+        "unknown": 4
+      },
+      "total_llm_calls": 146,
+      "total_tokens": 130977,
+      "avg_llm_calls": 24.3,
+      "success_path_calls": 146,
+      "failure_path_calls": 0
+    },
+    "on": {
+      "n": 6,
+      "n_total": 6,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.1667,
+      "truth_ok_rate": 0.0,
+      "error_rate": 0.8333,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.2928,
+      "coverage": 0.1286,
+      "field_accuracy": 0.1548,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 7.3333,
+      "avg_elapsed_ms": 176450.8,
+      "p50_elapsed_ms": 164868.6,
+      "p95_elapsed_ms": 260715.1,
+      "total_elapsed_s": 1058.7,
+      "error_type_distribution": {
+        "unknown": 4,
+        "type_mismatch": 1
+      },
+      "total_llm_calls": 148,
+      "total_tokens": 125440,
+      "avg_llm_calls": 24.7,
+      "success_path_calls": 148,
+      "failure_path_calls": 0
+    },
+    "off_results": [
+      {
+        "cid": 106,
+        "input_text": "新增一个新 NPC 叫\"灵兽饲养员老李\"，模型用 1015，摆在野外战场 10001 坐标 (88, 0, 12)。玩家走过去点他弹出对话，对话内容写\"要不要看看我养的灵兽？\"，给两个选项：选\"看看\"就跳到一段新对话，新对话说\"这只赤炎虎饿了，给它喂点东西吧。\"；选\"下次吧\"就什么都不做结束对话。",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：coerce_value - 列[选项2]类型为 int，值''无法转为整数且无枚举映射，已阻止写入",
+        "elapsed_ms": 279262.1,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": true,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 5,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 6,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 6,
+        "n_expected": 7,
+        "n_effective": 7,
+        "locate_rate": 0.8571,
+        "coverage": 0.7143,
+        "field_accuracy": 0.5333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "type_mismatch",
+        "llm_stats": {
+          "total_calls": 55,
+          "total_tokens": 52690,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1236
+            },
+            "confirm_table": {
+              "calls": 10,
+              "tokens": 5466
+            },
+            "plan_operation": {
+              "calls": 10,
+              "tokens": 9150
+            },
+            "validate_plan": {
+              "calls": 10,
+              "tokens": 6799
+            },
+            "fix_field_mapping": {
+              "calls": 9,
+              "tokens": 7958
+            },
+            "react": {
+              "calls": 10,
+              "tokens": 18707
+            },
+            "summarize": {
+              "calls": 5,
+              "tokens": 3374
+            }
+          },
+          "success_path_calls": 55,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 107,
+        "input_text": "加一件新法宝\"玄火鉴\"，法宝编号 28599，品质 3，图标 Icon_fabao_xuanhuo，法宝类型 5，它的法宝技能编号 700010 也一起建一下——是个攻击型火系法术叫\"玄火灼烧\"，对单体造成 180% 伤害。法宝的阴阳权重设 0.35，阳属性描述\"激活后对敌方人物附加灼烧\"，阴属性描述\"激活后对敌方非人物附加灼烧\"。",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：pk_conflict - ID [7019] 已被占用",
+        "elapsed_ms": 194634.0,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "item/item.xlsx",
+            "sheet": "ItemBase",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.42857142857142855,
+            "concrete_total": 7,
+            "concrete_matched": 3,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "item/item.xlsx",
+            "sheet": "Fabao",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 6,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "combat/spell.xlsx",
+            "sheet": "common_spell",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "combat/spell.xlsx",
+            "sheet": "spell_data",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.5,
+            "concrete_total": 4,
+            "concrete_matched": 2,
+            "note": ""
+          }
+        ],
+        "extra_ops": 4,
+        "n_expected": 4,
+        "n_effective": 4,
+        "locate_rate": 0.75,
+        "coverage": 0.5,
+        "field_accuracy": 0.3929,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 20,
+          "total_tokens": 14502,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 984
+            },
+            "confirm_table": {
+              "calls": 5,
+              "tokens": 2642
+            },
+            "plan_operation": {
+              "calls": 5,
+              "tokens": 4758
+            },
+            "validate_plan": {
+              "calls": 5,
+              "tokens": 3588
+            },
+            "react": {
+              "calls": 1,
+              "tokens": 845
+            },
+            "summarize": {
+              "calls": 3,
+              "tokens": 1685
+            }
+          },
+          "success_path_calls": 20,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 108,
+        "input_text": "给蜀山（门派 1）加一个新神通\"，神通编号 8099，描述\"驭三柄飞剑斩敌\"，图标 spell_default.png，解锁等级 1；神通 0 级配置：升级不花钱、升级要求人物 1 级、关联法术 700020。这个法术归到一个新技能组 500 里，组名叫\"蜀山御剑组\"，组里就含 700020 这一个法术。",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：pk_conflict - ID [5] 已被占用",
+        "elapsed_ms": 96824.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "school/school_ability.xlsx",
+            "sheet": "SchoolAbility",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.4,
+            "concrete_total": 5,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "school/school_ability.xlsx",
+            "sheet": "SchoolAbilityLevel",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.16666666666666666,
+            "concrete_total": 6,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "combat/spell_group.xlsx",
+            "sheet": "SpellGroup",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "combat/spell.xlsx",
+            "sheet": "common_spell",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 4,
+            "table": "combat/spell.xlsx",
+            "sheet": "spell_data",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 5,
+        "n_effective": 5,
+        "locate_rate": 0.6,
+        "coverage": 0.6,
+        "field_accuracy": 0.4111,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 25,
+          "total_tokens": 17588,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1078
+            },
+            "confirm_table": {
+              "calls": 7,
+              "tokens": 3688
+            },
+            "plan_operation": {
+              "calls": 7,
+              "tokens": 6316
+            },
+            "validate_plan": {
+              "calls": 7,
+              "tokens": 4814
+            },
+            "summarize": {
+              "calls": 3,
+              "tokens": 1692
+            }
+          },
+          "success_path_calls": 25,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 109,
+        "input_text": "加一条日常打怪任务\"清剿赤炎虎\"，任务号 777001，归到任务组 510（组名\"测试日常\"，主线类型），描述\"去野外把赤炎虎清掉\"，目标是打赢战斗 77777001，打赢给奖励包 10999。战斗 77777001 配成在战场 10001 里打 npc 3000 和 3001 两只怪，赢了给奖励包 10999、输了和平局都不给。奖励包 10999 也建一下，叫\"清剿奖励\"，每日领 50 次，必给道具 10001 共 5 个，另外 100% 给经验、100% 给金币、金币公式填 100。",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：match_field - 未找到列[任务名称]",
+        "elapsed_ms": 85349.8,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "quest/quest.xlsx",
+            "sheet": "QuestGroup",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 3,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "quest/quest.xlsx",
+            "sheet": "Quest",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 7,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "combat/combat.xlsx",
+            "sheet": "combat_data",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 8,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 3,
+            "table": "reward.xlsx",
+            "sheet": "Reward",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 8,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 14,
+        "n_expected": 4,
+        "n_effective": 4,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 14,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 17,
+          "total_tokens": 21456,
+          "by_site": {
+            "confirm_table": {
+              "calls": 4,
+              "tokens": 2297
+            },
+            "plan_operation": {
+              "calls": 4,
+              "tokens": 4013
+            },
+            "validate_plan": {
+              "calls": 4,
+              "tokens": 2574
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 11959
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 613
+            }
+          },
+          "success_path_calls": 17,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 110,
+        "input_text": "洞府新增一种炼丹房。先把建筑类型 11 建好，叫\"炼丹房\"，实体类型 ResidenceBuildingForge，一级分类\"炼造\"、二级分类\"丹药\"，洞府 1 级最多放 2 个、2 级最多放 3 个。再加一个这种建筑实例\"初级炼丹炉\"，建筑道具编号 22199，建筑等级 1，模型 2205002，地图图标 4004，需要洞府等级 1，占地 1×1，图纸道具用 10001。最后给炼丹房类型配一个 idle 交互动画，角色蒙太奇 DongfuSit.graph，建筑状态 0，软停止开。",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：pk_conflict - ID [11] 已被占用",
+        "elapsed_ms": 118194.9,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "BuildingType",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 7,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "ResidenceBuilding",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 10,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "BuildingInteract",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 5,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 4,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 4,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 23,
+          "total_tokens": 20839,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1228
+            },
+            "confirm_table": {
+              "calls": 5,
+              "tokens": 2723
+            },
+            "plan_operation": {
+              "calls": 5,
+              "tokens": 5036
+            },
+            "validate_plan": {
+              "calls": 5,
+              "tokens": 3968
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 6266
+            },
+            "summarize": {
+              "calls": 3,
+              "tokens": 1618
+            }
+          },
+          "success_path_calls": 23,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 111,
+        "input_text": "把 28501 号法宝替身草人的阳属性描述改成\"激活后 10 秒内替主人承受一次致命伤害\"，它的阴阳权重同步从 0.3 调到 0.4；再把 15001 号精钢剑的可用门派列表覆盖成 1, 2, 3，基础物攻词条 WorldAttackCon 的范围改成 70 到 90。",
+        "skill_enabled": false,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 52799.5,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "item/item.xlsx",
+            "sheet": "Fabao",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          },
+          {
+            "index": 1,
+            "table": "item/item.xlsx",
+            "sheet": "Equipment",
+            "operation": "modify",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": ""
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 2,
+        "n_effective": 2,
+        "locate_rate": 0.5,
+        "coverage": 0.5,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 6,
+          "total_tokens": 3902,
+          "by_site": {
+            "confirm_table": {
+              "calls": 2,
+              "tokens": 1163
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 1031
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 690
+            },
+            "summarize": {
+              "calls": 2,
+              "tokens": 1018
+            }
+          },
+          "success_path_calls": 6,
+          "failure_path_calls": 0
+        }
+      }
+    ],
+    "on_results": [
+      {
+        "cid": 106,
+        "input_text": "新增一个新 NPC 叫\"灵兽饲养员老李\"，模型用 1015，摆在野外战场 10001 坐标 (88, 0, 12)。玩家走过去点他弹出对话，对话内容写\"要不要看看我养的灵兽？\"，给两个选项：选\"看看\"就跳到一段新对话，新对话说\"这只赤炎虎饿了，给它喂点东西吧。\"；选\"下次吧\"就什么都不做结束对话。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：locate_row - 未找到 灵兽饲养员老李(mode=exact)",
+        "elapsed_ms": 248473.3,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": true,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 5,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": true,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 6,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 3,
+        "n_expected": 7,
+        "n_effective": 7,
+        "locate_rate": 0.8571,
+        "coverage": 0.5714,
+        "field_accuracy": 0.4167,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 43,
+          "total_tokens": 33057,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1230
+            },
+            "confirm_table": {
+              "calls": 10,
+              "tokens": 5472
+            },
+            "plan_operation": {
+              "calls": 10,
+              "tokens": 9123
+            },
+            "validate_plan": {
+              "calls": 10,
+              "tokens": 6365
+            },
+            "induce_anti_pattern": {
+              "calls": 4,
+              "tokens": 3495
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 5097
+            },
+            "summarize": {
+              "calls": 4,
+              "tokens": 2275
+            }
+          },
+          "success_path_calls": 43,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 107,
+        "input_text": "加一件新法宝\"玄火鉴\"，法宝编号 28599，品质 3，图标 Icon_fabao_xuanhuo，法宝类型 5，它的法宝技能编号 700010 也一起建一下——是个攻击型火系法术叫\"玄火灼烧\"，对单体造成 180% 伤害。法宝的阴阳权重设 0.35，阳属性描述\"激活后对敌方人物附加灼烧\"，阴属性描述\"激活后对敌方非人物附加灼烧\"。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：match_field - 未找到列[fabao_type]",
+        "elapsed_ms": 163485.2,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "item/item.xlsx",
+            "sheet": "ItemBase",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.42857142857142855,
+            "concrete_total": 7,
+            "concrete_matched": 3,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "item/item.xlsx",
+            "sheet": "Fabao",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 6,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "combat/spell.xlsx",
+            "sheet": "common_spell",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 3,
+            "table": "combat/spell.xlsx",
+            "sheet": "spell_data",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 4,
+        "n_expected": 4,
+        "n_effective": 4,
+        "locate_rate": 0.25,
+        "coverage": 0.0,
+        "field_accuracy": 0.1786,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 23,
+          "total_tokens": 26776,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 984
+            },
+            "confirm_table": {
+              "calls": 5,
+              "tokens": 2642
+            },
+            "plan_operation": {
+              "calls": 5,
+              "tokens": 4758
+            },
+            "validate_plan": {
+              "calls": 5,
+              "tokens": 3691
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 12856
+            },
+            "induce_anti_pattern": {
+              "calls": 1,
+              "tokens": 800
+            },
+            "summarize": {
+              "calls": 2,
+              "tokens": 1045
+            }
+          },
+          "success_path_calls": 23,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 108,
+        "input_text": "给蜀山（门派 1）加一个新神通\"，神通编号 8099，描述\"驭三柄飞剑斩敌\"，图标 spell_default.png，解锁等级 1；神通 0 级配置：升级不花钱、升级要求人物 1 级、关联法术 700020。这个法术归到一个新技能组 500 里，组名叫\"蜀山御剑组\"，组里就含 700020 这一个法术。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：coerce_value - 列[心法1被动id]类型为 int，值''无法转为整数且无枚举映射，已阻止写入",
+        "elapsed_ms": 260715.1,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "school/school_ability.xlsx",
+            "sheet": "SchoolAbility",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.4,
+            "concrete_total": 5,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "school/school_ability.xlsx",
+            "sheet": "SchoolAbilityLevel",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 6,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "combat/spell_group.xlsx",
+            "sheet": "SpellGroup",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "combat/spell.xlsx",
+            "sheet": "common_spell",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 4,
+            "table": "combat/spell.xlsx",
+            "sheet": "spell_data",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 2,
+        "n_expected": 5,
+        "n_effective": 5,
+        "locate_rate": 0.4,
+        "coverage": 0.2,
+        "field_accuracy": 0.3333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "type_mismatch",
+        "llm_stats": {
+          "total_calls": 31,
+          "total_tokens": 25191,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1028
+            },
+            "confirm_table": {
+              "calls": 7,
+              "tokens": 3680
+            },
+            "plan_operation": {
+              "calls": 7,
+              "tokens": 6229
+            },
+            "validate_plan": {
+              "calls": 7,
+              "tokens": 4717
+            },
+            "fix_field_mapping": {
+              "calls": 2,
+              "tokens": 1964
+            },
+            "react": {
+              "calls": 3,
+              "tokens": 4410
+            },
+            "induce_anti_pattern": {
+              "calls": 3,
+              "tokens": 2494
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 669
+            }
+          },
+          "success_path_calls": 31,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 109,
+        "input_text": "加一条日常打怪任务\"清剿赤炎虎\"，任务号 777001，归到任务组 510（组名\"测试日常\"，主线类型），描述\"去野外把赤炎虎清掉\"，目标是打赢战斗 77777001，打赢给奖励包 10999。战斗 77777001 配成在战场 10001 里打 npc 3000 和 3001 两只怪，赢了给奖励包 10999、输了和平局都不给。奖励包 10999 也建一下，叫\"清剿奖励\"，每日领 50 次，必给道具 10001 共 5 个，另外 100% 给经验、100% 给金币、金币公式填 100。",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 164868.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "quest/quest.xlsx",
+            "sheet": "QuestGroup",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 3,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "quest/quest.xlsx",
+            "sheet": "Quest",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 7,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "combat/combat.xlsx",
+            "sheet": "combat_data",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.125,
+            "concrete_total": 8,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "reward.xlsx",
+            "sheet": "Reward",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 8,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 29,
+        "n_expected": 4,
+        "n_effective": 4,
+        "locate_rate": 0.25,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 29,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 17,
+          "total_tokens": 12085,
+          "by_site": {
+            "confirm_table": {
+              "calls": 4,
+              "tokens": 2291
+            },
+            "plan_operation": {
+              "calls": 4,
+              "tokens": 3867
+            },
+            "validate_plan": {
+              "calls": 4,
+              "tokens": 2753
+            },
+            "summarize": {
+              "calls": 5,
+              "tokens": 3174
+            }
+          },
+          "success_path_calls": 17,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 110,
+        "input_text": "洞府新增一种炼丹房。先把建筑类型 11 建好，叫\"炼丹房\"，实体类型 ResidenceBuildingForge，一级分类\"炼造\"、二级分类\"丹药\"，洞府 1 级最多放 2 个、2 级最多放 3 个。再加一个这种建筑实例\"初级炼丹炉\"，建筑道具编号 22199，建筑等级 1，模型 2205002，地图图标 4004，需要洞府等级 1，占地 1×1，图纸道具用 10001。最后给炼丹房类型配一个 idle 交互动画，角色蒙太奇 DongfuSit.graph，建筑状态 0，软停止开。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：pk_conflict - ID [11] 已被占用",
+        "elapsed_ms": 131696.8,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "BuildingType",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 7,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "ResidenceBuilding",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 10,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "residence/residence_building.xlsx",
+            "sheet": "BuildingInteract",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 5,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 6,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 6,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 22,
+          "total_tokens": 18025,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1255
+            },
+            "confirm_table": {
+              "calls": 5,
+              "tokens": 2753
+            },
+            "plan_operation": {
+              "calls": 5,
+              "tokens": 5283
+            },
+            "validate_plan": {
+              "calls": 5,
+              "tokens": 4601
+            },
+            "induce_anti_pattern": {
+              "calls": 3,
+              "tokens": 2500
+            },
+            "summarize": {
+              "calls": 3,
+              "tokens": 1633
+            }
+          },
+          "success_path_calls": 22,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 111,
+        "input_text": "把 28501 号法宝替身草人的阳属性描述改成\"激活后 10 秒内替主人承受一次致命伤害\"，它的阴阳权重同步从 0.3 调到 0.4；再把 15001 号精钢剑的可用门派列表覆盖成 1, 2, 3，基础物攻词条 WorldAttackCon 的范围改成 70 到 90。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：locate_row - 未找到 28501(mode=exact)",
+        "elapsed_ms": 89466.0,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "item/item.xlsx",
+            "sheet": "Fabao",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          },
+          {
+            "index": 1,
+            "table": "item/item.xlsx",
+            "sheet": "Equipment",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 2,
+        "n_effective": 2,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 12,
+          "total_tokens": 10306,
+          "by_site": {
+            "confirm_table": {
+              "calls": 2,
+              "tokens": 1163
+            },
+            "plan_operation": {
+              "calls": 2,
+              "tokens": 1913
+            },
+            "validate_plan": {
+              "calls": 2,
+              "tokens": 1320
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 4543
+            },
+            "induce_anti_pattern": {
+              "calls": 1,
+              "tokens": 873
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 494
+            }
+          },
+          "success_path_calls": 12,
+          "failure_path_calls": 0
+        }
+      }
+    ]
+  }
+}

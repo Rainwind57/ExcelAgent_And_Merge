@@ -1,0 +1,106 @@
+"""扫描 resources id 分布 + merge 版本差异，为构造样本拿数据。"""
+import openpyxl
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def col_range(vals):
+    """返回数值型第一列的 min/max + 计数。"""
+    nums = []
+    for v in vals:
+        if isinstance(v, (int, float)):
+            nums.append(v)
+        elif isinstance(v, str) and v.strip():
+            try:
+                nums.append(float(v.replace(",", "")))
+            except ValueError:
+                pass
+    if not nums:
+        return None
+    return {"min": min(nums), "max": max(nums), "count": len(nums), "unique": len(set(nums))}
+
+
+def scan_resources():
+    print("=" * 60)
+    print("RESOURCES id 列分布")
+    print("=" * 60)
+    for p in sorted(Path(ROOT / "resources").rglob("*.xlsx")):
+        try:
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+        except Exception as e:
+            print(f"  {p}: 读失败 {e}")
+            continue
+        rel = p.relative_to(ROOT)
+        sheets = []
+        for ws in wb.worksheets:
+            if ws.title in ("CONFIG", "PATCH_CONFIG") or ws.title.startswith("说明"):
+                continue
+            row1 = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            row2 = next(ws.iter_rows(min_row=2, max_row=2, values_only=True), None)
+            if not row1:
+                continue
+            col_name = row1[0]
+            # 第一列所有值
+            first_col = [r[0] for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0] is not None]
+            cr = col_range(first_col)
+            if cr and cr["count"] > 0:
+                sheets.append(f"{ws.title}[{col_name}:{cr['min']}-{cr['max']}#{cr['count']}/uniq{cr['unique']}]")
+        if sheets:
+            print(f"{rel}: {' | '.join(sheets)}")
+        wb.close()
+
+
+def scan_merge():
+    print("=" * 60)
+    print("MERGE 版本差异")
+    print("=" * 60)
+    mdir = ROOT / "merge"
+    files = sorted(mdir.glob("*.xlsx"))
+    # 按 basename 分组
+    groups = {}
+    for f in files:
+        name = f.name
+        base = name.replace(".xlsx", "")
+        # item.xlsx -> item, item_1.xlsx -> item
+        key = base.split("_")[0]
+        groups.setdefault(key, []).append(f)
+
+    for key, fs in groups.items():
+        print(f"\n[{key}] 共 {len(fs)} 个版本")
+        # 读每个版本的每 sheet 行数 + 主键集合
+        ver_data = {}
+        for f in fs:
+            wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
+            v = {}
+            for ws in wb.worksheets:
+                first_col = [r[0] for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0] is not None]
+                cr = col_range(first_col)
+                v[ws.title] = {"rows": cr["count"] if cr else 0, "ids": set(int(x) for x in first_col if isinstance(x, (int, float)))} if cr else {"rows": 0, "ids": set()}
+            ver_data[f.name] = v
+            wb.close()
+        # 输出每 sheet 对比
+        all_sheets = set()
+        for v in ver_data.values():
+            all_sheets.update(v.keys())
+        for sn in sorted(all_sheets):
+            line = []
+            for fn in [f.name for f in fs]:
+                d = ver_data[fn].get(sn, {"rows": 0, "ids": set()})
+                line.append(f"{fn}:{d['rows']}行")
+            print(f"  sheet {sn}: {' '.join(line)}")
+        # 主键差异（以第一个版本为基准）
+        base_fn = fs[0].name
+        for sn in sorted(all_sheets):
+            base_ids = ver_data[base_fn].get(sn, {"ids": set()})["ids"]
+            for fn in [f.name for f in fs[1:]]:
+                cur_ids = ver_data[fn].get(sn, {"ids": set()})["ids"]
+                missing = base_ids - cur_ids
+                added = cur_ids - base_ids
+                if missing or added:
+                    print(f"  {sn} {base_fn}->{fn}: 漏{sorted(missing)[:5]} 新增{sorted(added)[:5]}")
+
+
+if __name__ == "__main__":
+    scan_resources()
+    scan_merge()

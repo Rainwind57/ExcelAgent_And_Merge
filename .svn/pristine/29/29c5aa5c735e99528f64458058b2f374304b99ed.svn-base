@@ -1,0 +1,134 @@
+"""verify-repair 迭代环 spot-check（capability: verify-repair-loop / error-classification-repair）。
+
+构造 3 类失败场景，验证迭代环：
+1. type_mismatch：int 列写字符串（如 "灵兽model_id 改为 abc"）
+2. column_not_found：列名不存在（如 "灵兽不存在的列XYZ 改为 1"）
+3. cross_ref_broken：外键指向不存在行（如把某行的 灵兽id 改为 999999）
+
+每类断言：thinking_steps 含「修复」阶段或 repair_failure 结构化失败（不静默吞错）。
+在 resources/ 沙箱副本跑，不影响真实配表。
+
+用法（在 server/ 目录下）：
+    python -m tests.spot_check_verify_repair
+前提：codemaker serve 已启动。
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+# sys.path 让 tests 包可导入
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
+from services.agent_service import AgentService
+from config import RESOURCES_DIR as _RES
+
+
+SCENARIOS = [
+    {
+        "name": "type_mismatch",
+        "input": "改一下灵兽id为1的灵兽model_id为abc",
+        "expect_repair_phase": True,
+    },
+    {
+        "name": "column_not_found",
+        "input": "改一下灵兽id为1的灵兽灵兽名XYZ字段为小白",
+        "expect_repair_phase": True,
+    },
+    {
+        "name": "cross_ref_broken",
+        "input": "改一下pet_evolve表id为1的进化链宠物id为999999",
+        "expect_repair_phase": True,
+    },
+]
+
+
+def _has_repair_activity(res) -> tuple[bool, str]:
+    """检查结果是否触发修复活动：thinking_steps 含「修复」阶段或 repair_failure。"""
+    steps = getattr(res, "thinking_steps", []) or []
+    for ts in steps:
+        if isinstance(ts, dict):
+            phase = (ts.get("phase") or "") + (ts.get("detail") or "")
+            if "修复" in phase or "repair" in phase.lower():
+                return True, ts.get("detail", "")
+            if ts.get("repair_failure"):
+                return True, f"repair_failure: {ts['repair_failure']}"
+    return False, ""
+
+
+def run_scenario(svc: AgentService, scenario: dict) -> dict:
+    print(f"\n=== 场景：{scenario['name']} ===")
+    print(f"指令：{scenario['input']}")
+    # 直接调 agent.run 绕过 service 封装，观察 thinking_steps
+    res = svc.agent.run(scenario["input"], session_id=f"spot_{scenario['name']}")
+    has_repair, detail = _has_repair_activity(res)
+    ok = getattr(res, "ok", None)
+    msg = getattr(res, "message", "") or ""
+    ts = getattr(res, "thinking_steps", []) or []
+    steps = getattr(res, "steps", []) or []
+    print(f"  ok={ok}")
+    print(f"  message={msg[:160]}")
+    print(f"  thinking_steps 数={len(ts)} steps 数={len(steps)}")
+    for t in ts[:10]:
+        print(f"    think [{t.get('phase','')}] {t.get('detail','')[:80]}")
+    for s in steps[:6]:
+        print(f"    step [{s.name}] ok={s.ok} {s.detail[:60]}")
+    print(f"  修复活动触发={has_repair}")
+    if detail:
+        print(f"  详情={detail[:160]}")
+    return {
+        "name": scenario["name"],
+        "ok": ok,
+        "has_repair": has_repair,
+        "expect_repair": scenario["expect_repair_phase"],
+        "passed": has_repair == scenario["expect_repair_phase"],
+    }
+
+
+def main() -> int:
+    # 沙箱副本
+    sandbox = Path(tempfile.mkdtemp(prefix="vr_spotcheck_"))
+    try:
+        for f in Path(_RES).glob("*.xlsx"):
+            shutil.copy2(f, sandbox / f.name)
+        # pet 子目录也拷
+        pet_dir = sandbox / "pet"
+        pet_dir.mkdir(exist_ok=True)
+        src_pet = Path(_RES) / "pet"
+        if src_pet.exists():
+            for f in src_pet.glob("*.xlsx"):
+                shutil.copy2(f, pet_dir / f.name)
+        print(f"沙箱：{sandbox}")
+        svc = AgentService(resources_dir=sandbox, enable_skill=True,
+                           enable_verify_repair_loop=True,
+                           enable_skill_tools_recovery=True)
+        results = []
+        for sc in SCENARIOS:
+            try:
+                results.append(run_scenario(svc, sc))
+            except Exception as e:
+                print(f"  异常：{e}")
+                results.append({"name": sc["name"], "passed": False, "error": str(e)})
+        # 汇总
+        print("\n=== 汇总 ===")
+        passed = sum(1 for r in results if r.get("passed"))
+        for r in results:
+            status = "PASS" if r.get("passed") else "FAIL"
+            print(f"  [{status}] {r['name']}: has_repair={r.get('has_repair')} expect={r.get('expect_repair')}")
+        print(f"\n{passed}/{len(results)} 场景通过")
+        return 0 if passed == len(results) else 1
+    finally:
+        try:
+            shutil.rmtree(sandbox)
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

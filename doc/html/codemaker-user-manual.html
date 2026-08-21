@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配表模式 · 用户手册 · AI 配表助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">CodeMaker 配表模式 · 用户手册</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav"><a href="index.html">← 返回首页</a></nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">手册</div>
+      <nav class="nav">
+        <a href="user-manual.html"><span class="badge planner">用户</span> 后端 Agent</a>
+        <a href="tech-manual.html"><span class="badge tech">技术</span> 后端 Agent</a>
+        <a class="active" href="codemaker-user-manual.html"><span class="badge planner">用户</span> 配表模式</a>
+        <a href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 配表模式</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">本页章节</div>
+      <nav class="nav">
+        <a href="#pre">1. 前置：启动后端</a>
+        <a href="#enter">2. 查看项目文件夹，进入配表模式</a>
+        <a href="#ops">3. 常用操作</a>
+        <a href="#exit">4. 拒答与退出</a>
+        <a href="#bound">5. 能力边界</a>
+        <a href="#tips">6. 提示</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <p class="muted"><span class="badge planner">用户 · 配表模式</span></p>
+    <h1>CodeMaker 配表模式用户使用手册</h1>
+    <p class="lead">面向在 CodeMaker 插件中配表的使用者。配表模式是项目「第二形态」：在 CodeMaker 对话框激活后，CodeMaker 仅用 skill 知识 + 后端原子 API 操作 <code>resources/</code> 配表，轻量、受限、与其他项目内容隔离。全程自然语言，无需写代码。</p>
+
+    <div class="callout"><span class="ctitle">与 Web 端的区别</span>Web 端「AI 配表助手」是第一形态，功能全（含比对合并/浏览）；配表模式是第二形态，在 CodeMaker 插件里直接对话操作表格，轻量受限。两者共用同一后端。</div>
+
+    <h2 id="pre">1. 前置：启动后端</h2>
+    <p>配表模式需要后端运行，也就是需要<strong>两个终端</strong>。</p>
+    <pre><code># 终端1 — CodeMaker Serve（LLM 底座）
+$env:OPENCODE_SERVER_USERNAME="codemaker"
+$env:OPENCODE_SERVER_PASSWORD="CMniubi2026"
+codemaker serve --port 8666 --hostname 0.0.0.0
+
+# 终端2 — 业务后端（提供原子 API）
+Get-Content .env | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $kv=$_.Split('=',2); Set-Item -Path ("env:"+$kv[0].Trim()) -Value $kv[1].Trim() }
+uv run python server/main.py</code></pre>
+    <p>后端运行在 <code>http://127.0.0.1:8000</code>。</p>
+
+    <h2 id="enter">2. 查看项目文件夹，进入配表模式</h2>
+    <p>在 CodeMaker 插件对话框输入 <strong>「查看项目文件夹，进入配表模式」</strong>：</p>
+    <div class="figure">
+      <img src="img/image-51.png" alt="输入查看项目文件夹，进入配表模式">
+      <div class="fcaption">图 2-1　输入”查看项目文件夹，进入配表模式”</div>
+    </div>
+    <p>CodeMaker 会读取项目根目录的 <code>TABLE_MODE.md</code>，询问是否进入配表操作模式，点击“确认进入”：</p>
+    <div class="figure">
+      <img src="img/image-52.png" alt="确认进入">
+      <div class="fcaption">图 2-2　确认进入配表操作模式</div>
+    </div>
+    <p>正式进入配表操作模式：</p>
+    <div class="figure">
+      <img src="img/image-53.png" alt="已进入配表模式">
+      <div class="fcaption">图 2-3　已进入配表操作模式</div>
+    </div>
+    <div class="callout"><span class="ctitle">工作方式</span>进入后 CodeMaker 用<strong>自身 LLM</strong> 理解意图，并通过后端原子 API 操作表格，不调用后端完整 agent。与表格操作无关的请求会被拒绝。</div>
+
+    <h2 id="ops">3. 常用操作</h2>
+
+    <h3>3.1 查询</h3>
+    <pre><code>查询灵兽饕餮的所有信息</code></pre>
+    <p>返回所有匹配行（如饕餮一阶/二阶/三阶）的全部字段：</p>
+    <div class="figure"><img src="img/image-54.png" alt="查询饕餮1"><div class="fcaption">图 3-1　命中 3 条并执行查询</div></div>
+    <div class="figure"><img src="img/image-55.png" alt="查询饕餮2"><div class="fcaption">图 3-2　饕餮一阶（id=1065）</div></div>
+    <div class="figure"><img src="img/image-56.png" alt="查询饕餮3"><div class="fcaption">图 3-3　饕餮二阶（id=2065）</div></div>
+    <div class="figure"><img src="img/image-57.png" alt="查询饕餮4"><div class="fcaption">图 3-4　饕餮三阶（id=3065）+ 进化链</div></div>
+
+    <h3>3.2 修改</h3>
+    <pre><code>将能力名称为三味真火测试版的神通描述修改为TEST</code></pre>
+    <p>若名称未精确命中，会给出相近项建议供确认：</p>
+    <div class="figure">
+      <img src="img/image-58.png" alt="修改-相近项建议">
+      <div class="fcaption">图 3-5　名称未命中，给出相近项建议</div>
+    </div>
+    <p>确认后执行修改，返回旧值 → 新值：</p>
+    <div class="figure">
+      <img src="img/image-59.png" alt="修改-执行结果">
+      <div class="fcaption">图 3-6　确认后执行修改</div>
+    </div>
+
+    <h3>3.3 删除</h3>
+    <pre><code>删除法宝名称为测试法宝3的信息</code></pre>
+    <div class="figure">
+      <img src="img/image-60.png" alt="删除法宝">
+      <div class="fcaption">图 3-7　删除法宝“测试法宝3”</div>
+    </div>
+
+    <h3>3.4 新增</h3>
+    <pre><code>增加灵兽名称为测试灵兽1，id是1145</code></pre>
+    <p>新增采用二段提交：先预览校验后的值：</p>
+    <div class="figure">
+      <img src="img/image-61.png" alt="新增-预览">
+      <div class="fcaption">图 3-8　新增预览（校验通过的值）</div>
+    </div>
+    <p>确认后写盘，返回新行行号：</p>
+    <div class="figure">
+      <img src="img/image-62.png" alt="新增-写盘结果">
+      <div class="fcaption">图 3-9　确认后写盘，返回新行行号</div>
+    </div>
+
+    <h2 id="exit">4. 拒答与退出</h2>
+    <p>输入与表格操作无关的内容（写代码、查项目结构、闲聊等）会被拒答：</p>
+    <div class="figure">
+      <img src="img/image-64.png" alt="无关请求拒答">
+      <div class="fcaption">图 4-1　无关请求被拒答</div>
+    </div>
+    <p>输入 <strong>「退出配表模式」</strong> 即可退出，恢复写代码、查项目等完整能力：</p>
+    <div class="figure">
+      <img src="img/image-63.png" alt="退出配表模式">
+      <div class="fcaption">图 4-2　退出配表模式，恢复完整能力</div>
+    </div>
+
+    <h2 id="bound">5. 能力边界</h2>
+    <table>
+      <thead><tr><th>操作</th><th>支持</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>查询 / 搜索</td><td><span class="badge ok">✅</span></td><td>列表 / 搜索 / sheet 数据 / 列约束 / 相近项建议</td></tr>
+        <tr><td>改值（单格 / 多格）</td><td><span class="badge ok">✅</span></td><td>支持事务性多字段改值</td></tr>
+        <tr><td>新增行</td><td><span class="badge ok">✅</span></td><td>二段提交（先预览再写盘）</td></tr>
+        <tr><td>删除 / 插入行</td><td><span class="badge ok">✅</span></td><td>公式引用机械位移，会提示检查</td></tr>
+        <tr><td>列增删</td><td><span class="badge ok">✅</span></td><td>高风险，需确认</td></tr>
+        <tr><td>校验</td><td><span class="badge ok">✅</span></td><td>类型 / 唯一 / 跨表 ID</td></tr>
+        <tr><td>公式重写</td><td><span class="badge p0">❌</span></td><td>公式列只读，需退出后用 Web 端 agent 处理</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="tips">6. 提示</h2>
+    <ul>
+      <li>名称查询默认用“包含”匹配，多行命中会全部列出让你选。</li>
+      <li>名称没命中时会给出相近项（含相似度），确认后再操作。</li>
+      <li>新增行强制先预览再写盘，防误操作。</li>
+      <li>配表模式仅能访问 <code>resources/</code> 表格，其他项目文件无权访问；需要时先“退出配表模式”。</li>
+    </ul>
+
+    <hr class="hr">
+    <p class="muted">本手册面向使用者，技术细节见 <a href="codemaker-tech-manual.html">配表模式技术文档</a>；功能更全的 Web 端见 <a href="user-manual.html">后端 Agent 用户手册</a>。</p>
+  </main>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.figure img').forEach(function (img) {
+      img.title = '点击查看原图';
+      img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+    });
+  });
+</script>
+</body>
+</html>

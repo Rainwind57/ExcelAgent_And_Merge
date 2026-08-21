@@ -1,0 +1,111 @@
+"""4-Step V2 服务对象层（§设计 S3 过渡）。
+
+收口 SubAgent 对 legacy agent 私态的散播访问，集中到显式服务边界。
+
+过渡期真实状态：
+  - services 内部仍委托 legacy agent 私有方法（_step2_validate_intents / _run_single），
+    非 100% 剥离；但 SubAgent 不再直接持有整个 agent 句柄，
+    仅通过 services 显式接口访问，私态访问收口到 services 边界内。
+  - S4 阶段把 _step2_validate_intents / _run_single_impl 真正提取为无 agent 句柄的
+    纯服务实现（需重写 _phase_* 链 + schema_bundle 的 self 参数依赖）。
+
+依赖注入：run_v2 实例化 services 后注入各 SubAgent，SubAgent 不再 agent=self。
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ExcelAgentServices:
+    """收口 SubAgent 所需的 legacy agent 接口，集中私态访问边界。
+
+    替代原 Step2/3/4 SubAgent 的 agent=self + 散播访问：
+      - Step2 不再直接读 agent._locator_agent._last_locator_result
+      - Step2 不再直接调 agent._wire_sinks / agent._step2_validate_intents
+      - Step3 不再直接调 agent._run_single
+      - Step4 不再直接读 agent.enable_skill / agent._ai_enhancer
+    """
+
+    def __init__(self, legacy_agent: Any = None):
+        # 过渡期：services 持有 legacy agent 句柄，内部委托其私有方法。
+        # S4 提取为纯服务后，此句柄删除，方法改为直接实现。
+        self._agent = legacy_agent
+        # execute_no_llm 作为 Step3 零 LLM 的显式可写通道（替代原 os.environ 突变）。
+        # _run_single 内部 try/finally 读写此属性。
+        self.execute_no_llm: bool = bool(
+            getattr(legacy_agent, "execute_no_llm", False))
+
+    # ── Step2 接口 ──────────────────────────────────
+    def wire_sinks(self, res: Any) -> Any:
+        """构造带 thinking_sink 的 AgentResult（替代 agent._wire_sinks）。"""
+        if self._agent is not None and hasattr(self._agent, "_wire_sinks"):
+            return self._agent._wire_sinks(res)
+        return res
+
+    def validate_intents(self, intents: list, stream_res: Any,
+                         session_id: str, locator_result: Any = None) -> list:
+        """Step2 校验+冲突处理（替代 agent._step2_validate_intents）。"""
+        if self._agent is None or not hasattr(self._agent, "_step2_validate_intents"):
+            return intents
+        return self._agent._step2_validate_intents(
+            intents, stream_res, session_id, locator_result=locator_result)
+
+    # ── Step3 接口 ──────────────────────────────────
+    def run_single(self, intent: Any, confirm_token: Optional[str] = None,
+                   session_id: str = "", suppress_phase_thinking: bool = False,
+                   no_llm: bool = False) -> Any:
+        """Step3 执行单 intent（_single）。
+
+        no_llm=True 时临时设 self.execute_no_llm=True（try/finally 还原），
+        替代原 os.environ["CODEMAKER_EXECUTE_NO_LLM"] 进程级突变。
+        """
+        if self._agent is None or not hasattr(self._agent, "_run_single"):
+            return None
+        _prev = self.execute_no_llm
+        if no_llm:
+            self.execute_no_llm = True
+            # 同步到 agent 实例属性（_phase_execute:6420 读 agent.execute_no_llm）
+            # 过渡期：services 与 agent 共享该属性直到 _phase_* 链提取。
+            try:
+                self._agent.execute_no_llm = True
+            except Exception:
+                pass
+        try:
+            return self._agent._run_single(
+                intent, confirm_token, session_id,
+                suppress_phase_thinking=suppress_phase_thinking, no_llm=no_llm)
+        finally:
+            self.execute_no_llm = _prev
+            try:
+                self._agent.execute_no_llm = _prev
+            except Exception:
+                pass
+
+    # ── Step4 接口 ──────────────────────────────────
+    @property
+    def enable_skill(self) -> bool:
+        """skill 体系总开关（替代 agent.enable_skill）。"""
+        return bool(getattr(self._agent, "enable_skill", False))
+
+    @property
+    def ai_enhancer(self) -> Any:
+        """AI 增强（替代 agent._ai_enhancer）。"""
+        return getattr(self._agent, "_ai_enhancer", None)
+
+    # ── metrics 接口 ─────────────────────────────────
+    def peek_llm_total(self) -> int:
+        """读 LLM 调用计数器当前累计值（供 Step3 metrics 真实上报，替代硬编码 0）。
+
+        run_v2 入口已 reset（agent.py），Step3 执行后读此值 = 本步 LLM 调用数。
+        无 counter 句柄返回 0。
+        """
+        counter = getattr(self._agent, "_llm_counter", None)
+        if counter is None:
+            return 0
+        try:
+            return int(counter.peek_total())
+        except Exception:
+            return 0

@@ -1,0 +1,14 @@
+"""excel-agent 管道层：7 步固定工作流编排。
+
+Step0 断点检查 → Step1 拆解 → Step2 分区 → Step3 并行填表
+→ Step4 汇总 → Step5 验证 → Step6 写库 → Step7 清理+报告
+"""
+
+from .pipeline import Pipeline, PipelineResult  # noqa: F401
+from .types import (  # noqa: F401
+    PipelineContext,
+    StepResult,
+    AgentFragment,
+    DocIntent,
+    StepCard,
+)

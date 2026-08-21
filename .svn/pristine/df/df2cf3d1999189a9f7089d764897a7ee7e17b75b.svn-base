@@ -1,0 +1,43 @@
+anti_patterns:
+- id: ap_ind_const_Const_2c891659
+  type: semantic_pattern
+  table_stem: const
+  sheet: Const
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-14T10:28:32+08:00'
+  last_seen: '2026-08-14T10:28:32+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 改成,999,值
+  rationale: 用户请求将某列值改为远超列历史分布的极端值（常量列历史 median=1.0，改 999），此类大跨度改值常为测试或误操作，写入前需确认。
+- id: ap_ind_guild_Vault_a66da5a5
+  type: semantic_pattern
+  table_stem: guild
+  sheet: Vault
+  trigger: ai_induced
+  occurrences: 2
+  first_seen: '2026-08-14T10:40:05+08:00'
+  last_seen: '2026-08-14T10:51:59+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,等级配置,资金上限
+  rationale: 输入为『新增帮派等级配置level 5』，表中金库等级既是用户指定的关键值又是主键列；系统走自增分配新主键与已有等级行发生 id_conflict。此类『新增XX等级配置+数值』类意图会反复出现，正确做法是把等级列识别为主键并按该值查重，而非盲目分配新
+    ID; 新增配置行时未显式指定主键，走 agent._allocate_pk 自增分配会与既有 ID 冲突；应在写表前校验/确认主键分配方式，避免 id_conflict
+    类失败重复出现。
+- id: ap_ind_guild_Vault_2bbb4b3d
+  type: semantic_pattern
+  table_stem: guild
+  sheet: Vault
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-14T11:04:07+08:00'
+  last_seen: '2026-08-14T11:04:07+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,level,等级,配置
+  rationale: 当指令文本中已显式给出等级/编号数值（如 level 5）时，该值通常即主键，agent 不应再调用 _allocate_pk 分配新主键，否则产生
+    id_conflict；触发特征为'新增+具体等级/编号数值'同时出现

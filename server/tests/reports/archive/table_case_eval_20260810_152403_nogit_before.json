@@ -1,0 +1,1488 @@
+{
+  "_header": {
+    "run_id": "20260810_152403_nogit_before",
+    "script": "table_case_eval",
+    "generated_at": "2026-08-10T15:24:03.980008",
+    "git_hash": "nogit"
+  },
+  "results": {
+    "summary": {
+      "n": 6,
+      "n_total": 8,
+      "n_excluded": 2,
+      "fixture_error_rate": 0.25,
+      "ok_rate": 0.8333,
+      "truth_ok_rate": 0.1667,
+      "error_rate": 0.1667,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.6667,
+      "coverage": 0.6111,
+      "field_accuracy": 0.5185,
+      "strict_pass_rate": 0.1667,
+      "avg_extra_ops": 0.8333,
+      "avg_elapsed_ms": 82236.0,
+      "p50_elapsed_ms": 120909.7,
+      "p95_elapsed_ms": 130848.9,
+      "total_elapsed_s": 493.4,
+      "error_type_distribution": {
+        "type_mismatch": 1
+      },
+      "total_llm_calls": 87,
+      "total_tokens": 62519,
+      "avg_llm_calls": 14.5,
+      "success_path_calls": 87,
+      "failure_path_calls": 0
+    },
+    "meta": {
+      "start": 1,
+      "end": 8,
+      "done": 8,
+      "span": 8,
+      "total_all": 105,
+      "last_cid": 8
+    },
+    "off": {
+      "n": 6,
+      "n_total": 8,
+      "n_excluded": 2,
+      "fixture_error_rate": 0.25,
+      "ok_rate": 0.6667,
+      "truth_ok_rate": 0.1667,
+      "error_rate": 0.3333,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.5278,
+      "coverage": 0.4722,
+      "field_accuracy": 0.4509,
+      "strict_pass_rate": 0.1667,
+      "avg_extra_ops": 1.1667,
+      "avg_elapsed_ms": 84252.9,
+      "p50_elapsed_ms": 68843.1,
+      "p95_elapsed_ms": 173836.4,
+      "total_elapsed_s": 505.5,
+      "error_type_distribution": {
+        "type_mismatch": 1,
+        "unknown": 1
+      },
+      "total_llm_calls": 91,
+      "total_tokens": 64484,
+      "avg_llm_calls": 15.2,
+      "success_path_calls": 91,
+      "failure_path_calls": 0
+    },
+    "on": {
+      "n": 6,
+      "n_total": 8,
+      "n_excluded": 2,
+      "fixture_error_rate": 0.25,
+      "ok_rate": 0.8333,
+      "truth_ok_rate": 0.1667,
+      "error_rate": 0.1667,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.6667,
+      "coverage": 0.6111,
+      "field_accuracy": 0.5185,
+      "strict_pass_rate": 0.1667,
+      "avg_extra_ops": 0.8333,
+      "avg_elapsed_ms": 82236.0,
+      "p50_elapsed_ms": 120909.7,
+      "p95_elapsed_ms": 130848.9,
+      "total_elapsed_s": 493.4,
+      "error_type_distribution": {
+        "type_mismatch": 1
+      },
+      "total_llm_calls": 87,
+      "total_tokens": 62519,
+      "avg_llm_calls": 14.5,
+      "success_path_calls": 87,
+      "failure_path_calls": 0
+    },
+    "off_results": [
+      {
+        "cid": 1,
+        "input_text": "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，选项为'好的，我要锻造'和'离开'",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：coerce_value - 列[选项1]类型为 int，值'好的，我要锻造'无法转为整数且无枚举映射，已阻止写入",
+        "elapsed_ms": 163681.8,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 5,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 4,
+        "n_expected": 6,
+        "n_effective": 6,
+        "locate_rate": 0.8333,
+        "coverage": 0.8333,
+        "field_accuracy": 0.7333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "type_mismatch",
+        "llm_stats": {
+          "total_calls": 45,
+          "total_tokens": 33088,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1098
+            },
+            "confirm_table": {
+              "calls": 8,
+              "tokens": 4296
+            },
+            "plan_operation": {
+              "calls": 8,
+              "tokens": 7264
+            },
+            "validate_plan": {
+              "calls": 8,
+              "tokens": 5318
+            },
+            "fix_field_mapping": {
+              "calls": 11,
+              "tokens": 9666
+            },
+            "react": {
+              "calls": 1,
+              "tokens": 880
+            },
+            "summarize": {
+              "calls": 8,
+              "tokens": 4566
+            }
+          },
+          "success_path_calls": 45,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 2,
+        "input_text": "把entity_prefab中prefab_id为8004的NPC名字从'青龙'改成'青龙堂主'",
+        "skill_enabled": false,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 8913.0,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "modify",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 1,
+        "n_effective": 1,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 1.0,
+        "strict_pass": true,
+        "truth_ok": true,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 5,
+          "total_tokens": 2409,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 45
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 552
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 889
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 605
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 318
+            }
+          },
+          "success_path_calls": 5,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 3,
+        "input_text": "删除prefab_id为8005的NPC白虎的所有相关配置，包括entity_prefab表和spawn_world_entity表中的记录",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：locate_row - 未找到 8005(mode=contains)",
+        "elapsed_ms": 29459.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "delete",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "delete",
+            "status": "precondition_missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "原始数据中未找到 row_key 对应的行，测试夹具与当前配表不一致"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 2,
+        "n_effective": 1,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 1.0,
+        "strict_pass": true,
+        "truth_ok": true,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [
+          {
+            "index": 1,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "kind": "modify_delete_row_missing",
+            "detail": "delete 用例 row_key[entity_prefab_id]=8005 在 pristine 未找到目标行"
+          }
+        ],
+        "fixture_error": true,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 8,
+          "total_tokens": 5797,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 69
+            },
+            "confirm_table": {
+              "calls": 2,
+              "tokens": 1159
+            },
+            "react": {
+              "calls": 3,
+              "tokens": 3576
+            },
+            "summarize": {
+              "calls": 2,
+              "tokens": 993
+            }
+          },
+          "success_path_calls": 8,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 4,
+        "input_text": "新增一个传送NPC叫'传送使者'，model_id为1016，放在space_id 10008坐标(10,0,10)，玩家点击后传送到space_id 10001",
+        "skill_enabled": false,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 63119.5,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.5,
+            "concrete_total": 2,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.75,
+            "concrete_total": 4,
+            "concrete_matched": 3,
+            "note": ""
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 0.6389,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 14,
+          "total_tokens": 9370,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 762
+            },
+            "confirm_table": {
+              "calls": 3,
+              "tokens": 1578
+            },
+            "plan_operation": {
+              "calls": 3,
+              "tokens": 2793
+            },
+            "validate_plan": {
+              "calls": 3,
+              "tokens": 2102
+            },
+            "summarize": {
+              "calls": 4,
+              "tokens": 2135
+            }
+          },
+          "success_path_calls": 14,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 5,
+        "input_text": "修改interaction_id为10001的触发半径从5改为8",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：write - 写后验证不符",
+        "elapsed_ms": 20292.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "modify",
+            "status": "precondition_missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "原始数据中未找到 row_key 对应的行，测试夹具与当前配表不一致"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 1,
+        "n_effective": 0,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "kind": "modify_delete_row_missing",
+            "detail": "modify 用例 row_key[interaction_id]=10001 在 pristine 未找到目标行"
+          }
+        ],
+        "fixture_error": true,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 7,
+          "total_tokens": 6172,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 33
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 532
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 897
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 659
+            },
+            "react": {
+              "calls": 3,
+              "tokens": 4051
+            }
+          },
+          "success_path_calls": 7,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 6,
+        "input_text": "新增一个擂台NPC叫'擂台挑战者'，model_id为1012，放在space_id 10008坐标(30,0,40)，玩家点击后进入战斗，战斗ID为102",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：add_values - fields 中所有列名均无法匹配表头或类型转换失败",
+        "elapsed_ms": 173836.4,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 3,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 2,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.3333,
+        "coverage": 0.0,
+        "field_accuracy": 0.3333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 2,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 17,
+          "total_tokens": 14071,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 765
+            },
+            "confirm_table": {
+              "calls": 3,
+              "tokens": 1584
+            },
+            "plan_operation": {
+              "calls": 3,
+              "tokens": 2901
+            },
+            "validate_plan": {
+              "calls": 3,
+              "tokens": 2467
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 5060
+            },
+            "summarize": {
+              "calls": 3,
+              "tokens": 1294
+            }
+          },
+          "success_path_calls": 17,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 7,
+        "input_text": "修改conv_id为1的对话内容为'你好，旅行者，欢迎来到我们的村庄。'",
+        "skill_enabled": false,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 27123.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 1,
+        "n_effective": 1,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 5,
+          "total_tokens": 2510,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 53
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 557
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 948
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 616
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 336
+            }
+          },
+          "success_path_calls": 5,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 8,
+        "input_text": "给conv_id为4的帮派青龙堂总管对话新增一个选项，选项内容为'我想了解帮派贡献'，点击后跳转到新对话，新对话内容为'帮派贡献可以通过完成帮派任务和捐献资源来获得。'",
+        "skill_enabled": false,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 68843.1,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 2,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 1,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 5,
+          "total_tokens": 3036,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 144
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 648
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 1090
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 680
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 474
+            }
+          },
+          "success_path_calls": 5,
+          "failure_path_calls": 0
+        }
+      }
+    ],
+    "on_results": [
+      {
+        "cid": 1,
+        "input_text": "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，选项为'好的，我要锻造'和'离开'",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 120909.7,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 5,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.75,
+            "concrete_total": 4,
+            "concrete_matched": 3,
+            "note": ""
+          }
+        ],
+        "extra_ops": 2,
+        "n_expected": 6,
+        "n_effective": 6,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 0.7361,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 34,
+          "total_tokens": 22903,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1079
+            },
+            "confirm_table": {
+              "calls": 8,
+              "tokens": 4296
+            },
+            "plan_operation": {
+              "calls": 8,
+              "tokens": 7249
+            },
+            "validate_plan": {
+              "calls": 8,
+              "tokens": 5409
+            },
+            "summarize": {
+              "calls": 9,
+              "tokens": 4870
+            }
+          },
+          "success_path_calls": 34,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 2,
+        "input_text": "把entity_prefab中prefab_id为8004的NPC名字从'青龙'改成'青龙堂主'",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 14859.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "modify",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 1,
+        "n_effective": 1,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 1.0,
+        "strict_pass": true,
+        "truth_ok": true,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 5,
+          "total_tokens": 2410,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 45
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 552
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 889
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 606
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 318
+            }
+          },
+          "success_path_calls": 5,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 3,
+        "input_text": "删除prefab_id为8005的NPC白虎的所有相关配置，包括entity_prefab表和spawn_world_entity表中的记录",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：locate_row - 未找到 8005(mode=exact)",
+        "elapsed_ms": 32196.7,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "delete",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "delete",
+            "status": "precondition_missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "原始数据中未找到 row_key 对应的行，测试夹具与当前配表不一致"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 2,
+        "n_effective": 1,
+        "locate_rate": 1.0,
+        "coverage": 1.0,
+        "field_accuracy": 1.0,
+        "strict_pass": true,
+        "truth_ok": true,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [
+          {
+            "index": 1,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "kind": "modify_delete_row_missing",
+            "detail": "delete 用例 row_key[entity_prefab_id]=8005 在 pristine 未找到目标行"
+          }
+        ],
+        "fixture_error": true,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 9,
+          "total_tokens": 7863,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 69
+            },
+            "confirm_table": {
+              "calls": 2,
+              "tokens": 1159
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 5550
+            },
+            "summarize": {
+              "calls": 2,
+              "tokens": 1085
+            }
+          },
+          "success_path_calls": 9,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 4,
+        "input_text": "新增一个传送NPC叫'传送使者'，model_id为1016，放在space_id 10008坐标(10,0,10)，玩家点击后传送到space_id 10001",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 130848.9,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.5,
+            "concrete_total": 2,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 1,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.6667,
+        "coverage": 0.6667,
+        "field_accuracy": 0.5833,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 15,
+          "total_tokens": 10069,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 762
+            },
+            "confirm_table": {
+              "calls": 3,
+              "tokens": 1578
+            },
+            "plan_operation": {
+              "calls": 3,
+              "tokens": 2729
+            },
+            "validate_plan": {
+              "calls": 3,
+              "tokens": 2099
+            },
+            "fix_field_mapping": {
+              "calls": 1,
+              "tokens": 925
+            },
+            "summarize": {
+              "calls": 4,
+              "tokens": 1976
+            }
+          },
+          "success_path_calls": 15,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 5,
+        "input_text": "修改interaction_id为10001的触发半径从5改为8",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：write - 写后验证不符",
+        "elapsed_ms": 42508.5,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "modify",
+            "status": "precondition_missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "原始数据中未找到 row_key 对应的行，测试夹具与当前配表不一致"
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 1,
+        "n_effective": 0,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "kind": "modify_delete_row_missing",
+            "detail": "modify 用例 row_key[interaction_id]=10001 在 pristine 未找到目标行"
+          }
+        ],
+        "fixture_error": true,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 8,
+          "total_tokens": 14964,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 33
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 537
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 899
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 634
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 12861
+            }
+          },
+          "success_path_calls": 8,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 6,
+        "input_text": "新增一个擂台NPC叫'擂台挑战者'，model_id为1012，放在space_id 10008坐标(30,0,40)，玩家点击后进入战斗，战斗ID为102",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 59918.6,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 3,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.75,
+            "concrete_total": 4,
+            "concrete_matched": 3,
+            "note": ""
+          }
+        ],
+        "extra_ops": 1,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.6667,
+        "coverage": 0.3333,
+        "field_accuracy": 0.5417,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 14,
+          "total_tokens": 9595,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 765
+            },
+            "confirm_table": {
+              "calls": 3,
+              "tokens": 1584
+            },
+            "plan_operation": {
+              "calls": 3,
+              "tokens": 2995
+            },
+            "validate_plan": {
+              "calls": 3,
+              "tokens": 2510
+            },
+            "summarize": {
+              "calls": 4,
+              "tokens": 1741
+            }
+          },
+          "success_path_calls": 14,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 7,
+        "input_text": "修改conv_id为1的对话内容为'你好，旅行者，欢迎来到我们的村庄。'",
+        "skill_enabled": true,
+        "ok": true,
+        "error": "",
+        "elapsed_ms": 42999.1,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          }
+        ],
+        "extra_ops": 1,
+        "n_expected": 1,
+        "n_effective": 1,
+        "locate_rate": 0.0,
+        "coverage": 0.0,
+        "field_accuracy": 0.0,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 1,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 5,
+          "total_tokens": 2459,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 53
+            },
+            "confirm_table": {
+              "calls": 1,
+              "tokens": 557
+            },
+            "plan_operation": {
+              "calls": 1,
+              "tokens": 898
+            },
+            "validate_plan": {
+              "calls": 1,
+              "tokens": 589
+            },
+            "summarize": {
+              "calls": 1,
+              "tokens": 362
+            }
+          },
+          "success_path_calls": 5,
+          "failure_path_calls": 0
+        }
+      },
+      {
+        "cid": 8,
+        "input_text": "给conv_id为4的帮派青龙堂总管对话新增一个选项，选项内容为'我想了解帮派贡献'，点击后跳转到新对话，新对话内容为'帮派贡献可以通过完成帮派任务和捐献资源来获得。'",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：coerce_value - 列[选项功能]类型为 int，值'跳转到新对话'无法转为整数且无枚举映射，已阻止写入",
+        "elapsed_ms": 123880.1,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作"
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.5,
+            "concrete_total": 2,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          }
+        ],
+        "extra_ops": 0,
+        "n_expected": 3,
+        "n_effective": 3,
+        "locate_rate": 0.6667,
+        "coverage": 0.6667,
+        "field_accuracy": 0.25,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "type_mismatch",
+        "llm_stats": {
+          "total_calls": 14,
+          "total_tokens": 15083,
+          "by_site": {
+            "parse": {
+              "calls": 1,
+              "tokens": 144
+            },
+            "confirm_table": {
+              "calls": 2,
+              "tokens": 1296
+            },
+            "plan_operation": {
+              "calls": 2,
+              "tokens": 2007
+            },
+            "validate_plan": {
+              "calls": 2,
+              "tokens": 1324
+            },
+            "fix_field_mapping": {
+              "calls": 1,
+              "tokens": 883
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 8145
+            },
+            "summarize": {
+              "calls": 2,
+              "tokens": 1284
+            }
+          },
+          "success_path_calls": 14,
+          "failure_path_calls": 0
+        }
+      }
+    ]
+  }
+}

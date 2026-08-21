@@ -1,0 +1,34 @@
+# 配表操作模式
+
+CodeMaker 配表操作模式入口指引。
+
+## 激活
+
+在 CodeMaker 对话框输入 **"进入配表模式"** → CodeMaker 询问确认 → 确认后进入模式。
+
+进入后 CodeMaker 仅用 skill 知识 + 后端原子 API 操作 `resources/` Excel 配表，不调后端完整 agent，用自身 LLM 理解意图。其他项目内容无权访问，无关请求被拒绝。
+
+退出输入 **"退出配表模式"**，恢复完整能力。
+
+## 安装
+
+`.codemaker/` 不提交（svn:ignore），配表模式需各成员本地生成。**`tools/deploy.bat`（第 6 步）和 `tools/update.bat`（第 6 步）已自动安装，正常跑脚本即可，无需手动操作**。
+
+仅当单独改了 `tools/table-mode/` 源文档或 `server/agent/excel/skills/` 想立即生效时，手动重装：
+
+```bash
+uv run python tools/table-mode/install.py
+```
+
+安装后生成 `.codemaker/table-mode/`：
+- `配表操作模式.md` — 模式行为指令（CodeMaker 进入模式后遵循）
+- `知识库.md` — 配表知识（实体路由/列别名/行定位/原子 API）
+- `skills/` — skill yaml 原文（列别名/sheet 别名/行定位/反模式等）
+
+## 激活机制
+
+CodeMaker 识别"进入配表模式"指令后，读 `.codemaker/table-mode/配表操作模式.md`（未安装则读 `tools/table-mode/配表操作模式.md` 源）并遵循。
+
+## 前提
+
+后端服务运行中：`http://127.0.0.1:8000`（`python -m server.main` 或 `tools/start.bat`）。

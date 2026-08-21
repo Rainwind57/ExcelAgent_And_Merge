@@ -1,0 +1,186 @@
+"""verify-repair 迭代环单测（capability: verify-repair-loop / error-classification-repair）。
+
+验证：
+1. _verify_write 通过/类型不符/anti_pattern 命中
+2. 迭代环快路径（成功 + verify 通过）直接返回，零 LLM
+3. 迭代环失败达上限 → 结构化失败上报
+4. 开关关闭退回原行为（返回 out 不变）
+"""
+from __future__ import annotations
+
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.agent import TableAgent, AgentResult
+from agent.nl_parser import NLIntent
+from agent.excel.error_classifier import ErrorType, VerifyResult
+from agent.excel.repair_playbook import RepairPlaybook
+
+
+def _bind_vr_agent(**extra) -> types.SimpleNamespace:
+    """绑定 verify-repair 相关方法到最小 agent 壳。"""
+    agent = types.SimpleNamespace(**extra)
+    for name in (
+        "_verify_write", "_check_type_constraint", "_apply_repair_fix",
+        "_run_verify_repair_loop", "_safe_redispatch", "_rollback_write",
+        "_allocate_pk", "_run_react_repair", "_llm_call", "_llm_diagnose_only",
+        "_record_repair_signal",
+    ):
+        setattr(agent, name, getattr(TableAgent, name).__get__(agent))
+    return agent
+
+
+def _cli_mock(headers=None, rows=None):
+    return types.SimpleNamespace(
+        read_header=lambda *a, **kw: headers or ["id", "名称", "类型"],
+        read_sheet=lambda *a, **kw: rows or [],
+        read_cell=lambda *a, **kw: types.SimpleNamespace(ok=True, data=None),
+    )
+
+
+def _cfg_mock():
+    return types.SimpleNamespace(
+        lookup=lambda *a, **kw: None,
+        all_aliases=lambda *a, **kw: {},
+    )
+
+
+def _make_agent(headers=None, rows=None, enable_loop=True, max_rounds=3):
+    return _bind_vr_agent(
+        cli=_cli_mock(headers, rows),
+        anti_pattern_cfg=_cfg_mock(),
+        column_cfg=_cfg_mock(),
+        row_cfg=_cfg_mock(),
+        repair_playbook=RepairPlaybook(),
+        enable_verify_repair_loop=enable_loop,
+        enable_skill_tools_recovery=False,
+        verify_repair_max_rounds=max_rounds,
+        skill_tool_call_limit=4,
+        skill_executor=None,
+        enable_skill=False,  # 测试不写 evidence/信号（信号回流单测在 test_repair_signal_feedback.py）
+        parser=types.SimpleNamespace(client=None),
+    )
+
+
+def test_verify_write_passes_on_clean_result():
+    agent = _make_agent(headers=["id", "名称"], rows=[[1, "a"]])
+    out = AgentResult(ok=True, intent=NLIntent(raw="r", action="add"))
+    out.result_rows = [{"col": 1, "col_name": "名称", "old_value": None, "new_value": "a"}]
+    vr = agent._verify_write(NLIntent(raw="r", action="add"), Path("pet.xlsx"), "Pet", out)
+    assert vr.passed is True
+    assert vr.failed_kind is None
+
+
+def test_verify_write_detects_type_mismatch():
+    """写后 int 列存字符串 → type_issues → failed_kind=TYPE_MISMATCH。"""
+    agent = _make_agent(headers=["id", "等级"], rows=[[1, "abc"]])
+    # value_constraints 为空（测试环境），故需手动注入类型：通过 monkeypatch _load_value_constraints
+    import agent.agent as agent_mod
+    orig = agent_mod._load_value_constraints
+    agent_mod._load_value_constraints = lambda: {"pet": {"Pet": {"columns": {"等级": {"type": "int"}}}}}
+    try:
+        out = AgentResult(ok=True, intent=NLIntent(raw="r", action="add"))
+        out.result_rows = [{"col": 2, "col_name": "等级", "old_value": None, "new_value": "abc"}]
+        vr = agent._verify_write(NLIntent(raw="r", action="add"), Path("pet.xlsx"), "Pet", out)
+        assert vr.passed is False
+        assert vr.failed_kind is ErrorType.TYPE_MISMATCH
+        assert vr.type_issues
+    finally:
+        agent_mod._load_value_constraints = orig
+
+
+def test_verify_repair_loop_fast_path_returns_out():
+    """成功 + verify 通过 → 直接返回 out，不进入 repair（零 LLM）。"""
+    agent = _make_agent(headers=["id", "名称"], rows=[[1, "a"]])
+    res = AgentResult(intent=NLIntent(raw="r", action="add"))
+    out = AgentResult(ok=True, intent=res.intent)
+    out.result_rows = [{"col": 1, "col_name": "名称", "old_value": None, "new_value": "a"}]
+    # _safe_redispatch 不应被调用（快路径直接返回）
+    agent._safe_redispatch = lambda *a, **kw: pytest.fail("快路径不应重新派发")
+    loop_out = agent._run_verify_repair_loop(
+        NLIntent(raw="r", action="add"), Path("pet.xlsx"), "Pet", res, out, None, True
+    )
+    assert loop_out is out
+
+
+def test_verify_repair_loop_disabled_returns_out():
+    """enable_verify_repair_loop=False → 返回 out 不变（退回原行为）。"""
+    agent = _make_agent(enable_loop=False)
+    res = AgentResult(intent=NLIntent(raw="r", action="set"))
+    out = AgentResult(ok=False, intent=res.intent)
+    out.add("write", False, "失败")
+    loop_out = agent._run_verify_repair_loop(
+        NLIntent(raw="r", action="set"), Path("pet.xlsx"), "Pet", res, out, None, True
+    )
+    assert loop_out is out
+
+
+def test_verify_repair_loop_max_rounds_failure_reports_structured():
+    """始终失败 → 达上限返回 res.ok=False + res.extras['repair_failure']。"""
+    agent = _make_agent(headers=["id", "类型"], max_rounds=2)
+    # _safe_redispatch 始终返回失败 out
+    def always_fail(intent, path, sheet, res, backup, is_write):
+        res.add("write_retry", False, "仍失败")
+        res.ok = False
+        return res
+    agent._safe_redispatch = always_fail
+    # _apply_repair_fix 返回 True 让 Level 1 走 re-dispatch
+    agent._apply_repair_fix = lambda *a, **kw: True
+
+    res = AgentResult(intent=NLIntent(raw="r", action="set"))
+    res.add("write", False, "列[类型]类型为 int，值'abc'无法转为整数")
+    res.ok = False
+    out = AgentResult(ok=False, intent=res.intent)
+
+    loop_out = agent._run_verify_repair_loop(
+        NLIntent(raw="r", action="set", target_field="类型", value="abc"),
+        Path("pet.xlsx"), "Pet", res, out, None, True
+    )
+    assert getattr(loop_out, "ok", None) is False
+    # 结构化失败挂在 thinking_steps（repair_failure 字段）
+    failure = None
+    for ts in getattr(res, "thinking_steps", []):
+        if isinstance(ts, dict) and ts.get("repair_failure"):
+            failure = ts["repair_failure"]
+            break
+    assert failure is not None
+    assert "attempted_strategies" in failure
+    assert "error_type" in failure
+
+
+def test_verify_repair_loop_level1_fix_success():
+    """Level 1 fix 应用后 re-dispatch 成功 → 返回 ok=True。
+
+    场景：列名 '名' 不在表头 ['id','名称'] → column_not_found → difflib 匹配 '名称' →
+    column_remap → re-dispatch 成功。
+    """
+    agent = _make_agent(headers=["id", "名称"], rows=[[1, "a"]])
+    call_count = {"n": 0}
+
+    def succeed_on_retry(intent, path, sheet, res, backup, is_write):
+        call_count["n"] += 1
+        res.add("write_retry", True, "修复后成功")
+        res.ok = True
+        out = AgentResult(ok=True, intent=intent)
+        out.result_rows = [{"col": 1, "col_name": "名称", "old_value": None, "new_value": "a"}]
+        return out
+    agent._safe_redispatch = succeed_on_retry
+    agent._apply_repair_fix = lambda *a, **kw: True
+
+    res = AgentResult(intent=NLIntent(raw="r", action="set"))
+    res.add("write", False, "列[名]不存在")
+    res.ok = False
+    out = AgentResult(ok=False, intent=res.intent)
+
+    loop_out = agent._run_verify_repair_loop(
+        NLIntent(raw="r", action="set", target_field="名", value="a"),
+        Path("pet.xlsx"), "Pet", res, out, None, True
+    )
+    assert getattr(loop_out, "ok", False) is True
+    assert call_count["n"] >= 1

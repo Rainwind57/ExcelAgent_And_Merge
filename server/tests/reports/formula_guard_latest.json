@@ -1,0 +1,47 @@
+{
+  "round": "R9-A1",
+  "date": "2026-08-17",
+  "method": "A 重新定义版阶段一（公式守门 needs_manual_fix → audit_log 留痕 + 环境开关）",
+  "wave": "第一波 P0 + 独立可测",
+  "scope": "cli_interface.py _save_with_cache_check 的 needs_manual_fix 分支：从只 logger.warning 升级为 warning + audit_log 留痕 + CODEMAKER_FORMULA_GATE 开关",
+  "assumption_correction": "原假设'CLI 写后直接 save 不触发重算'经验证错误：write_cell:599/append_row:641 都调 _save_with_cache_check:217，公式守门已全程接通。真正缺口是 needs_manual_fix=True 时只 logger.warning 不上报（agent 层 grep needs_manual_fix/cache_message 0 匹配，信息死在 CLICallResult.final 里）",
+  "changes": [
+    {
+      "file": "server/agent/excel/cli/cli_interface.py",
+      "items": [
+        "StubCodeMakerCLI.__init__ 加 self._auditor = None（懒加载 BackupAuditor 字段）",
+        "新增 _get_auditor() 方法：懒加载 BackupAuditor(workspace=self.workspace)，加载失败返回 None 化为不记 audit",
+        "_save_with_cache_check 的 needs_manual_fix 分支：读 CODEMAKER_FORMULA_GATE 开关，off=静默；on/hold=warning+audit.record(operation='formula_loss_detected', extra={cache_message, gate, replayed_comments, still_lost_comments})",
+        "audit extra 携带 comment_replay 信息（replayed/still_lost），方法 A+D 信息合并留痕"
+      ]
+    },
+    {
+      "file": "server/tests/test_formula_gate.py",
+      "items": ["新建 5 用例：无公式 no-audit / GATE=on audit / GATE=off 静默 / GATE=hold audit / needs=False no-audit，mock snapshot_before+validate_and_fix 聚焦 audit 逻辑"]
+    }
+  ],
+  "env_switch": {
+    "CODEMAKER_FORMULA_GATE": "on(默认)=warning+audit | off=静默 | hold=warning+audit(阻断留第二波接 pre_commit_hold)",
+    "default": "on"
+  },
+  "metrics": {
+    "needs_manual_fix_audit_coverage_on_hold": 1.0,
+    "needs_manual_fix_audit_silence_off": 1.0,
+    "new_tests": 5,
+    "new_tests_pass": 5,
+    "regression_tests": 26,
+    "regression_tests_pass": 26,
+    "regression_status": "zero_regression",
+    "regression_scope": "test_formula_cache(6)+test_comment_guard(5)+test_save_cache_scope(3)+test_write_verification(5)+test_fast_apply_eligible(7)"
+  },
+  "wiring_design": "CLI 层懒加载 BackupAuditor 记 audit（非 agent 层消费）。理由：agent 层 needs_manual_fix grep 0 匹配完全忽略，auditor 在 agent 层(657/663)但改 agent.py 多处分散(3303/3413/2642/6585/2459/2530)。CLI 层记 audit 改动集中 cli_interface.py，agent 层不动，hold 阻断留第二波（agent 层消费 + pre_commit_hold 通道）。",
+  "external_compatibility": {
+    "BackupAuditor懒加载": "复用 server/backups/audit_log.jsonl 路径约定，与 agent 层 auditor 写同一 jsonl（无状态 append，不冲突）",
+    "CLICallResult": "未加新字段（已有 needs_manual_fix/cache_message），write_cell/append_row 透传不变"
+  },
+  "verification": "python -m pytest tests/test_formula_gate.py tests/test_formula_cache.py tests/test_comment_guard.py tests/test_save_cache_scope.py tests/test_write_verification.py tests/test_fast_apply_eligible.py → 31 passed",
+  "next_wave_upgrades": [
+    "第二波 pre_commit_hold 通道就绪后，GATE=hold 模式接 pre_commit_hold（kind=formula_loss）阻断写库",
+    "agent 层 _run_set/_run_add 消费 CLICallResult.needs_manual_fix，GATE=hold 时阻断 + SSE 推 pre_commit_hold"
+  ]
+}

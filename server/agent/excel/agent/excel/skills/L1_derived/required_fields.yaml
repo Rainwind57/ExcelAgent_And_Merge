@@ -1,0 +1,1371 @@
+# 必填字段配置（独立文件，与 column_aliases.yaml 解耦）
+# 结构：{required_fields: {table_stem: {sheet: [field_aliases]}}}，sheet 为 "*" 通配所有 sheet
+# 用途：cmd_add 时检查用户是否遗漏建议必填字段（仅警告，不阻断写入）
+# 由 derive_required_fields.py 自动生成（#30）：非空率 ≥ 阈值的列 → 必填。
+# 手工条目保留优先（同 stem+sheet 不被派生覆盖）。
+
+required_fields:
+  _test_formula_basic:
+    DanConfig:
+    - 段位编号
+    - 段位名称
+    - 基础分
+    - 难度系数
+    - 最终分数
+  _test_formula_lookup:
+    DanRef:
+    - dan_id
+    - dan_name
+    - base_score
+    MatchDan:
+    - match_id
+    - player_dan
+    - dan_name_vlookup
+    - score_lookup
+  _test_formula_nested:
+    RewardCalc:
+    - 奖励编号
+    - 段位
+    - 胜场
+    - 败场
+    - 总场数
+    - 胜率
+    - 奖励等级
+  _test_formula_sum:
+    SeasonStat:
+    - 赛季编号
+    - 场次1
+    - 场次2
+    - 场次3
+    - 场次4
+    - 总场次
+    - 平均场次
+    - 最高单场
+  _test_item:
+    Chest:
+    - 物品编号
+    - reward ID
+    - 备注
+    Equipment:
+    - 物品编号
+    - 名字（不导表）
+    - 装备部位
+    - 装备类型
+    - 可用门派列表
+    - 基础属性1
+    - 随机词条池子
+    - 特技词条池子
+    - 特效词条池子
+    - 分解获得道具id
+    - 分解获得道具数量
+    - 基础评分
+    Fabao:
+    - 物品编号
+    - 名字（不导表）
+    - 文案描述
+    - 法宝类型
+    - 法宝技能编号
+    - 附加属性池编号
+    - 阴阳属性权重
+    - 阳属性描述
+    - 阴属性描述
+    GameplayAbilityChoicePool:
+    - 条目编号（自增）
+    - 描述(不导表)
+    - 部位（不导表）
+    - 随机池编号
+    - 权重
+    - 能力类型
+    Gem:
+    - 物品编号
+    - 名字（不导表）
+    - 宝石类型
+    - 下一级宝石id
+    - 升级下一级宝石成功率
+    - 宝石等级
+    - 升级消耗道具id
+    - 升级消耗道具数量
+    - 升级消耗道具id
+    - 升级消耗道具数量
+    - 分解获得道具id
+    - 分解获得道具数量
+    - 属性名1
+    - 属性值1
+    ItemBase:
+    - 物品编号
+    - 名称
+    - 品质
+    - 道具类型
+    - 道具描述
+    - 图标
+    - 最大堆叠数量
+    - 可丢弃
+    - 可使用的场景
+    - 是否自动使用
+    - 境界
+    ItemType:
+    - 道具类型
+    - 类型名称
+    - 物品编号
+    Potion:
+    - 物品编号
+    - 道具名字
+    - 道具描述
+    - 扩展特性效果
+    - 药品战中技能
+    - 药品数值范围(小)
+    - 效果文本提示描述
+    道具表说明:
+    - 道具等阶
+    - 炼气境
+  ability:
+    Ability:
+    - 神通id
+    - 名称
+    - 神通描述
+    - 图标
+  activity:
+    Activity:
+    - 活动id
+    - 活动名称
+  anim_montage_sequence:
+    当前可用的Anim_Montage_Sequence:
+    - 动画蒙太奇Sequence的名字
+  assistant_ability:
+    AssistantAbility:
+    - 名称
+  assistant_level:
+    AssistantExpItem:
+    - 道具id
+    - 增加经验
+    AssistantLevel:
+    - 等级
+    - 境界
+    - 阶段
+    - 重/层
+    - 升到下一级所需修为/经验
+    - 升到下一级所需道具数量
+    - 升级类型
+    AssistantLevelTemplate:
+    - 主键
+    - 等级模板id
+    - 等级
+    - 体魄加成
+    - 聪慧加成
+    - 气劲加成
+    - 筋骨加成
+    - 灵巧加成
+    - 气血加成
+    - 灵气加成
+    - 攻击加成
+    - 法术加成
+    - 防御加成
+    - 法术防御加成
+    - 速度加成
+    - 治疗加成
+    - 暴击加成
+    - 法术暴击加成
+    - 暴击抗性加成
+    - 法暴抗性加成
+    - 物理暴击倍率加成
+    - 法术暴击倍率加成
+    - 封印命中加成
+    - 封印抗性加成
+  assistant_mystic:
+    AssistantMystic:
+    - 秘法编号
+    - 名称
+    - 描述
+    - 品质
+    - 秘法加的buff
+    AssistantMysticPool:
+    - 仙友id
+    - 秘法1
+    - 秘法1概率
+    - 秘法2
+    - 秘法2概率
+    - 秘法3
+    - 秘法3概率
+    - 秘法4
+    - 秘法4概率
+    AssistantMysticSlot:
+    - 槽位id
+    - 解锁消耗灵石数量
+  assistant_weapon:
+    AssistantWeapon:
+    - 仙器编号
+    - 仙器名称
+    - 描述
+    - 仙器加的buff
+    AssistantWeaponLevel:
+    - id
+    - 仙器id
+    - 仙器等级
+    AssistantWeaponUpgradeCost:
+    - 仙器等级
+    - 升级消耗金币
+  bilingual_sample:
+    Fabao:
+    - fabao_id
+    - name
+    - fabao_type
+    - spirit
+    - atk
+    - desc
+  building:
+    BuildingLevel:
+    - '建筑类型
+
+      （和代码中枚举值保持一致）'
+    - 建筑等级
+    - 建筑图标 ID
+    - 完整模型 ID
+    - 升到下一级需要的帮派资金
+    - 修复费用基数
+    - 初级破损模型ID(可摧毁建筑)
+    - 残破模型 ID(可摧毁建筑)
+    - 满耐久度(可摧毁建筑)
+    BuildingLevelInit:
+    - '建筑类型
+
+      （和代码中枚举值保持一致）'
+    - 城池等级
+    - 建筑初始等级
+    - 建筑最大等级
+    BuildingType:
+    - '建筑类型
+
+      （和代码中枚举值保持一致）'
+    - 建筑名称
+    - 建筑占地面积 X
+    - 建筑占地面积 Z
+  city:
+    CityLayout:
+    - 城市布局ID
+    - 描述
+    - 场景ID
+    - 网格大小
+    - 城市宽（格数）
+    - 城市长（格数）
+    - 原点坐标（右下角）
+    - 传送阵入城的坐标中心点
+    - 传送阵传送的x轴随机范围[±x]
+    - 传送阵传送的z轴随机范围[±z]
+    CityLevelData:
+    - 城池等级
+    - 户口上限
+    - 帮派基地搬迁费用（帮派资金）
+    - 传送费（灵石）
+    - 首次占领奖励
+    CityTemplate:
+    - 洞府id
+    - 洞府名称
+    - model_id
+    - 交互id
+    - 城池类型
+    - 城池初始等级
+    - 城市场景布局id
+    LayoutBuildingSlot:
+    - 属于哪个城市布局表
+    - 槽位 ID
+    - 描述
+    - 建筑类型
+    - 建筑网格位置x
+    - 建筑网格位置z
+    - 建筑朝向
+  city_siege:
+    CityBuildingSiegeCfg:
+    - '建筑类型
+
+      （和city/building.xlsx保持一致）'
+    - 描述
+    - 交互id
+    - 攻城战建筑类型
+    SiegeAttackableBuilding:
+    - 编号(无意义,不重复即可）
+    - 描述
+    - 城池等级
+    - 建筑类型
+    - 守军数量
+    - 守军战斗1
+    - 守军战斗2
+    - 守军战斗3
+    SiegeLayout:
+    - '城市布局ID
+
+      （跟city.xlsx/CityLayout保持一致)'
+    - 场景ID
+    - 大营1传入位置
+    - 大营2传入位置
+    - 防守方大营传入位置
+    - 大营1位置
+    - 大营1区域
+    - 大营1传出位置
+    - 大营2位置
+    - 大营2区域
+    - 大营2传出位置
+    - 守方大营位置
+    - 守方大营区域
+    - 大营1巨兽位置
+    - 大营2巨兽位置
+    - 大营1传送人位置
+    - 大营2传送人位置
+    - 防守大营传送人位置
+  combat:
+    combat_data:
+    - combat编号
+    - 名称
+    - 战斗模式
+    - space编号
+    - 主怪
+    - 位置1npc
+    - 位置3
+  const:
+    Const:
+    - 常量字段名
+    - 常量数据类型
+    - 常量值
+    - 注释
+  effect_actor:
+    effect_actor_data:
+    - 特效名称
+    - 群体攻击时,是否需要为每个目标创建一个特效实例
+    当前可用的外观Graph:
+    - Graph路径
+    - "FLY前缀代表需要接受MoveGraph的抵达事件. AUTO则不依赖MoveGraph的抵达,自行产生spellhit\n 后缀暂时直接偷了特效主体的资源名片段,方便检索"
+    当前可用的驱动类型:
+    - 枚举名
+    - Graph路径
+    - 含义
+    - 填表说明
+    - 程序向说明
+  entity_prefab:
+    Base:
+    - '编号
+
+      （按序递增，不要分段）'
+    - model_prefab
+  equipment:
+    EquipmentBaseAttr:
+    - 装备境界
+    - 凡品基础属性下限
+    - 凡品基础属性上限
+    - 良品基础属性下限
+    - 良品基础属性上限
+    - 上品基础属性下限
+    - 上品基础属性上限
+    - 珍品基础属性下限
+    - 珍品基础属性上限
+    - 绝品基础属性下限
+    - 绝品基础属性上限
+    EquipmentExtraAttr:
+    - 装备境界
+    - 凡品附加属性下限
+    - 凡品附加属性上限
+    - 良品附加属性下限
+    - 良品附加属性上限
+    - 上品附加属性下限
+    - 上品附加属性上限
+    - 珍品附加属性下限
+    - 珍品附加属性上限
+    - 绝品附加属性下限
+    - 绝品附加属性上限
+    EquipmentGemType:
+    - 装备宝石类型
+    - 类型名
+    - 装备槽位类型
+    EquipmentQuality:
+    - 装备境界
+    - 凡品概率
+    - 良品概率
+    - 上品概率
+    - 珍品概率
+    - 绝品概率
+    EquipmentScore:
+    - 条目编号（自增）
+    - 评分倍率
+    EquipmentSlot:
+    - 槽位id
+    - 槽位类型
+    - 槽位位置
+    - 解锁条件:人物境界
+  exclusive_state:
+    State:
+    - 状态类型
+    - 优先级
+  fabao:
+    Fabao:
+    - 法宝id
+    - 名称
+    - 图标
+    - 法宝描述
+    - 激活消耗
+    FabaoLevel:
+    - 法宝id
+    - 法宝等级
+    - 技能id
+    - 技能等级
+    FabaoQuality:
+    - 法宝境界
+    - 良品概率
+    - 上品概率
+    - 珍品概率
+    FabaoSlotUnlockCost:
+    - 法宝类型
+    - 法宝槽位
+    - 消耗货币数量（金币）
+    FabaoType:
+    - 分组ID
+    - 描述（不导出）
+    FabaoUpgradeCost:
+    - 法宝等级
+    - 升级消耗1
+  formula_basic:
+    DanConfig:
+    - 段位编号
+    - 段位名称
+    - 基础分
+    - 难度系数
+  formula_lookup:
+    DanRef:
+    - dan_id
+    - dan_name
+    - base_score
+    MatchDan:
+    - match_id
+    - player_dan
+  formula_nested:
+    RewardCalc:
+    - 奖励编号
+    - 段位
+    - 胜场
+    - 败场
+  formula_sum:
+    SeasonStat:
+    - 赛季编号
+    - 场次1
+    - 场次2
+    - 场次3
+    - 场次4
+  gameplay_tags:
+    tags:
+    - tag
+  guild:
+    Const:
+    - 常量字段名
+    - 常量数据类型
+    - 常量值
+    - 注释
+    OpsPermissions:
+    - 职位(代码枚举)
+    - 职位
+    PersonnelPermissions:
+    - 职位(代码枚举)
+    - 职位
+    Quest:
+    - 任务ID
+    - 概率
+    - 物品ID
+    - 物品数量
+    - 奖励ID
+    QuestCount:
+    - 完成数量
+    - 奖励ID
+    Role:
+    - 职位(代码枚举)
+    - 职位
+    - 职位展示名
+    RoleLimit:
+    - 职位(代码枚举)
+    - 职位
+    - '0级别人数
+
+      (这个级别为了对齐数组从0开始)'
+    - 1级别人数
+    - 2级别人数
+    - 3级别人数
+    - 4级别人数
+    - 5级别人数
+    - 6级别人数
+    - 7级别人数
+    SpellData:
+    - 技能ID
+    - 备注
+    - 等级
+    - '当前等级研发所需进度
+
+      （0代表不用研究）'
+    - 学习所需角色等级
+    - 学习所需道具1数量(帮贡数量)
+    - 学习所需道具2数量(银币数量)
+    WelcomeMessage:
+    - 迎新词ID
+    - 简称
+    - 前缀
+    - 内容
+  hero:
+    Hero:
+    - 人物id
+    - 名称
+    - 初始门派id
+    - 移动速度
+    - 地图UI图标id
+    - 面板气血上限
+    - 面板真元上限
+    - 面板愤怒上限
+    - 面板物理攻击
+    - 面板法术攻击
+    - 面板物理防御
+    - 面板法术防御
+    - 面板速度
+    - 面板治疗强度
+    - 面板封印命中
+    - 面板封印抵抗
+    - 面板物理暴击
+  hero_level:
+    ExpItem:
+    - 道具id
+    - 增加经验
+    HeroLevel:
+    - 等级
+    - 等级名称
+    - 境界
+    - 阶段
+    - 重/层
+    - 当前等级升到下一级所需经验值
+    - 当前升到下一级类型
+    - 升级基础概率
+    - 道具id
+    - 道具概率
+    - 单次最大可使用道具数量
+    - 失败增加概率
+    - 获得固定加点
+    - 获得自由加点
+    - 获得天赋点数
+    - 气血储备上限
+    - 真元储备上限
+    HeroLevelGrow:
+    - id
+    - 等级
+    - 门派
+    - 体魄加成
+    - 智慧加成
+    - 力量加成
+    - 筋骨加成
+    - 灵巧加成
+    - 气血加成
+    - 灵气加成
+    - 攻击加成
+    - 法术加成
+    - 防御加成
+    - 法术防御加成
+    - 速度加成
+    - 治疗加成
+    - 暴击加成
+    - 法术暴击加成
+    - 暴击抗性加成
+    - 法暴抗性加成
+    - 物理暴击倍率加成
+    - 法术暴击倍率加成
+    - 封印命中加成
+    - 封印抗性加成
+  id_mgr:
+    SETTING:
+    - 模块
+    - 编号下限
+    - 编号上限
+    - 已用下限
+    - 已用上限
+    - 状态
+    各模块编号占段表:
+    - 模块
+    - ID范围
+    - 数量
+    - 备注
+    说明:
+    - ID 编号管理总表（模拟 ca/id_mgr.xlsm）
+  interaction:
+    Interaction:
+    - 编号
+    - 交互效果编号
+    InteractionConv:
+    - 编号
+    - 对话内容
+    - 选项1
+    InteractionConvOption:
+    - 编号
+    - 选项内容
+    - 选项功能
+  item:
+    Chest:
+    - 物品编号
+    - reward ID
+    - 备注
+    Equipment:
+    - 物品编号
+    - 名字（不导表）
+    - 装备部位
+    - 装备类型
+    - 可用门派列表
+    - 基础属性1
+    - 随机词条池子
+    - 特技词条池子
+    - 特效词条池子
+    - 分解获得道具id
+    - 分解获得道具数量
+    - 基础评分
+    Fabao:
+    - 物品编号
+    - 名字（不导表）
+    - 文案描述
+    - 法宝类型
+    - 法宝技能编号
+    - 附加属性池编号
+    - 阴阳属性权重
+    - 阳属性描述
+    - 阴属性描述
+    GameplayAbilityChoicePool:
+    - 条目编号（自增）
+    - 描述(不导表)
+    - 部位（不导表）
+    - 随机池编号
+    - 权重
+    - 能力类型
+    Gem:
+    - 物品编号
+    - 名字（不导表）
+    - 宝石类型
+    - 下一级宝石id
+    - 升级下一级宝石成功率
+    - 宝石等级
+    - 升级消耗道具id
+    - 升级消耗道具数量
+    - 升级消耗道具id
+    - 升级消耗道具数量
+    - 分解获得道具id
+    - 分解获得道具数量
+    - 属性名1
+    - 属性值1
+    ItemBase:
+    - 物品编号
+    - 名称
+    - 品质
+    - 道具类型
+    - 道具描述
+    - 图标
+    - 最大堆叠数量
+    - 可丢弃
+    - 可使用的场景
+    - 是否自动使用
+    - 境界
+    ItemType:
+    - 道具类型
+    - 类型名称
+    - 物品编号
+    Potion:
+    - 物品编号
+    - 道具名字
+    - 道具描述
+    - 扩展特性效果
+    - 药品战中技能
+    - 药品数值范围(小)
+    - 效果文本提示描述
+    道具表说明:
+    - 道具等阶
+    - 炼气境
+  item_recipe:
+    ItemRecipe:
+    - 配方id
+    - 配方名称
+    - '配方类型：
+
+      1：炼器
+
+      2：炼丹'
+    - 境界
+    - 消耗金币数量
+    - 材料组1(材料id,数量,是否必须)
+    - 凡品道具
+    - 良品道具
+    - 上品道具
+    - 珍品道具
+    - 绝品道具
+    - 获得经验值
+    RecipeLevel:
+    - 唯一id
+    - 打造类型（1：炼器，2：炼丹）
+    - 等级
+    - 境界
+    - 升到下一级所需修为/经验
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    RecipeMaterial:
+    - 材料组id
+    - 材料名称
+    - 道具1 id
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    - 额外奖励概率
+    - 道具2 id
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    - 额外奖励概率
+    - 道具3 id
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    - 额外奖励概率
+    - 道具4 id
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    - 额外奖励概率
+    - 道具5 id
+    - 凡品权重
+    - 良品权重
+    - 上品权重
+    - 珍品权重
+    - 绝品权重
+    - 额外奖励概率
+  mail:
+    GlobalMail:
+    - 邮件类型
+    MailTemplate:
+    - 模板ID
+    - 标题
+    - 内容
+  map:
+    Icon:
+    - 图标id
+    - 名称(不导出)
+    - 小地图图标路径
+    - 大地图图标路径
+  match_stat:
+    SeasonStat:
+    - 赛季编号
+    - 场次1
+    - 场次2
+    - 场次3
+    - 场次4
+  match_stat_1:
+    SeasonStat:
+    - 赛季编号
+    - 场次1
+    - 场次2
+    - 场次3
+    - 场次4
+  match_stat_2:
+    SeasonStat:
+    - 赛季编号
+    - 场次1
+    - 场次2
+    - 场次3
+    - 场次4
+  material_effect:
+    MaterialEffect:
+    - 材质ID
+    - 效果器类
+    - 层级
+    - 优先级
+    - 标志位
+    - 自定义渲染
+    - 着色器参数
+    - 额外配置
+    - 描述
+  model_prefab:
+    City:
+    - 编号
+    - 填表说明
+    - 类型
+    MetaData:
+    - 编号
+    - 类型
+    - 逻辑半径
+    - 逻辑全高
+    - 物理包围盒类型
+    - 服务端碰撞组
+    Model:
+    - 编号
+    - 填表说明
+    - 模型列表
+    RigidBodyGeometryType:
+    - 盒子
+    - '1'
+    VFX:
+    - 编号
+    - 填表说明
+    - 特效路径
+  perf_ability_100k:
+    Ability:
+    - 神通id
+    - 名称
+    - 神通描述
+    - 图标
+    - 技能id
+    - 技能等级
+  perf_ability_10k:
+    Ability:
+    - 神通id
+    - 名称
+    - 神通描述
+    - 图标
+    - 技能id
+    - 技能等级
+  perf_ability_50k:
+    Ability:
+    - 神通id
+    - 名称
+    - 神通描述
+    - 图标
+    - 技能id
+    - 技能等级
+  perf_item_100k:
+    ItemBase:
+    - 物品编号
+    - 名称
+    - 品质
+    - 道具类型
+    - 道具描述
+    - 图标
+    - 最大堆叠数量
+    - 可丢弃
+    - 可使用的场景
+    - 是否自动使用
+    - 境界
+  perf_item_10k:
+    ItemBase:
+    - 物品编号
+    - 名称
+    - 品质
+    - 道具类型
+    - 道具描述
+    - 图标
+    - 最大堆叠数量
+    - 可丢弃
+    - 可使用的场景
+    - 是否自动使用
+    - 境界
+  perf_item_50k:
+    ItemBase:
+    - 物品编号
+    - 名称
+    - 品质
+    - 道具类型
+    - 道具描述
+    - 图标
+    - 最大堆叠数量
+    - 可丢弃
+    - 可使用的场景
+    - 是否自动使用
+    - 境界
+  perf_pet_100k:
+    Pet:
+    - 灵兽id
+    - 名称
+    - 灵兽model_id
+    - 灵兽类型
+    - 灵兽品质
+    - 灵兽元素类型
+    - 体力资质
+    - 物攻资质
+    - 法攻资质
+    - 物防资质
+    - 法防资质
+    - 速度资质
+    - 成长率
+    - 天赋技能
+    - 面板气血上限
+    - 面板物理攻击
+    - 面板法术攻击
+    - 面板物理防御
+    - 面板速度
+    - 面板物理暴击
+  perf_pet_10k:
+    Pet:
+    - 灵兽id
+    - 名称
+    - 灵兽model_id
+    - 灵兽类型
+    - 灵兽品质
+    - 灵兽元素类型
+    - 体力资质
+    - 物攻资质
+    - 法攻资质
+    - 物防资质
+    - 法防资质
+    - 速度资质
+    - 成长率
+    - 天赋技能
+    - 面板气血上限
+    - 面板物理攻击
+    - 面板法术攻击
+    - 面板物理防御
+    - 面板速度
+    - 面板物理暴击
+  perf_pet_50k:
+    Pet:
+    - 灵兽id
+    - 名称
+    - 灵兽model_id
+    - 灵兽类型
+    - 灵兽品质
+    - 灵兽元素类型
+    - 体力资质
+    - 物攻资质
+    - 法攻资质
+    - 物防资质
+    - 法防资质
+    - 速度资质
+    - 成长率
+    - 天赋技能
+    - 面板气血上限
+    - 面板物理攻击
+    - 面板法术攻击
+    - 面板物理防御
+    - 面板速度
+    - 面板物理暴击
+  pet:
+    Pet:
+    - 灵兽id
+    - 名称
+  pet_evolve:
+    PetEvolveData:
+    - 进化id
+    - 宠物id
+    - 灵兽名称
+    - 进化等级
+    - 进化后的灵兽ID
+    - 进化后的灵兽名称
+    - 进化要求灵兽1
+    - 进化要求灵兽1数量
+  pet_level:
+    PetExpItem:
+    - 道具id
+    - 增加经验
+    PetLevel:
+    - 等级
+    - 境界
+    - 阶段
+    - 重/层
+    - 升到下一级所需修为/经验
+    - 升级类型
+    - 获得属性点
+  pet_refine:
+    PetRefine:
+    - 灵兽品质
+    - 道具id
+    - 道具数量
+  pet_spell_book:
+    PetSpellBook:
+    - 兽决道具id
+    - 获得能力id
+  pve_combat_npc:
+    PveCombatNpc:
+    - ID
+    - 名称
+    - model_prefab
+  quest:
+    Quest:
+    - 任务ID
+    - 任务组ID
+    - 名称
+    - 描述
+    - 任务目标类型
+    - 任务目标参数
+    QuestGroup:
+    - 任务组id
+    - '任务类型
+
+      对应QuestType表'
+    - 任务名称
+    - '接受资格
+
+      '
+    QuestType:
+    - 任务类型
+    - 名称
+    - '程序处理类型
+
+      Common:玩家个人常规任务
+
+      Team:组队分享任务'
+    - 任务图标
+    Sheet1:
+    - 任务ID
+    - 任务组ID
+    - 名称
+    - 描述
+    - 任务目标类型
+    - 任务目标参数
+    - 下个任务列表
+    任务目标配置:
+    - 任务目标描述
+    - 目标
+    - 目标参数
+  residence:
+    Residence:
+    - 洞府icon
+    - 洞府分组编号
+    ResidenceLevel:
+    - 洞府等级
+    - 升级所需玩家等级
+    - 消耗资源（道具id,道具数量）
+    - 消耗资源（道具id,道具数量）
+    - 升级获得奖励
+  residence_building:
+    AttributeText:
+    - 建筑类型编号
+    - 建筑命名（不导表）
+    - 属性变量名
+    - 显示文本
+    BuildingCamera:
+    - 镜头模式编号
+    - 镜头模式命名（不导表）
+    - 镜头距离
+    - 聚焦点相对于建筑的偏移
+    BuildingInteract:
+    - 建筑类型编号
+    - 属性变量名
+    BuildingType:
+    - 建筑编号
+    - 建筑命名（不导表）
+    - 对应的实体类型
+    - 一级分类界面用
+    - 二级分类界面用
+    - 数量上限 - 洞府等级1
+    - 数量上限 - 洞府等级2
+    - 数量上限 - 洞府等级3
+    - 数量上限 - 洞府等级4
+    - 数量上限 - 洞府等级5
+    - 数量上限 - 洞府等级6
+    - 数量上限 - 洞府等级7
+    - 数量上限 - 洞府等级8
+    - 数量上限 - 洞府等级9
+    - 数量上限 - 洞府等级10
+    - 数量上限 - 洞府等级11
+    - 数量上限 - 洞府等级12
+    - 数量上限 - 洞府等级13
+    ResidenceBuilding:
+    - 建筑道具id
+    - 建筑名称
+    - 建筑等级
+    - 建筑类型
+    - 建筑model_id
+    - 地图图标id
+    - 升级所需洞府等级
+    - 升级所需资源
+    - 升级所需资源
+    - 建筑占地面积
+    - 建筑占地面积
+    - 交互时的镜头模式
+  residence_entry:
+    District:
+    - 片区id
+    - 名称
+    - 所属州id
+    - 选后传送
+    ResidenceEntry:
+    - 入口id
+    - 名称
+    - 片区id
+    - 洞府id
+    - 候选时的prefab_id
+    - 正式入口prefab_id
+    - 地标表id
+    State:
+    - 州id
+    - 描述
+    - 名称
+    StateCountConfig:
+    - 州数量
+    - 州人数过多阈值比例
+    - 州人数推荐阈值比例
+  residence_grid:
+    ResidenceGrid:
+    - 洞府id
+    - 格子坐标X
+    - 格子坐标Z
+    - 格子状态
+    ResidenceObstacle:
+    - 洞府id
+    - 障碍物id
+    - 名称
+    - 占地X格数
+    - 占地Z格数
+    - 解锁需要的道具id
+    - 解锁需要的道具数量
+    - 摆放模型的model_id
+    - 模型旋转(-90, 0, 90, 180)
+    - 解锁所需洞府等级
+    - 小地图图标id
+  residence_plant:
+    ResidencePlant:
+    - 种子道具id
+    - 种子描述
+    - 种子名称
+    - 农田类型
+    - 每分钟生长值
+    - 成熟阶段1生长值
+    - 成熟阶段0模型
+    - 成熟阶段1模型
+    - 玩家动作
+    - 收获资源RewardId
+  residence_putuan:
+    PutuanAcupoint:
+    - 穴位id
+    - 穴位名字
+    - 坐标
+    - 策划演算
+    - 策划演算
+    - 策划演算
+    - 策划演算
+    - 策划演算
+    - 策划演算
+    PutuanLiangong:
+    - 功法id
+    - 功法名称
+    - '背景图
+
+      （底图大小1080*920，锚点为正中心）'
+    - 境界
+    - 额外经验
+    - 穴位id列表
+  residence_temple:
+    ResidenceTemple:
+    - 关卡id
+    - 种子名称
+    - 描述
+    - 战斗id
+    - 所需洞府等级
+    - 土地庙建筑id
+    - 特殊道具id
+    - 关卡图标
+  reward:
+    Reward:
+    - reward_id
+    - 名称
+    - 每日领取上限
+    - 每日上限警告
+    - 经验概率
+  school:
+    School:
+    - 门派
+    - 名称
+    - '门派类型
+
+      1：物理
+
+      2：法术
+
+      3：治疗
+
+      4：封印'
+    - 大世界model_id
+    - 战斗model_id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+    - 神通id
+  school_ability:
+    SchoolAbility:
+    - 神通id
+    - 名称
+    - 神通描述
+    - 解锁需要的人物等级
+    - 心法1名称
+    - 心法1描述
+    - 心法1被动id
+    - 心法2名称
+    - 心法2描述
+    - 心法2被动id
+    SchoolAbilityLevel:
+    - id
+    - 神通id
+    - 神通等级
+    - 升级消耗灵石数量
+    - 升级条件：人物到达x级
+    - 技能id
+  school_spirit:
+    SchoolSpirit:
+    - 神通id
+    - 门派id
+    - 灵根id
+    - 获得天赋（buff）
+  school_talent:
+    SchoolTalent:
+    - 主键
+    - 名称
+    - 功法描述
+    - 图标
+    - 门派id
+    - 层级
+    - 所在列
+    SchoolTalentLevel:
+    - 主键
+    - 功法描述
+    - 天赋id
+    - 等级
+    - 被动效果buff_id
+  space:
+    big_world_space:
+    - Space编号
+    - 城池配置
+    cgm_residence:
+    - GameMode实例ID
+    - 名称
+    - 描述
+    - 洞府宽（格数）
+    - 洞府长（格数）
+    - 高度范围1
+    - 高度范围2
+    cgm_round_world:
+    - GameMode实例ID
+    - 名称
+    - 描述
+    space_data:
+    - Space编号
+    - 名称
+    - Space类型
+    - 客户端场景资源名称
+    - 进入场景位置
+    space_map_ui:
+    - Space编号
+    - 航拍图（手绘地图）路径
+    - '航拍图（手绘地图）分辨率
+
+
+      （目前只支持正方形地图，因此只需要填一个维度即可）'
+    - '航拍图（手绘地图）对应世界空间的尺寸
+
+
+      （目前只支持正方形地图，因此只需要填一个维度即可）'
+    - 航拍图（手绘地图）中心对应世界空间的坐标
+    - '大地图缩放范围
+
+
+      （临时做法）'
+    - 小地图显示的世界空间范围的放大比例
+  space_landmark:
+    World02:
+    - 地图名称
+    - 地标全局ID
+    - 郡ID
+    - LandmarkType
+    - 是否已经失效
+    - 坐标
+    - 朝向
+  spawn_world_entity:
+    SpawnWorldEntity:
+    - 刷新ID
+    - 场景ID
+    - 实体Prefab ID
+    - 实体名字
+    - 刷新方式
+    - 最大生成数量
+    - 候选坐标
+    - 候选朝向
+  spell:
+    anim_montage_override_data:
+    - 技能编号
+    - 需要override的model的路径【Fixme】
+    buff_data:
+    - buff编号
+    - 填表备注（不导出）
+    - 名称
+    - 描述
+    - 是否增益
+    - 持续回合数
+    - 最大层数
+    common_spell:
+    - 技能编号
+    - 技能名称
+    - 技能描述
+    - 备注
+    effect_actor_override_data:
+    - 表演Index
+    passive_data:
+    - 被动技能编号
+    - '填表备注
+
+      （不导出）'
+    - 被动来源
+    spell_data:
+    - 主动技能编号
+    - 填表备注（不导出）
+    - 技能类型
+    - '目标过滤:
+
+      敌我关系
+
+      包含任意'
+    - '目标过滤:
+
+      单位类型
+
+      包含任意'
+    - '目标过滤:
+
+      存活状态
+
+      包含任意'
+    - '目标排序规则
+
+      '
+    - 结算目标数量
+    - 结算方式
+    - 逻辑效果1
+    - 动画蒙太奇Sequence
+    - 表演配置0-类型
+  spell_group:
+    SpellGroup:
+    - ID
+    - 名称
+    - 技能列表
+  spirit:
+    Spirit:
+    - 名称
+  tips:
+    tips:
+    - 原文
+    - '程序引用关键字
+
+
+      严格要求唯一，并且统一系统的内容要聚合在一起'
+    ui_txt:
+    - 原文
+    - '程序引用关键字
+
+
+      严格要求唯一，并且统一系统的内容要聚合在一起'
+  world_buff:
+    buff_dup_op:
+    - COEXIST
+    - 共存
+    lifecycle_bind:
+    - NO_BIND
+    - 什么都不绑定
+    world_buff_data:
+    - buff编号
+    - 名称
+    - 描述
+    - '普通buff：
+
+      合并方式'

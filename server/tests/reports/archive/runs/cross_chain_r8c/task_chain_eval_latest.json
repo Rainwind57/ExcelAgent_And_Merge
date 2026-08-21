@@ -1,0 +1,367 @@
+{
+  "meta": {
+    "start": 1,
+    "end": 3,
+    "done": 3,
+    "span": 3,
+    "total_all": 3,
+    "last_cid": 3
+  },
+  "aggregate": {
+    "n": 3,
+    "n_total": 3,
+    "n_excluded": 0,
+    "fixture_error_rate": 0.0,
+    "ok_rate": 0.6667,
+    "truth_ok_rate": 0.0,
+    "chain_complete_rate": 0.0,
+    "strict_pass_rate": 0.0,
+    "locate_rate": 0.6667,
+    "coverage": 0.6667,
+    "field_accuracy": 0.0,
+    "ref_consistency_rate": 0.0,
+    "producers_resolve_rate": 0.5,
+    "avg_extra_ops": 1.6667,
+    "avg_extra_off_table": 0,
+    "avg_elapsed_ms": 48875.0,
+    "p50_elapsed_ms": 41365.7,
+    "p95_elapsed_ms": 77406.0,
+    "total_elapsed_s": 146.6,
+    "error_type_distribution": {
+      "unknown": 1
+    },
+    "total_llm_calls": 18,
+    "total_tokens": 27300,
+    "avg_llm_calls": 6,
+    "success_path_calls": 18,
+    "failure_path_calls": 0
+  },
+  "failures": {
+    "modes": {
+      "parse_or_exec_failed": 0,
+      "table_sheet_miss": 2,
+      "row_missing": 0,
+      "field_error": 4,
+      "ref_broken": 3,
+      "producer_not_resolved": 1,
+      "extra_writes": 0,
+      "precondition_missing": 0
+    },
+    "samples": {
+      "table_sheet_miss": [
+        1,
+        3
+      ],
+      "field_error": [
+        1,
+        2,
+        3
+      ],
+      "ref_broken": [
+        1,
+        3
+      ],
+      "producer_not_resolved": [
+        2
+      ]
+    }
+  },
+  "skill": "on",
+  "results": [
+    {
+      "cid": 1,
+      "input_text": "新增灵兽'烈焰虎王'，pet_id 30010，model_id 2005，灵兽品质5，灵兽元素类型Fire。配置进化：'烈焰虎'(pet_id 30009)在进化等级30时进化为'烈焰虎王'，进化需要消耗3个'进化丹'(item_id 6001)和2个'灵兽精魄'(item_id 6002)。",
+      "skill_enabled": true,
+      "ok": false,
+      "error": "失败",
+      "elapsed_ms": 41365.7,
+      "needs_confirm_used": false,
+      "steps": [
+        {
+          "index": 0,
+          "table": "pet/pet.xlsx",
+          "sheet": "Pet",
+          "operation": "add",
+          "status": "located_only",
+          "table_sheet_hit": true,
+          "row_located": true,
+          "field_score": 0.0,
+          "concrete_total": 5,
+          "concrete_matched": 0,
+          "note": "",
+          "produces": "new_pet_id",
+          "matched_op": true
+        },
+        {
+          "index": 1,
+          "table": "pet/pet_evolve.xlsx",
+          "sheet": "PetEvolveData",
+          "operation": "add",
+          "status": "missing",
+          "table_sheet_hit": false,
+          "row_located": false,
+          "field_score": 0.0,
+          "concrete_total": 7,
+          "concrete_matched": 0,
+          "note": "未找到新增行（该表/sheet 无新增记录，或已被其它 expected 项占用）",
+          "produces": "new_evolve_id",
+          "matched_op": false
+        }
+      ],
+      "ref_checks": [
+        {
+          "step_index": 1,
+          "field": "进化后的灵兽ID",
+          "placeholder": "<new_pet_id>",
+          "producer_index": 0,
+          "expected_value": 6001,
+          "actual_value": null,
+          "ok": false,
+          "reason": "consumer 步未匹配到实际行操作"
+        }
+      ],
+      "extra_ops": 1,
+      "extra_ops_off_table": 0,
+      "n_expected": 2,
+      "n_effective": 2,
+      "locate_rate": 0.5,
+      "coverage": 0.5,
+      "field_accuracy": 0.0,
+      "strict_pass": false,
+      "truth_ok": false,
+      "chain_complete": false,
+      "ref_total": 1,
+      "ref_ok": 0,
+      "ref_consistency_rate": 0.0,
+      "producers_total": 2,
+      "producers_resolved": 1,
+      "fixture_errors": [],
+      "fixture_error": false,
+      "error_type": "unknown",
+      "llm_stats": {
+        "total_calls": 6,
+        "total_tokens": 17032,
+        "by_site": {
+          "plan_operation": {
+            "calls": 1,
+            "tokens": 1107
+          },
+          "react": {
+            "calls": 4,
+            "tokens": 15135
+          },
+          "induce_anti_pattern": {
+            "calls": 1,
+            "tokens": 790
+          }
+        },
+        "success_path_calls": 6,
+        "failure_path_calls": 0
+      }
+    },
+    {
+      "cid": 2,
+      "input_text": "新增一把武器叫'霜寒剑'，item_id 7001，品质4，道具类型为武器。它是装备：装备部位为武器，装备类型为剑，基础属性1是攻击力，可用门派列表为剑宗。",
+      "skill_enabled": true,
+      "ok": true,
+      "error": "",
+      "elapsed_ms": 77406.0,
+      "needs_confirm_used": false,
+      "steps": [
+        {
+          "index": 0,
+          "table": "item/item.xlsx",
+          "sheet": "ItemBase",
+          "operation": "add",
+          "status": "located_only",
+          "table_sheet_hit": true,
+          "row_located": true,
+          "field_score": 0.0,
+          "concrete_total": 4,
+          "concrete_matched": 0,
+          "note": "",
+          "produces": "new_item_id",
+          "matched_op": true
+        },
+        {
+          "index": 1,
+          "table": "item/item.xlsx",
+          "sheet": "Equipment",
+          "operation": "add",
+          "status": "located_only",
+          "table_sheet_hit": true,
+          "row_located": true,
+          "field_score": 0.0,
+          "concrete_total": 4,
+          "concrete_matched": 0,
+          "note": "",
+          "produces": "new_equip_id",
+          "matched_op": true
+        }
+      ],
+      "ref_checks": [
+        {
+          "step_index": 1,
+          "field": "物品编号",
+          "placeholder": "<new_item_id>",
+          "producer_index": 0,
+          "expected_value": null,
+          "actual_value": null,
+          "ok": false,
+          "reason": "producer 步[0]未产出新 ID（行未生成或主键未回传）"
+        }
+      ],
+      "extra_ops": 4,
+      "extra_ops_off_table": 0,
+      "n_expected": 2,
+      "n_effective": 2,
+      "locate_rate": 1.0,
+      "coverage": 1.0,
+      "field_accuracy": 0.0,
+      "strict_pass": false,
+      "truth_ok": false,
+      "chain_complete": false,
+      "ref_total": 1,
+      "ref_ok": 0,
+      "ref_consistency_rate": 0.0,
+      "producers_total": 2,
+      "producers_resolved": 1,
+      "fixture_errors": [],
+      "fixture_error": false,
+      "error_type": "unknown",
+      "llm_stats": {
+        "total_calls": 7,
+        "total_tokens": 6513,
+        "by_site": {
+          "pipeline_merge": {
+            "calls": 2,
+            "tokens": 3359
+          },
+          "plan_operation": {
+            "calls": 1,
+            "tokens": 949
+          },
+          "validate_plan": {
+            "calls": 1,
+            "tokens": 740
+          },
+          "summarize": {
+            "calls": 3,
+            "tokens": 1465
+          }
+        },
+        "success_path_calls": 7,
+        "failure_path_calls": 0
+      }
+    },
+    {
+      "cid": 3,
+      "input_text": "新增一封全服邮件'周年庆奖励'，mail_id 8001，邮件类型1，标题'周年庆快乐'，内容'感谢您一路陪伴，请收下这份礼物'，奖励reward_id 10090，发送人'系统'。",
+      "skill_enabled": true,
+      "ok": true,
+      "error": "",
+      "elapsed_ms": 27853.2,
+      "needs_confirm_used": false,
+      "steps": [
+        {
+          "index": 0,
+          "table": "mail.xlsx",
+          "sheet": "MailTemplate",
+          "operation": "add",
+          "status": "located_only",
+          "table_sheet_hit": true,
+          "row_located": true,
+          "field_score": 0.0,
+          "concrete_total": 2,
+          "concrete_matched": 0,
+          "note": "",
+          "produces": "new_template_id",
+          "matched_op": true
+        },
+        {
+          "index": 1,
+          "table": "mail.xlsx",
+          "sheet": "GlobalMail",
+          "operation": "add",
+          "status": "missing",
+          "table_sheet_hit": false,
+          "row_located": false,
+          "field_score": 0.0,
+          "concrete_total": 4,
+          "concrete_matched": 0,
+          "note": "未找到新增行（该表/sheet 无新增记录，或已被其它 expected 项占用）",
+          "produces": "new_mail_id",
+          "matched_op": false
+        }
+      ],
+      "ref_checks": [
+        {
+          "step_index": 0,
+          "field": "模板ID",
+          "placeholder": "<new_template_id>",
+          "producer_index": 0,
+          "expected_value": "8001",
+          "actual_value": null,
+          "ok": false,
+          "reason": "引用断裂：期望 '8001'，实际 None"
+        },
+        {
+          "step_index": 1,
+          "field": "模板ID",
+          "placeholder": "<new_template_id>",
+          "producer_index": 0,
+          "expected_value": "8001",
+          "actual_value": null,
+          "ok": false,
+          "reason": "consumer 步未匹配到实际行操作"
+        }
+      ],
+      "extra_ops": 0,
+      "extra_ops_off_table": 0,
+      "n_expected": 2,
+      "n_effective": 2,
+      "locate_rate": 0.5,
+      "coverage": 0.5,
+      "field_accuracy": 0.0,
+      "strict_pass": false,
+      "truth_ok": false,
+      "chain_complete": false,
+      "ref_total": 2,
+      "ref_ok": 0,
+      "ref_consistency_rate": 0.0,
+      "producers_total": 2,
+      "producers_resolved": 1,
+      "fixture_errors": [],
+      "fixture_error": false,
+      "error_type": "unknown",
+      "llm_stats": {
+        "total_calls": 5,
+        "total_tokens": 3755,
+        "by_site": {
+          "parse": {
+            "calls": 1,
+            "tokens": 116
+          },
+          "pipeline_merge": {
+            "calls": 1,
+            "tokens": 1664
+          },
+          "plan_operation": {
+            "calls": 1,
+            "tokens": 980
+          },
+          "validate_plan": {
+            "calls": 1,
+            "tokens": 552
+          },
+          "summarize": {
+            "calls": 1,
+            "tokens": 443
+          }
+        },
+        "success_path_calls": 5,
+        "failure_path_calls": 0
+      }
+    }
+  ]
+}

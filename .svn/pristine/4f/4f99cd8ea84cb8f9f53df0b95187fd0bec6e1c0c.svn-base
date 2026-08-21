@@ -1,0 +1,51 @@
+"""LangChain 工具：把 TableAgent / QAHandler 暴露为 graph 节点可调用的 tool。
+
+深度工具化：CRUD 与 QA 均以 @tool 形式注册，由 LangGraph 节点按路由结果
+确定性地 invoke（codemaker 不支持 function-calling，故不走 LLM 自主选 tool）。
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from langchain_core.tools import tool
+
+from .excel.agent import AgentResult
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from .excel.agent import TableAgent
+    from .qa_handler import QAHandler
+
+
+def make_crud_tool(table_agent: "TableAgent"):
+    """构建 CRUD 工具：调用 TableAgent.run 执行表格增删改查。"""
+
+    @tool
+    def execute_crud(text: str, context: str = "") -> AgentResult:
+        """执行自然语言表格操作指令（查询/修改/新增/删除）。
+
+        Args:
+            text: 用户的自然语言指令。
+            context: 对话上下文摘要，用于 LLM 代词消解。
+        """
+        return table_agent.run(text, context=context)
+
+    return execute_crud
+
+
+def make_qa_tool(qa_handler: "QAHandler", resources_dir: "Path | None"):
+    """构建 QA 工具：回答关于配表的自然语言问题。"""
+
+    @tool
+    def answer_question(question: str, history: str = "") -> str:
+        """回答关于 Excel 配表结构/关系/用途的自然语言问题。
+
+        Args:
+            question: 用户问题。
+            history: 对话上下文摘要（最近操作/问答），用于多轮记忆与代词消解。
+        """
+        return qa_handler.answer(question, history=history, resources_dir=resources_dir)
+
+    return answer_question

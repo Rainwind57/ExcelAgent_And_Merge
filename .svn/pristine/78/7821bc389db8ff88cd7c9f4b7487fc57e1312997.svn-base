@@ -1,0 +1,383 @@
+"""T7/T8 验证：skill L2 运行时别名 + L3 反模式。
+
+覆盖：
+  T7 (D7.1-D7.8):
+    - 低置信度列定位 → 候选池追加
+    - 同 key 命中 ≥3 次（7 天内）→ promote 到 runtime yaml
+    - 用户纠正 → 直接进候选（黄金信号，跳过置信度门槛）
+    - runtime 别名命中 → hits/last_seen 自增
+    - 冲突（同 query→≥2 resolved）→ 不入库，写 conflicts.yaml
+    - ColumnAliasConfig.load() 合并 manual + runtime，manual 优先
+    - table_relations co_occur 自增 + weight 归一化
+  T8 (D8.1-D8.6):
+    - AntiPatternConfig.load() + lookup（active 生效，非 active 跳过）
+    - ambiguous_column 信号 ≥3 次 → 升级 force_exact active
+    - failed_operation 信号 ≥2 次 → 升级 block_dry_run pending_review（lookup 返回 None）
+    - TableAgent 持有 anti_pattern_cfg + _check_anti_pattern 命中
+
+用法:
+    cd server
+    python -m tests.verify_t7_t8
+"""
+from __future__ import annotations
+
+import sys
+import os
+import shutil
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, cond: bool, detail: str = ""):
+    results.append((name, cond, detail))
+    mark = "PASS" if cond else "FAIL"
+    print(f"{mark}  {name}" + (f"  [{detail}]" if detail and not cond else ""))
+
+
+def _ts(days_ago: float = 0.0) -> str:
+    return (datetime.now().astimezone() - timedelta(days=days_ago)).isoformat(timespec="seconds")
+
+
+def _make_skill_updater(tmpdir: Path):
+    """用临时 skills_dir 构造 SkillUpdater，隔离真实 skills/。"""
+    from agent.excel.skill_updater import SkillUpdater
+    skills_dir = tmpdir / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "L2_runtime").mkdir(exist_ok=True)
+    (skills_dir / "_pending").mkdir(exist_ok=True)
+    (skills_dir / "L3_anti_patterns").mkdir(exist_ok=True)
+    return SkillUpdater(skills_dir, evidence_dir=tmpdir / "evidence")
+
+
+def _read_candidates(su) -> list[dict]:
+    from agent.excel.skill_updater import _read_jsonl
+    return _read_jsonl(su.candidates_path)
+
+
+def _col_record(table_stem="ability", sheet="Ability", query="神通名",
+                resolved="名称", score=0.6, ok=True, user_corrected=False,
+                needs_confirm=False, intent_action="set", session_id="s1",
+                row_ambiguous=False, ts=None):
+    return {
+        "ts": ts or _ts(0),
+        "session_id": session_id,
+        "table_stem": table_stem,
+        "sheet": sheet,
+        "intent_action": intent_action,
+        "dry_run": False,
+        "col": {"query": query, "resolved": resolved, "index": 2,
+                "source": "dict", "score": score, "candidates": []},
+        "row": {"query": query, "resolved": resolved, "method": "contains_direct",
+                "confidence": 0.9, "ambiguous": row_ambiguous, "alternatives": []},
+        "ok": ok,
+        "needs_confirm": needs_confirm,
+        "user_corrected": user_corrected,
+        "corrected_to": None,
+    }
+
+
+# ── T7 测试 ──
+
+def test_t7_low_conf_appends_candidate():
+    """低置信度（score ∈ [0.3,0.75)）+ ok=True → 候选追加。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        su.ingest_evidence(_col_record(score=0.6))
+        cands = _read_candidates(su)
+        check("T7 低置信度追加候选", len(cands) == 1, f"got {len(cands)}")
+        check("T7 候选含 query", cands and cands[0].get("query") == "神通名")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_high_conf_no_candidate():
+    """高置信度（score ≥0.75）+ 无纠正 → 不追加候选。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        su.ingest_evidence(_col_record(score=0.9))
+        cands = _read_candidates(su)
+        check("T7 高置信度不追加", len(cands) == 0, f"got {len(cands)}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_user_corrected_forces_candidate():
+    """user_corrected=True 即使高置信度也进候选（黄金信号）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        su.ingest_evidence(_col_record(score=0.95, user_corrected=True))
+        cands = _read_candidates(su)
+        check("T7 纠正强制候选", len(cands) == 1, f"got {len(cands)}")
+        check("T7 纠正候选标记", cands and cands[0].get("user_corrected") is True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_promote_after_3_hits():
+    """同 key 命中 3 次（7 天内）→ promote 到 runtime yaml。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(3):
+            su.ingest_evidence(_col_record(score=0.6, ts=_ts(i * 0.1)))
+        promoted = su.try_promote()
+        check("T7 promote 返回1条", len(promoted) == 1, f"got {len(promoted)}")
+        check("T7 runtime yaml 生成", su.runtime_aliases_path.exists())
+        check("T7 候选池清空",
+              len(_read_candidates(su)) == 0)
+        # _meta 段
+        import yaml
+        data = yaml.safe_load(su.runtime_aliases_path.read_text(encoding="utf-8"))
+        meta = data.get("_meta", {}).get("ability", {}).get("Ability", {}).get("神通名", {})
+        check("T7 _meta hits=3", meta.get("hits") == 3, f"got {meta.get('hits')}")
+        check("T7 _meta source=runtime", meta.get("source") == "runtime")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_promote_window_expired():
+    """命中 3 次但超 7 天窗口 → 不 promote。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(3):
+            su.ingest_evidence(_col_record(score=0.6, ts=_ts(10 + i)))  # 10 天前
+        promoted = su.try_promote()
+        check("T7 超窗口不 promote", len(promoted) == 0, f"got {len(promoted)}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_conflict_not_promoted():
+    """同 query 指向 2 个不同 resolved → 不入库，写 conflicts.yaml。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        su.ingest_evidence(_col_record(query="名", resolved="名称", score=0.6))
+        su.ingest_evidence(_col_record(query="名", resolved="名称", score=0.6))
+        su.ingest_evidence(_col_record(query="名", resolved="名称", score=0.6))
+        su.ingest_evidence(_col_record(query="名", resolved="名字", score=0.6))
+        su.ingest_evidence(_col_record(query="名", resolved="名字", score=0.6))
+        su.ingest_evidence(_col_record(query="名", resolved="名字", score=0.6))
+        promoted = su.try_promote()
+        check("T7 冲突不 promote", len(promoted) == 0, f"got {len(promoted)}")
+        check("T7 conflicts.yaml 生成", su.conflicts_path.exists())
+        import yaml
+        cf = yaml.safe_load(su.conflicts_path.read_text(encoding="utf-8"))
+        conflicts = cf.get("conflicts", [])
+        check("T7 冲突条目数=1", len(conflicts) == 1, f"got {len(conflicts)}")
+        check("T7 冲突 query=名", conflicts and conflicts[0].get("query") == "名")
+        check("T7 冲突候选含两目标",
+              conflicts and set(conflicts[0].get("resolved_candidates", [])) == {"名称", "名字"})
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_runtime_alias_bump_hits():
+    """runtime 别名命中后 hits/last_seen 自增（D7 验收）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(3):
+            su.ingest_evidence(_col_record(score=0.6, ts=_ts(i * 0.1)))
+        su.try_promote()
+        # 再次命中同 key → bump
+        su.ingest_evidence(_col_record(score=0.6, ts=_ts(0)))
+        import yaml
+        data = yaml.safe_load(su.runtime_aliases_path.read_text(encoding="utf-8"))
+        meta = data.get("_meta", {}).get("ability", {}).get("Ability", {}).get("神通名", {})
+        check("T7 bump hits=4", meta.get("hits") == 4, f"got {meta.get('hits')}")
+        check("T7 bump last_seen 更新", bool(meta.get("last_seen")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_skill_loader_merge_manual_priority():
+    """ColumnAliasConfig.load() 合并 manual + runtime，manual 优先。
+
+    需注入临时 skills_dir — 用 monkeypatch _SKILLS_DIR。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        import yaml
+        from agent.excel import skill_loader as sl
+        skills_dir = tmp / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "L2_runtime").mkdir()
+        # manual：名字 → 名称
+        (skills_dir / "column_aliases.yaml").write_text(
+            "columns:\n  ability:\n    Ability:\n      名字: 名称\n", encoding="utf-8")
+        # runtime：神通名 → 名称（manual 无）+ 名字 → 别名X（manual 有，应被 manual 覆盖）
+        (skills_dir / "L2_runtime" / "column_aliases.runtime.yaml").write_text(
+            "columns:\n  ability:\n    Ability:\n      神通名: 名称\n      名字: 别名X\n",
+            encoding="utf-8")
+        old = sl._SKILLS_DIR
+        sl._SKILLS_DIR = skills_dir
+        try:
+            cfg = sl.ColumnAliasConfig.load()
+            # manual 优先：名字 → 名称（非 别名X）
+            check("T7 manual 优先覆盖 runtime",
+                  cfg.resolve("ability", "Ability", "名字") == "名称",
+                  f"got {cfg.resolve('ability','Ability','名字')!r}")
+            # runtime 补充：神通名 → 名称
+            check("T7 runtime 补充新别名",
+                  cfg.resolve("ability", "Ability", "神通名") == "名称",
+                  f"got {cfg.resolve('ability','Ability','神通名')!r}")
+            # with_source 标记
+            src = cfg.all_aliases_with_source("ability", "Ability")
+            check("T7 manual 标记", src.get("名字") == ("名称", "manual"))
+            check("T7 runtime 标记", src.get("神通名") == ("名称", "runtime"))
+        finally:
+            sl._SKILLS_DIR = old
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t7_table_relations_co_occur():
+    """session 内连续操作不同表 → co_occur++ + weight 归一化。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t7_"))
+    try:
+        su = _make_skill_updater(tmp)
+        su.ingest_evidence(_col_record(table_stem="ability", session_id="s1"))
+        su.ingest_evidence(_col_record(table_stem="fabao", session_id="s1"))
+        su.ingest_evidence(_col_record(table_stem="fabao", session_id="s1"))
+        su.ingest_evidence(_col_record(table_stem="ability", session_id="s1"))
+        w = su.lookup_relation_weight("ability", "fabao")
+        check("T7 跨表关系权重>0", w > 0.0, f"weight={w}")
+        # ability-fabao 出现 2 次共现，max_co=2 → weight=1.0
+        check("T7 跨表权重归一化=1.0", w == 1.0, f"weight={w}")
+        # 同表连续不增
+        su._session_last_table.clear()
+        su.ingest_evidence(_col_record(table_stem="item", session_id="s2"))
+        su.ingest_evidence(_col_record(table_stem="item", session_id="s2"))
+        check("T7 同表连续不增共现",
+              su.lookup_relation_weight("item", "item") == 0.0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── T8 测试 ──
+
+def test_t8_anti_pattern_config_load_empty():
+    """AntiPatternConfig.load() 加载空 seed → patterns=[]。"""
+    from agent.excel.skill_loader import AntiPatternConfig
+    cfg = AntiPatternConfig.load()
+    check("T8 AntiPatternConfig 加载", isinstance(cfg.patterns, list))
+    check("T8 无 anti_pattern 时 lookup 返回 None",
+          cfg.lookup("ability", "Ability", column="名称") is None)
+
+
+def test_t8_ambiguous_upgrade_to_force_exact():
+    """ambiguous_column 信号 ≥3 次（7 天内）→ 升级 active force_exact。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t8_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(3):
+            su.ingest_evidence(_col_record(row_ambiguous=True, ts=_ts(i * 0.1)))
+        aps = su.load_anti_patterns()
+        check("T8 ambiguous 升级生成1条", len(aps) == 1, f"got {len(aps)}")
+        ap = aps[0]
+        check("T8 ambiguous type", ap.type == "ambiguous_column")
+        check("T8 ambiguous action=force_exact", ap.action == "force_exact")
+        check("T8 ambiguous status=active", ap.status == "active")
+        # lookup 命中
+        from agent.excel.skill_loader import AntiPatternConfig
+        cfg = AntiPatternConfig()
+        cfg.patterns = [ap.to_dict()]
+        hit = cfg.lookup("ability", "Ability", column="名称")
+        check("T8 lookup 命中 active", hit is not None)
+        check("T8 lookup 非命中列返回 None",
+              cfg.lookup("ability", "Ability", column="其他列") is None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t8_ambiguous_below_threshold_no_upgrade():
+    """ambiguous 信号 <3 次 → 不升级。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t8_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(2):
+            su.ingest_evidence(_col_record(row_ambiguous=True, ts=_ts(i * 0.1)))
+        aps = su.load_anti_patterns()
+        check("T8 阈值未达不升级", len(aps) == 0, f"got {len(aps)}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t8_failed_op_pending_review_not_enforced():
+    """failed_operation ≥2 次 → 升级 block_dry_run 但 status=pending_review（lookup 返回 None）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="t8_"))
+    try:
+        su = _make_skill_updater(tmp)
+        for i in range(2):
+            su.ingest_evidence(_col_record(intent_action="delete", needs_confirm=True,
+                                           ts=_ts(i * 0.1)))
+        aps = su.load_anti_patterns()
+        check("T8 failed_op 升级生成1条", len(aps) == 1, f"got {len(aps)}")
+        ap = aps[0]
+        check("T8 failed_op action=block_dry_run", ap.action == "block_dry_run")
+        check("T8 failed_op status=pending_review", ap.status == "pending_review")
+        # pending_review → lookup 不返回（不强制）
+        from agent.excel.skill_loader import AntiPatternConfig
+        cfg = AntiPatternConfig()
+        cfg.patterns = [ap.to_dict()]
+        hit = cfg.lookup("ability", "Ability", operation="delete_row")
+        check("T8 pending_review 不被 lookup 强制", hit is None)
+        # 人工激活后强制
+        cfg.patterns[0]["status"] = "active"
+        hit2 = cfg.lookup("ability", "Ability", operation="delete_row")
+        check("T8 激活后 lookup 命中", hit2 is not None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t8_agent_holds_anti_pattern_cfg():
+    """TableAgent 持有 anti_pattern_cfg + _check_anti_pattern 可用。"""
+    from agent.excel.agent import TableAgent
+    check("T8 TableAgent 有 anti_pattern_cfg 字段",
+          hasattr(TableAgent, "_check_anti_pattern"))
+    # 不实例化（需 cli/parser），只验证字段定义存在于 __init__
+    import inspect
+    src = inspect.getsource(TableAgent.__init__)
+    check("T8 __init__ 加载 anti_pattern_cfg", "anti_pattern_cfg" in src)
+
+
+def main():
+    print("=== T7 L2 运行时别名 ===")
+    test_t7_low_conf_appends_candidate()
+    test_t7_high_conf_no_candidate()
+    test_t7_user_corrected_forces_candidate()
+    test_t7_promote_after_3_hits()
+    test_t7_promote_window_expired()
+    test_t7_conflict_not_promoted()
+    test_t7_runtime_alias_bump_hits()
+    test_t7_skill_loader_merge_manual_priority()
+    test_t7_table_relations_co_occur()
+    print("\n=== T8 L3 反模式 ===")
+    test_t8_anti_pattern_config_load_empty()
+    test_t8_ambiguous_upgrade_to_force_exact()
+    test_t8_ambiguous_below_threshold_no_upgrade()
+    test_t8_failed_op_pending_review_not_enforced()
+    test_t8_agent_holds_anti_pattern_cfg()
+
+    n_pass = sum(1 for _, ok, _ in results if ok)
+    n_total = len(results)
+    print(f"\n{'='*40}\nT7/T8: {n_pass}/{n_total} PASS")
+    if n_pass != n_total:
+        print("FAIL 项:")
+        for name, ok, detail in results:
+            if not ok:
+                print(f"  - {name}  [{detail}]")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

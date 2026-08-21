@@ -1,0 +1,4436 @@
+# 合并策略配置（自动生成）
+# 生成时间: 2026-08-14T19:04:45
+# 来源: 78 张表
+# 
+version: '1.0'
+auto_generated: true
+default_strategy: manual
+tables:
+  ability:
+    Ability:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  activity:
+    Activity:
+      活动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      活动类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      活动名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      活动描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      活动图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      活动开始时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      活动结束时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      活动展示开始时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      活动展示结束时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      开启条件:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  assistant:
+    Assistant:
+      仙友编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      大图:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级模板id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      基础神通1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      基础神通2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      基础神通3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板真元上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板愤怒上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板治疗强度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印命中:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印抵抗:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  assistant_ability:
+    AssistantAbility:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      buff:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  assistant_level:
+    AssistantLevel:
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      阶段:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      重/层:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升到下一级所需修为/经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升到下一级所需道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantExpItem:
+      道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      增加经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantLevelTemplate:
+      主键:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级模板id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      体魄加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      聪慧加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气劲加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      筋骨加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵巧加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气血加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      攻击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      防御加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术防御加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      治疗加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      暴击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术暴击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      暴击抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法暴抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物理暴击倍率加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术暴击倍率加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印命中加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  assistant_mystic:
+    AssistantMystic:
+      秘法编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      秘法加的buff:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantMysticSlot:
+      槽位id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      解锁消耗灵石数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantMysticPool:
+      仙友id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      秘法1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      秘法1概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      秘法2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      秘法2概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      秘法3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      秘法3概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      秘法4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      秘法4概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+  assistant_weapon:
+    AssistantWeapon:
+      仙器编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      仙器名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      仙器加的buff:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantWeaponUpgradeCost:
+      仙器等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级消耗金币:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AssistantWeaponLevel:
+      id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      仙器id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      仙器等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  bilingual_sample:
+    Fabao:
+      fabao_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      name:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+  building:
+    BuildingType:
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图图标:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      代码中建筑实体类型名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      交互id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑占地面积 X:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑占地面积 Z:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      废墟/默认占地模型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否可升级:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      建造消耗的帮贡:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    BuildingLevel:
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑图标 ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      完整模型 ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      升到下一级需要的帮派资金:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      修复费用基数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初级破损模型ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      残破模型 ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      满耐久度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      分红比例:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      占领帮派成员支付比例:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      白品权重提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绿品权重提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      蓝品权重提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      紫品权重提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      橙品权重提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      额外奖励ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    BuildingLevelInit:
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      城池等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑初始等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑最大等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  city:
+    CityTemplate:
+      洞府id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      洞府名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      交互id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      城池类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      城池初始等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      城市场景布局id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    CityLayout:
+      城市布局ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      场景ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      网格大小:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      城市宽:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      城市长:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      传送阵传送的x轴随机范围[±x]:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      传送阵传送的z轴随机范围[±z]:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    LayoutBuildingSlot:
+      属于哪个城市布局表:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      槽位 ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑网格位置x:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑网格位置z:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    CityLevelData:
+      城池等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      户口上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      帮派基地搬迁费用:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      传送费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      首次占领奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  city_siege:
+    SiegeAttackableBuilding:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      城池等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      守军数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      守军战斗1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      守军战斗2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      守军战斗3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    CityBuildingSiegeCfg:
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      交互id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      攻城战建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      图腾类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      归属大营:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      图腾Buff1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      图腾Buff2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      图腾Buff3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      图腾Buff4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    SiegeLayout:
+      城市布局ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场景ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  buff_event_vfx:
+    buff_event_vfx:
+      buff配置ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      闪避特效路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      闪避特效挂接点:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      格挡特效路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      格挡特效挂接点:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      受伤特效路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      受伤特效挂接点:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      护盾扣减特效路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      护盾扣减特效挂接点:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      护盾常驻光罩路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      护盾常驻光罩挂接点:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  combat:
+    combat_data:
+      combat编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      战斗类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      战斗模式:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      space编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      战斗胜利奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      战斗失败奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      平局奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      主怪:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置1npc:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置5:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置6:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置7:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置8:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置9:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置10:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      位置11:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  pve_combat_npc:
+    PveCombatNpc:
+      ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      model_prefab:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      回合开始行为树:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      战斗行为树:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      等级公式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      气血斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气血基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      魔法斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      魔法基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      抗封斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      抗封基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      治疗斜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      治疗基础:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      死亡是否击飞:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+  spell:
+    common_spell:
+      技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      技能描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      技能图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    spell_data:
+      主动技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      程序用勿删:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能效果类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能元素:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      是否门派技能:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      技能标签:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      施法CD:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      施法CD共享Tag:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      是否允许倒地施法:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      目标排序规则:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      结算目标数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      结算方式:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      伤害基础倍率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      治疗基础倍率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      添加buff_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      不常用配置参数:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果1:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果2:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果3:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      动画蒙太奇Sequence:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      施法表演解释器:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置0-类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置0-特效:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置1-类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置1-特效:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置2-类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      表演配置2-特效:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    passive_data:
+      被动技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      程序用勿删:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否显示:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否是门派被动技能:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      被动来源:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      被动互斥分组:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动互斥优先级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动merge规则:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      附加状态:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      逻辑效果1:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果2:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果3:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      不常用配置参数:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    buff_data:
+      buff编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      是否显示:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否增益:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否封印类:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否可驱散或净化:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否可使用药品驱散:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      驱散概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      持续回合数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最大层数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      附加互斥状态:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      逻辑效果1:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果2:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      逻辑效果3:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      挂接特效:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      挂接缩放:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      挂接逻辑部位:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      客户端BuffKey:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      连接目标逻辑部位:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    anim_montage_override_data:
+      技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    effect_actor_override_data:
+      主键:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      表演Index:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      角色ModelID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      替换特效名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  spell_group:
+    SpellGroup:
+      ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+  const:
+    Const:
+      常量字段名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      常量数据类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      常量值:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      注释:
+        strategy: take_longest
+        reason: 文本列，取最长值
+  entity_prefab:
+    Base:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      实体类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      model_prefab:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      移动速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      交互id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  exclusive_state:
+    State:
+      状态类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      优先级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      休息:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      普通封印:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可叠加封印:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技穷:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      缴械:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      混乱:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法宝封印:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      特技封印:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      禁止召唤:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      免疫技穷:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      免疫缴械:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  fabao:
+    Fabao:
+      法宝id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      法宝描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    FabaoUpgradeCost:
+      法宝等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    FabaoLevel:
+      法宝id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      法宝等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    FabaoSlotUnlockCost:
+      法宝类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法宝槽位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      消耗货币数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    FabaoType:
+      分组ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    FabaoQuality:
+      法宝境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      上品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      珍品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+  gameplay_tags:
+    tags:
+      tag:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+  guild:
+    Const:
+      常量字段名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      常量数据类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      常量值:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      注释:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    Role:
+      职位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      职位展示名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    Message:
+      职位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      消息前缀:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      全体成员:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      青龙堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      白虎堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      朱雀堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      玄武堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      全体管理:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+    OpsPermissions:
+      职位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      禁言:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      接受新成员:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      逐出成员:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      写帮派公告:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      帮派消息:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      转学徒为帮众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      升级帮派:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      辞去管理:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      逐出次数上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能研究:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      发起集结:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      发起进军:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否允许修复城池建筑:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否允许升级城池建筑:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否允许搬迁帮派基地:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      管理城池户口:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      帮派改名:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+    PersonnelPermissions:
+      职位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      帮主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      副帮主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      左护法:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      右护法:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      青龙堂主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      白虎堂主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      朱雀堂主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      玄武堂主:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      青龙堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      白虎堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      朱雀堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      玄武堂众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      精英:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      帮众:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      学徒:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+    RoleLimit:
+      职位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      0级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      1级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      2级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      3级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      4级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      5级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      6级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      7级别人数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    GuildHall:
+      大厅等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级要求:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      金库等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      商店等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      厢房等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      书院等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      兽栏等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Vault:
+      金库等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      帮派资金上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Store:
+      商店等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    WingRoom:
+      厢房等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      帮派人数上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Library:
+      书院等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    PetHouse:
+      兽栏等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级花费:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      攻城灵兽等级上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进入朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Quest:
+      任务ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      物品ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      物品数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      奖励ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    QuestCount:
+      完成数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      奖励ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    WelcomeMessage:
+      迎新词ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      简称:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      前缀:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      内容:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    SpellData:
+      技能ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      详细效果:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      程序效果:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      当前等级研发所需进度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      学习所需角色等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      学习所需道具1类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      学习所需道具1数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      学习所需道具2类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      学习所需道具2数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气血上限加成效果的数值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      真元上限加成效果的数值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  hero:
+    Hero:
+      人物id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      初始门派id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      移动速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      地图UI图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      境界倍率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板真元上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板愤怒上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板治疗强度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印命中:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印抵抗:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  hero_level:
+    HeroLevel:
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      阶段:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      重/层:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      当前等级升到下一级所需经验值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      当前升到下一级类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级基础概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      单次最大可使用道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      失败增加概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      获得固定加点:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      获得自由加点:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      获得天赋点数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气血储备上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      真元储备上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    HeroLevelGrow:
+      id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      门派:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      体魄加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      智慧加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      力量加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      筋骨加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵巧加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      气血加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      攻击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      防御加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术防御加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      治疗加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      暴击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术暴击加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      暴击抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法暴抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物理暴击倍率加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法术暴击倍率加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印命中加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      封印抗性加成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    ExpItem:
+      道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      增加经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  interaction:
+    Interaction:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      可交互范围:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      交互效果编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      '3001':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '3002':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '3003':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '3004':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '3005':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '3006':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '4003':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '4004':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    InteractionConv:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      对话内容:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      选项1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项5:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项6:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    InteractionConvOption:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      选项内容:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      选项展示条件:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      选项功能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      '1':
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  equipment:
+    EquipmentSlot:
+      槽位id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      槽位类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      槽位位置:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      解锁条件:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    EquipmentGemType:
+      装备宝石类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      类型名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    EquipmentScore:
+      条目编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      特效数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      特技数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      附加属性数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      评分倍率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    EquipmentQuality:
+      装备境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      良品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      上品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      珍品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      绝品概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+    EquipmentBaseAttr:
+      装备境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品基础属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品基础属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品基础属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品基础属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品基础属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品基础属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品基础属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品基础属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品基础属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品基础属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    EquipmentExtraAttr:
+      装备境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品附加属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品附加属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品附加属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品附加属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品附加属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品附加属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品附加属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品附加属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品附加属性下限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品附加属性上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    EquipmentExtraAttrNum:
+      条目编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      一个附加属性概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      两个附加属性概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      两个附加属性衰减率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  item:
+    ItemType:
+      道具类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      类型名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    ItemBase:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      程序处理type:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      最大堆叠数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可丢弃:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      可使用的场景:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动使用:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Chest:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      reward ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    Potion:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      扩展特性效果:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      药品战中技能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      药品数值范围:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      使用效果代码:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      使用效果-血量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      使用效果-蓝量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      使用效果-buff_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      效果文本提示描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    ResidencePlantAccelerate:
+      种子道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      道具增加生长值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Equipment:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      装备部位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      装备类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      随机词条池子:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      特技词条池子:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      特效词条池子:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      分解获得道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      分解获得道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      基础评分:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    Gem:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      宝石类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      下一级宝石id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      升级下一级宝石成功率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      宝石等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级消耗道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      升级消耗道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      分解获得道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      分解获得道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      属性名1:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      属性值1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      属性名2:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      属性值2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      属性名3:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      属性值3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    GameplayAbilityChoicePool:
+      条目编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      随机池编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      能力类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      主动技能ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      主动技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动Buff ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    Fabao:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      文案描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      法宝类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法宝技能编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      附加属性池编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      阴阳属性权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      阳属性描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      阴属性描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    FabaoAbilityChoicePool:
+      条目编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      随机池编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      能力类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  item_recipe:
+    ItemRecipe:
+      配方id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      配方名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      交互显示:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      配方类型：1：炼器2：炼丹:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      解锁所需建筑等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      消耗金币数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品道具:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品道具:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品道具:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品道具:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品道具:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      额外奖励1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      获得经验值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    RecipeLevel:
+      唯一id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      打造类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      升到下一级所需修为/经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      凡品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    RecipeMaterial:
+      材料组id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      材料名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      道具1 id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      凡品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      良品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      上品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      珍品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      绝品权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      额外奖励概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具2 id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具3 id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具4 id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具5 id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  mail:
+    MailTemplate:
+      模板ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      标题:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      内容:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    GlobalMail:
+      全服邮件ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      邮件类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      模板ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      发送时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      有效期截至时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      发送人:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      等级要求:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  map:
+    Icon:
+      图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      小地图图标路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      大地图图标路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      地图显示的层级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      显示条件:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      大世界图标显示高度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      点击交互:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  material_effect:
+    MaterialEffect:
+      材质ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      材质路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      效果器类:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      层级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      优先级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      标志位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      自定义渲染:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      着色器参数:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      额外配置:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+  model_prefab:
+    MetaData:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      name:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      基础缩放:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      逻辑半径:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      逻辑全高:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否静态障碍物:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      物理包围盒类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      碰撞组:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      服务端碰撞组:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      胶囊体半径:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      胶囊体全高:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      盒子高度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      盒子长度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      盒子宽度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      球体半径:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      mesh路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    Model:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      骨骼:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      攻击出手骨骼:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      受击骨骼:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      角色图:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      动画图:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      默认动作:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      是否由Graph控制Yaw:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    VFX:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    City:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      name:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      组合模型数据文件:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  perf_ability_100k:
+    Ability:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      属性:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  perf_ability_10k:
+    Ability:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      属性:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  perf_ability_50k:
+    Ability:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      技能等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      属性:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  perf_item_100k:
+    ItemBase:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      备注:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      程序处理type:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      最大堆叠数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可丢弃:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可使用的场景:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动使用:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  perf_item_10k:
+    ItemBase:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      备注:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      程序处理type:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      最大堆叠数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可丢弃:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可使用的场景:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动使用:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  perf_item_50k:
+    ItemBase:
+      物品编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      备注:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      程序处理type:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      道具描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      最大堆叠数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可丢弃:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      可使用的场景:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动使用:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  perf_pet_100k:
+    Pet:
+      灵兽id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      灵兽model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵兽类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽元素类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      体力资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成长率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      天赋技能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  perf_pet_10k:
+    Pet:
+      灵兽id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      灵兽model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵兽类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽元素类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      体力资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成长率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      天赋技能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  perf_pet_50k:
+    Pet:
+      灵兽id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      灵兽model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵兽类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽元素类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      体力资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成长率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      天赋技能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  pet:
+    Pet:
+      灵兽id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      灵兽model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      染色:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      宠物图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      宠物大图:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      灵兽类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵兽元素类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      灵兽蛋道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵兽出战所需人物等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      默认加点配置:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      体力资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法攻资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      物防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      法防资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      速度资质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成长率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      天赋技能:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能1权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能2权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能3权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能4权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能5:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能5权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能6:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始技能6权重:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板气血上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板真元上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板愤怒上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术攻击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板法术防御:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板速度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板治疗强度:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印命中:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板封印抵抗:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      面板物理暴击:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  pet_evolve:
+    PetEvolveData:
+      进化id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      宠物id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵兽名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      进化等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      进化后的灵兽ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      进化后的灵兽名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+  pet_level:
+    PetLevel:
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      阶段:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      重/层:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升到下一级所需修为/经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      获得属性点:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    PetExpItem:
+      道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      增加经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  pet_refine:
+    PetRefine:
+      灵兽品质:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  pet_spell_book:
+    PetSpellBook:
+      兽决道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      获得能力id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  player_common:
+    PlayerCommon:
+      编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+  match_stat:
+    SeasonStat:
+      赛季编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场次1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      总场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      平均场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最高单场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  match_stat_1:
+    SeasonStat:
+      赛季编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场次1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      总场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      平均场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最高单场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  match_stat_2:
+    SeasonStat:
+      赛季编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场次1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      总场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      平均场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最高单场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  formula_basic:
+    DanConfig:
+      段位编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      段位名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      基础分:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      难度系数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最终分数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  formula_lookup:
+    MatchDan:
+      match_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      player_dan:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      dan_name_vlookup:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      score_lookup:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    DanRef:
+      dan_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  formula_nested:
+    RewardCalc:
+      奖励编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      段位:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      胜场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      败场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      总场数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      胜率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      奖励等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  formula_sum:
+    SeasonStat:
+      赛季编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场次1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      场次4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      总场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      平均场次:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最高单场:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  quest:
+    QuestGroup:
+      任务组id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      任务类型对应QuestType表:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      任务名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      接受资格:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    Quest:
+      任务ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      任务组ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      奖励图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      任务目标类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      刷新的npc_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      阶段结束是否回收当前阶段npc:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      剧情id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    Sheet1:
+      任务ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      任务组ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      奖励图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      任务目标类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      刷新的npc_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      阶段结束是否回收当前阶段npc:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      剧情id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    QuestType:
+      任务类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      程序处理类型Common:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      任务图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  spawn_quest_entity:
+    SpawnQuestEntity:
+      刷新ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场景ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      实体Prefab ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      实体名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      最大生成数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动贴地:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否要求生成实体的坐标唯一:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      自动填充时间间隔:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  realm_info:
+    RealmInfo:
+      服务器id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      服务器名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      开服时间:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  residence:
+    Residence:
+      洞府id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      洞府名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      洞府icon:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      洞府实例Prefab ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      洞府入口Prefab ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      洞府入口朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      洞府分组编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      洞府内部场景ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      洞府地格大小:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    ResidenceLevel:
+      洞府等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级所需玩家等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级获得奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  residence_building:
+    ResidenceBuilding:
+      建筑道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      建筑图纸道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      建筑等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑类型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      地图图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      升级所需洞府等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级获得奖励:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      建筑占地面积:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      交互时的镜头模式:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气存储上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      每秒灵气消耗:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气充沛时种植系统速率提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气充沛时练功系统速率提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵气充沛时灵石装置速率提升:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      农田解锁槽位数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      蒲团每秒自动经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      蒲团自动经验上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      蒲团吃药经验上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      每秒获得灵石:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      灵石存储上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      丹药境界:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    BuildingType:
+      建筑编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      建筑命名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      对应的实体类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      一级分类界面用:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      二级分类界面用:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      占位勿改:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级1:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级2:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级3:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级4:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级5:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级6:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级7:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级8:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级9:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级10:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级11:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级12:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      数量上限 - 洞府等级13:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    BuildingCamera:
+      镜头模式编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      镜头模式命名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      镜头Yaw角:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头Pitch角:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头距离:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头fov:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    AttributeText:
+      建筑类型编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      属性变量名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      显示文本:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      显示格式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    BuildingInteract:
+      建筑类型编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      属性变量名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      角色蒙太奇:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      建筑状态变量值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否软停止:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+  residence_entry:
+    State:
+      州id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+    District:
+      片区id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      所属州id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    ResidenceEntry:
+      入口id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      片区id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      洞府id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      候选时的prefab_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      正式入口prefab_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      地标表id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    StateCountConfig:
+      州数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      州人数过多阈值比例:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      州人数推荐阈值比例:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  residence_grid:
+    ResidenceObstacle:
+      洞府id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      障碍物id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      占地X格数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      占地Z格数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      解锁需要的道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      解锁需要的道具数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      摆放模型的model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      模型旋转:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      解锁所需洞府等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      小地图图标id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    ResidenceGrid:
+      洞府id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      格子坐标X:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      格子坐标Z:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      格子状态:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      高度层级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      障碍物id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  residence_plant:
+    ResidencePlant:
+      种子道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      种子描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      种子名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      每分钟生长值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成熟阶段1生长值:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成熟阶段0模型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      成熟阶段1模型:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      玩家动作:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      收获资源RewardId:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  residence_putuan:
+    PutuanAcupoint:
+      穴位id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      穴位名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+    PutuanLiangong:
+      功法id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      功法描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      功法名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      背景图:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      额外经验:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  residence_temple:
+    ResidenceTemple:
+      关卡id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      种子名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      战斗id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      所需洞府等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      土地庙建筑id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      特殊道具id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      关卡图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  reward:
+    Reward:
+      reward_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      每日领取上限:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      每日上限警告:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      经验概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      经验公式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      金币概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      金币公式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      银币概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      银币公式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      道具1数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具2数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具3数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具4数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具5数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具6数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      道具1概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具2概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具3概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具4概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具5概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+      道具6概率:
+        strategy: range_check
+        reason: 概率列，取值在 [0,100] 内的版本
+  school:
+    School:
+      门派:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      填表说明:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      门派类型1：物理2：法术3：治疗4：封印:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      大世界model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      战斗model_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  school_ability:
+    SchoolAbility:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      神通描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      功效描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      升级描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      解锁需要的人物等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      心法1名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      心法1描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      心法1被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      心法2名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      心法2描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      心法2被动id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    SchoolAbilityLevel:
+      id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      神通等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级消耗灵石数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级条件：人物到达x级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      升级条件：所有神通到达x级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      技能id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  school_spirit:
+    SchoolSpirit:
+      神通id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      门派id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      灵根id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      获得天赋:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  school_talent:
+    SchoolTalent:
+      主键:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      功法描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      图标:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      门派id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      层级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      所在列:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    SchoolTalentLevel:
+      主键:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      功法描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      天赋id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      等级:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      被动效果buff_id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+  spirit:
+    Spirit:
+      灵根id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+  anim_montage_sequence:
+    当前可用的Anim_Montage_Sequence:
+      动画蒙太奇Sequence的名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+  effect_actor:
+    effect_actor_data:
+      特效ActorKey:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      特效名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      外观Graph:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      驱动类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      群体攻击时,是否需要为每个目标创建一个特效实例:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      抵达时间:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  space:
+    space_data:
+      Space编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      Space类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      服务端场景资源名:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      客户端场景资源名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      镜头Yaw角:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头Pitch角:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头距离:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      镜头fov:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      初始寻路网格是否从物理生成:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否加载寻路:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      服务端进入场景朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      大陆id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      客户端GameMode类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      客户端GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场景BGM事件ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+    big_world_space:
+      Space编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      城池配置:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    space_map_ui:
+      Space编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      航拍图路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      航拍图分辨率:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      航拍图对应世界空间的尺寸:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      小地图显示的世界空间范围的放大比例:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    cgm_free:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      客户端进入场景朝向:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    cgm_simple:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    cgm_login:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      默认ip:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      默认port:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    cgm_round_world:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      2D背景图路径:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      2D背景图yaw:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    cgm_turnbased_battle:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    cgm_residence:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      洞府宽:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      洞府长:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+    cgm_guild_space:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    cgm_city_space:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+    cgm_siege:
+      GameMode实例ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+  space_landmark:
+    World02:
+      地图名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      城市名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      地标全局ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      郡ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      LandmarkType:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      地标本地ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      是否已经失效:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      关联道路ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      城池表id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      可抵达的全局id[0]:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      可抵达的全局id[1]:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      可抵达的全局id[2]:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  spawn_world_entity:
+    SpawnWorldEntity:
+      刷新ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      场景ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      实体Prefab ID:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      实体名字:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      刷新方式:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      最大生成数量:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      是否自动贴地:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      是否要求生成实体的坐标唯一:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      自动填充时间间隔:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+  tips:
+    ui_txt:
+      分段备注：可以在本表中间插入行，从而使得内容更加聚集，但要记得重新拉一遍左边的顺序id:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      原文:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      程序引用关键字严格要求唯一，并且统一系统的内容要聚合在一起:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+    tips:
+      原文:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      程序引用关键字严格要求唯一，并且统一系统的内容要聚合在一起:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      类型:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+  world_buff:
+    world_buff_data:
+      buff编号:
+        strategy: base_priority
+        reason: ID 列，优先保留基准版本值
+      名称:
+        strategy: take_longest
+        reason: 名称列，取最长值（通常更完整）
+      描述:
+        strategy: take_longest
+        reason: 文本列，取最长值
+      绑定战斗buff:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      同步模式:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      普通buff：持续时间:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      普通buff：tick间隔:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      普通buff：添加时立即tick:
+        strategy: take_newer
+        reason: 布尔列，取非基准版本值
+      普通buff：最大层数:
+        strategy: take_newer
+        reason: 数值列，取非基准版本值
+      普通buff：合并方式:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值
+      普通buff：buff的生命周期绑定:
+        strategy: take_newer
+        reason: 字符串列，取非基准版本值

@@ -1,0 +1,14 @@
+import sys
+from pathlib import Path
+from openpyxl import load_workbook
+
+DEMO = Path(__file__).resolve().parent.parent.parent / "merge" / "demo" / "trunk_r4"
+for f in ["match_stat_s1.xlsx", "match_stat_s2.xlsx", "match_stat_s3.xlsx"]:
+    wb = load_workbook(DEMO / f, data_only=True)
+    ws = wb["SeasonStat"]
+    print(f, [ws.cell(r, 2).value for r in range(3, 7)])
+    wb.close()
+wb = load_workbook(DEMO / "subdir_copied" / "match_stat_3.xlsx", data_only=True)
+ws = wb["SeasonStat"]
+print("subdir", [ws.cell(r, 2).value for r in range(3, 7)])
+wb.close()

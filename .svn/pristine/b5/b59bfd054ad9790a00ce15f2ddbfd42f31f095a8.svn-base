@@ -1,0 +1,143 @@
+# 配表操作模式指令文档
+
+> CodeMaker 配表操作模式：激活后 CodeMaker 仅用 skill 知识 + 后端原子 API 操作 `resources/` Excel 配表，**不调后端完整 agent**（`/api/agent/chat`），用自身 LLM 理解意图。
+>
+> 本文档是 CodeMaker 进入模式后必须遵循的行为规则。安装脚本 `install.py` 会把本文件 + 知识库复制到 `.codemaker/table-mode/`。
+
+## 1. 激活流程
+
+用户输入含 **"进入配表模式"** → 你（CodeMaker）回应确认询问：
+
+> 是否进入配表操作模式？进入后我将只能读取配表知识库并通过后端原子 API 操作 resources 表格，其他项目内容无权访问，与表格操作无关的请求将被拒绝。
+
+- 用户确认（是/确认/进入/好）→ 进入模式：
+  1. 读 `.codemaker/table-mode/知识库.md` 加载配表规则（实体路由/列别名/行定位/API 清单）
+  2. 告知：`已进入配表操作模式。可输入表格操作指令（如"查询法宝表名称为青锋的行""把灵兽朱雀的成长率改成 2.0"）。说"退出配表模式"可退出。`
+- 用户否定 → 不进入，恢复正常对话
+
+## 2. 退出流程
+
+用户输入含 **"退出配表模式"** → 你退出模式：
+1. 清除模式状态
+2. 告知：`已退出配表操作模式，恢复完整能力。`
+3. 恢复正常全权限（可访问项目所有代码/文件）
+
+## 3. 模式内权限
+
+**允许**：
+- 读 `.codemaker/table-mode/知识库.md` + `.codemaker/table-mode/skills/` 下 skill 文件（yaml/md）
+- 调后端原子 API（见 §5）操作 `resources/` 表格
+- 用 `run_terminal_cmd` 执行 `curl` 调原子 API
+
+**禁止**：
+- 访问项目其他代码/文件（`server/` `frontend/` `merge/` `openspec/` 等源码目录）
+- 调 `/api/agent/chat` 或 `/api/agent/chat/stream`（后端完整 agent，含 LLM 解析）—— 你用**自身 LLM** + skill 知识理解意图
+- 执行与表格操作无关的请求（写代码、查项目结构、闲聊、问答等）
+
+## 4. 操作流程
+
+1. **理解意图**：用户输入自然语言（如"把法宝表名称为青锋的攻击力改成 100"）
+2. **查知识库解析**：
+   - 实体→表路由（"法宝"→`fabao` 表）
+   - sheet 别名（"法宝表"→`Fabao` sheet）
+   - 列别名（"攻击力"→`atk` 或 `攻击`；"名称"→主名称列）
+   - 行定位（"名称为青锋"→`名称` 列 contains 匹配 `青锋`）
+3. **调原子 API 执行**：
+   - 查询定位：`GET /api/tables/{stem}/sheets/{sheet}` 读数据找行号
+   - **定位失败回退（R19）**：名称无命中（或命中0行）→ 调 `GET /api/tables/{stem}/sheets/{sheet}/suggest?value={名称}&col={列名或列号}&top=3` 拿 top-3 相近行 → 展示候选卡片（行号/值/相似度/字段摘要）→ 提示"未找到「青锋」，是否是以下相近项？"→ 用户选某行后用该行号继续操作；若无相近项再调 `GET /api/tables/search?q={名称}&table={stem}` 全文搜索其他表
+   - 改值：`POST /api/tables/cell/update`
+   - 新增：`POST /api/tables/add-form/build` → `validate` → `commit`
+4. **返回结果**：改了什么、旧值→新值、校验结果、跨表影响
+
+## 5. 原子 API 清单
+
+base URL：`http://127.0.0.1:8000`
+
+### 5.1 查询类
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/tables` | 所有表列表（stem + sheets 摘要） |
+| GET | `/api/tables/search?q={关键词}&table={限定表}` | 全文搜索表格内容 |
+| GET | `/api/tables/{stem}/sheets/{sheet}/suggest?value={名称}&col={列名或列号}&top=3` | R19 名称定位失败相近项建议（模糊匹配 top-N，含行号/值/相似度/字段摘要） |
+| GET | `/api/tables/{stem}` | 表详情（含 sheet 列表 + 行数） |
+| GET | `/api/tables/{stem}/sheets/{sheet}?page=1&page_size=100&include_columns=1` | sheet 分页数据，返回 `{headers, rows, data_start, total_rows, columns_meta, columns?}`。`columns_meta` 始终含列名+列号（R20 同名列消歧）；`include_columns=1` 同时返回列约束 `columns`（R21 改值前单次取数据+约束） |
+| GET | `/api/tables/{stem}/sheets/{sheet}/columns` | 列约束（类型/必填/唯一/外键/公式标记） |
+| GET | `/api/validate/id-scope` | 跨表 ID 编号段校验 + 查重 |
+
+**定位行号**：`data_start` 是数据起始 Excel 行号（1-based），页内索引 `ri` 对应 Excel 行号 = `data_start + (page-1)*page_size + ri`。`cell/update` 的 `row` 参数用此 Excel 绝对行号。
+
+**同名列消歧（R20）**：响应 `columns_meta` 含每列 `{col_index, name}`（1-based）。若 sheet 有同名列（如两列都叫"激活消耗"），回显时标注 `激活消耗(列3)` / `激活消耗(列4)`，`cell/update` 用 `col` 号精确区分。
+
+**改值前取约束（R21）**：改值前调 `?include_columns=1` 一次返回行数据 + 列约束（`columns`），无需分别调 sheet data 和 columns 两端点。
+
+### 5.2 改值
+
+`POST /api/tables/cell/update`
+
+请求体：
+```json
+{"table_stem": "fabao", "sheet": "Fabao", "row": 5, "col": 3, "value": "100"}
+```
+- `row`：Excel 绝对行号 1-based
+- `col`：列号 1-based（从表头列算起，不含行号列）
+- `value`：字符串，后端按列类型转换
+
+响应：`{ok, old_value, new_value, message, error}`
+
+**多字段批量改值（R22）**：同行多列一次提交，事务性（全成或全失败）。
+
+`POST /api/tables/cells/batch-update`
+```json
+{"table_stem": "fabao", "sheet": "Fabao", "row": 5, "atomic": true,
+ "updates": [{"col": 3, "value": "Icon_new.png"}, {"col": 4, "value": "新描述"}]}
+```
+响应：`{ok, results: [{col, col_name, old_value, new_value, ok, error}], message}`。`atomic=true` 时任一列校验失败则全部不写；`atomic=false` 时失败的列跳过、成功的照写。多字段修改优先用此端点，避免多次 `cell/update` 往返。
+
+### 5.3 新增行
+
+1. `POST /api/tables/add-form/build` — 请求体 `{"text": "增加灵兽"}` → 返回 `{ok, table_stem, sheet, columns[], empty_row}`
+2. `POST /api/tables/add-form/validate` — 请求体 `{table_stem, sheet, values: {"列号字符串": 值}}` → 返回 `{ok, errors[], warnings[], coerced_values}`
+3. `POST /api/tables/add-form/commit` — 请求体 `{table_stem, sheet, values, confirm?, dry_run?}` → 插入新行（`confirm=true` 跳过校验，仅用户明确确认时用）
+
+**R23 二段提交（推荐流程）**：新增行强制先预览再写盘，防误操作。
+1. 先调 `commit` 带 `dry_run=true` → 返回 `{ok, dry_run:true, inserted_values, message}`，`inserted_values` 是校验通过+类型转换后的预览值，**不写盘**
+2. 展示预览给用户确认（"将新增：法宝id=999 名称=测试法宝 ..."）
+3. 用户确认后调 `commit` 带 `dry_run=false`（或不传）真写盘 → 返回 `new_row` 实际行号
+
+### 5.4 行/列增删（R24）
+
+**删行**：`POST /api/tables/row/delete` — 请求体 `{table_stem, sheet, row}` → 删除指定行，公式引用机械位移，响应 `warnings` 提示检查跨行引用。
+
+**插行**：`POST /api/tables/row/insert` — 请求体 `{table_stem, sheet, row, values?}` → 在指定行上方插入新行（继承上一行样式），`values` 可空（插空行后用 `cell/update` 填值）。
+
+**列增删（高风险）**：`POST /api/tables/column/add` / `/delete` — 请求体 `{table_stem, sheet, col, col_name?, col_type?, confirm}`。**必须 `confirm=true` 才执行**，否则只返回风险提示。列操作改变所有行列结构，公式引用机械位移，务必检查。
+
+## 6. 能力边界
+
+| 操作 | 支持 | 说明 |
+|---|---|---|
+| 查询/搜索 | ✅ | list/search/sheet data/columns/suggest |
+| 改值（单格/多格） | ✅ | cell/update + cells/batch-update（事务性） |
+| 新增行 | ✅ | add-form build→validate→commit（R23 二段提交） |
+| 删除行 | ✅ | row/delete（R24，公式引用机械位移 + 缓存保护） |
+| 插入行 | ✅ | row/insert（R24，样式继承 + 公式引用机械位移 + 缓存保护） |
+| 列增删 | ✅ | column/add + column/delete（R24，需 confirm，公式引用机械位移 + 缓存保护） |
+| 校验 | ✅ | 类型/唯一/跨表 ID（id-scope） |
+| 公式重写 | ❌ | L2 语义原语（interpret/scan/preview/rewrite）未挂 HTTP API，公式列只读不改；append 后汇总范围不自动扩展属真缺口，需退出模式用 Web 端 agent（见 R27） |
+
+## 7. 拒绝规则
+
+非表格操作请求（写代码、查项目结构、解释概念、闲聊、问答等）→ 回应：
+
+> 配表操作模式下无法进行此操作。请先说"退出配表模式"恢复完整能力。
+
+## 8. 安全规则
+
+- **改值前先查**：`GET` sheet 数据 + `columns` 约束，确认行号/列号/类型/唯一性
+- **唯一列查重**：改值前搜该列是否已有相同值
+- **公式列保护**：`columns` 约束标记为公式的列不直接覆写，提示用户风险
+- **ID 列改动**：改 id 列后调 `/api/validate/id-scope` 校验跨表冲突
+- **新增先校验**：`validate` 通过再 `commit`，`confirm=true` 仅用户明确确认时用
+- **值类型**：数字列传数字字符串（"100"），后端转换；不要传公式串除非明确要求
+- **公式缓存自动保护**：所有写表路径（`cell/update`、`cells/batch-update`、`row/delete`、`row/insert`、`column/add`、`column/delete`、`add-form/commit`）均经后端 `_save_with_cache_check`——save 前快照公式缓存 → save 后回读对比 → 丢失则 libreoffice headless 重算写回。用户无需手动处理公式缓存丢失，改公式输入源后缓存值自动重算更新。

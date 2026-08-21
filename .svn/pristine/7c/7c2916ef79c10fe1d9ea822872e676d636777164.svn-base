@@ -1,0 +1,89 @@
+{
+  "topo_cases": [
+    {
+      "id": "linear_chain",
+      "intents": [
+        {"idx": 0, "produces": "new_a", "fields": {"id": "0"}},
+        {"idx": 1, "produces": "new_b", "fields": {"id": "1", "ref": "<new_a>"}},
+        {"idx": 2, "produces": "new_c", "fields": {"id": "2", "ref": "<new_b>"}},
+        {"idx": 3, "produces": "new_d", "fields": {"id": "3", "ref": "<new_c>"}}
+      ],
+      "constraints": [
+        {"producer": 0, "consumer": 1},
+        {"producer": 1, "consumer": 2},
+        {"producer": 2, "consumer": 3}
+      ],
+      "expect_cycle": false
+    },
+    {
+      "id": "diamond_deps",
+      "intents": [
+        {"idx": 0, "produces": "new_a", "fields": {"id": "0"}},
+        {"idx": 1, "produces": "new_b", "fields": {"id": "1", "ref": "<new_a>"}},
+        {"idx": 2, "produces": "new_c", "fields": {"id": "2", "ref": "<new_a>"}},
+        {"idx": 3, "produces": "new_d", "fields": {"id": "3", "ref1": "<new_b>", "ref2": "<new_c>"}}
+      ],
+      "constraints": [
+        {"producer": 0, "consumer": 1},
+        {"producer": 0, "consumer": 2},
+        {"producer": 1, "consumer": 3},
+        {"producer": 2, "consumer": 3}
+      ],
+      "expect_cycle": false
+    },
+    {
+      "id": "cycle_fallback",
+      "intents": [
+        {"idx": 0, "produces": "new_a", "fields": {"id": "0", "ref": "<new_b>"}},
+        {"idx": 1, "produces": "new_b", "fields": {"id": "1", "ref": "<new_a>"}}
+      ],
+      "constraints": [],
+      "expect_cycle": true
+    },
+    {
+      "id": "independent",
+      "intents": [
+        {"idx": 0, "fields": {"id": "0"}},
+        {"idx": 1, "fields": {"id": "1"}},
+        {"idx": 2, "fields": {"id": "2"}}
+      ],
+      "constraints": [],
+      "expect_cycle": false
+    }
+  ],
+  "rollback_scenarios": [
+    {
+      "id": "mid_chain_fail",
+      "intents": [
+        {"idx": 0, "produces": "new_a", "fields": {"id": "0"}},
+        {"idx": 1, "produces": "new_b", "fields": {"id": "1", "ref": "<new_a>"}, "fail": true},
+        {"idx": 2, "produces": "new_c", "fields": {"id": "2", "ref": "<new_b>"}}
+      ],
+      "expect_failed_at": 1,
+      "expect_skipped": [2],
+      "expect_rollback_prev": true
+    },
+    {
+      "id": "first_step_fail",
+      "intents": [
+        {"idx": 0, "produces": "new_a", "fields": {"id": "0"}, "fail": true},
+        {"idx": 1, "produces": "new_b", "fields": {"id": "1", "ref": "<new_a>"}},
+        {"idx": 2, "produces": "new_c", "fields": {"id": "2", "ref": "<new_b>"}}
+      ],
+      "expect_failed_at": 0,
+      "expect_skipped": [1, 2],
+      "expect_rollback_prev": true
+    },
+    {
+      "id": "independent_fail",
+      "intents": [
+        {"idx": 0, "fields": {"id": "0"}},
+        {"idx": 1, "fields": {"id": "1"}, "fail": true},
+        {"idx": 2, "fields": {"id": "2"}}
+      ],
+      "expect_failed_at": 1,
+      "expect_skipped": [],
+      "expect_rollback_prev": false
+    }
+  ]
+}

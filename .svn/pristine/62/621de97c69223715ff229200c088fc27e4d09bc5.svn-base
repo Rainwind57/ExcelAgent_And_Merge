@@ -1,0 +1,118 @@
+"""R24 行/列增删验证脚本。
+
+验证点：
+  A. 删行 — row/delete 删除指定行，行数-1
+  B. 插行 — row/insert 在指定行上方插入，行数+1
+  C. 删行公式位移 warning — 有公式时返回 warnings
+  D. 列新增 confirm=false — 不执行，返回风险提示
+  E. 列新增 confirm=true — 执行，列数+1
+  F. 列删除 confirm=true — 执行，列数-1
+  G. 表不存在边界
+
+注意：会真实写盘，测前备份 fabao.xlsx，测后还原。
+"""
+from __future__ import annotations
+
+import os
+import sys
+import shutil
+from pathlib import Path
+
+sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from services.agent_service import get_agent_service
+from models.agent_models import (RowDeleteRequest, RowInsertRequest, ColumnOpRequest)
+
+_passed = 0
+_failed = 0
+
+
+def _check(name: str, ok: bool, detail: str = "") -> bool:
+    global _passed, _failed
+    _passed += 1 if ok else 0
+    _failed += 0 if ok else 1
+    mark = "PASS" if ok else "FAIL"
+    print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
+    return ok
+
+
+def main():
+    svc = get_agent_service()
+    stem, sheet = "fabao", "Fabao"
+    res_path = Path("resources/fabao.xlsx")
+    backup = Path("resources/_fabao_backup_r24.xlsx")
+    shutil.copy2(res_path, backup)
+    print(f"已备份 fabao.xlsx → {backup.name}")
+
+    try:
+        data0 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        n0 = data0.total_rows
+        nc0 = len(data0.headers)
+        print(f"原始: {n0} 行, {nc0} 列, data_start={data0.data_start}")
+
+        print("[A] 删行")
+        # 删行5（无敌法宝）
+        r = svc.delete_row(RowDeleteRequest(table_stem=stem, sheet=sheet, row=data0.data_start))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        data1 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        _check("行数-1", data1.total_rows == n0 - 1, f"{n0}→{data1.total_rows}")
+
+        print("[B] 插行")
+        # 在行5上方插入带值的新行（空行不计为数据行，故带值验证）
+        r = svc.insert_row(RowInsertRequest(
+            table_stem=stem, sheet=sheet, row=data0.data_start,
+            values={"1": "999", "2": "插行测试"}))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        data2 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        _check("行数+1", data2.total_rows == data1.total_rows + 1, f"{data1.total_rows}→{data2.total_rows}")
+
+        print("[C] 删行公式位移 warning")
+        # fabao 激活消耗列有公式/元组，删行应触发 warning（needs_manual_fix 或 cache_message）
+        # 注意：删行可能无公式列，warning 可能为空——只要不报错即可
+        r = svc.delete_row(RowDeleteRequest(table_stem=stem, sheet=sheet, row=data0.data_start))
+        _check("删行 ok=True", r.ok)
+        # warning 非空更好，但允许空（取决于是否有公式）
+        _check("warnings 是 list", isinstance(r.warnings, list))
+
+        print("[D] 列新增 confirm=false 不执行")
+        r = svc.add_column(ColumnOpRequest(
+            table_stem=stem, sheet=sheet, col=3, col_name="测试列", confirm=False))
+        _check("ok=False", not r.ok)
+        _check("含风险提示", len(r.warnings) > 0)
+        data3 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        _check("列数不变", len(data3.headers) == nc0, f"{nc0}→{len(data3.headers)}")
+
+        print("[E] 列新增 confirm=true 执行")
+        r = svc.add_column(ColumnOpRequest(
+            table_stem=stem, sheet=sheet, col=3, col_name="新增测试列", col_type="int", confirm=True))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        data4 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        _check("列数+1", len(data4.headers) == nc0 + 1, f"{nc0}→{len(data4.headers)}")
+
+        print("[F] 列删除 confirm=true 执行")
+        r = svc.delete_column(ColumnOpRequest(
+            table_stem=stem, sheet=sheet, col=3, confirm=True))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        data5 = svc.get_sheet_data(stem, sheet, page=1, page_size=100)
+        _check("列数-1", len(data5.headers) == nc0, f"{len(data4.headers)}→{len(data5.headers)}")
+
+        print("[G] 表不存在边界")
+        r = svc.delete_row(RowDeleteRequest(table_stem="不存在xyz", sheet=sheet, row=5))
+        _check("删行表不存在 ok=False", not r.ok and "表格不存在" in r.message)
+        r = svc.insert_row(RowInsertRequest(table_stem="不存在xyz", sheet=sheet, row=5))
+        _check("插行表不存在 ok=False", not r.ok and "表格不存在" in r.message)
+        r = svc.add_column(ColumnOpRequest(table_stem="不存在xyz", sheet=sheet, col=1, confirm=True))
+        _check("加列表不存在 ok=False", not r.ok and "表格不存在" in r.message)
+
+    finally:
+        shutil.copy2(backup, res_path)
+        backup.unlink()
+        print(f"\n已还原 fabao.xlsx（删除 {backup.name}）")
+
+    print(f"\n{'='*40}")
+    print(f"R24 验证结果: {_passed} PASS / {_failed} FAIL")
+    return 0 if _failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

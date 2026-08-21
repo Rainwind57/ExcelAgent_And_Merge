@@ -1,0 +1,272 @@
+"""multi-table-orchestration 单测（capability: cross-table-templates + cross-table-transaction + relation-graph-consumption）。
+
+验证：
+- D1 对话 NPC 生成 6 类意图 + 引用链 Base→interaction→conv
+- D2 传送/战斗/奖励 NPC 命中拆表 + 正确意图类型
+- D3 produces 标注完整 + spawn_id 独立
+- D4 跨表事务：全成功提交；中间失败标记 dirty_data + failed_tables
+- D5 RelationGraph.get_related_tables + 运行时 merge
+"""
+from __future__ import annotations
+
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.excel.cross_table_splitter import (
+    CrossTableIntentSplitter, detect_cross_table_action,
+    _build_npc_dialogue_intents, _build_npc_teleport_intents,
+    _build_npc_combat_intents, _build_npc_reward_intents,
+)
+from agent.excel.agent import AgentResult
+from agent.nl_parser import NLIntent
+
+
+# ── D1 对话 NPC 拆表模板 ──────────────────────────────────
+
+def test_npc_dialogue_generates_5_intents_with_interaction():
+    """D1: 对话 NPC 生成 5 类意图（Base + Interaction + Conv + Option + spawn）。"""
+    info = {"name": "铁匠", "model_id": "1015", "space_id": "100",
+            "pos": ("1", "2", "3"), "conv": "你好", "options": ["A", "B"]}
+    intents = _build_npc_dialogue_intents(info)
+    # Base + Interaction + Conv + 2 Option + spawn = 6
+    assert len(intents) == 6
+    tables = [(i.table_hint, i.sheet_hint) for i in intents]
+    assert ("entity_prefab", "Base") in tables
+    assert ("interaction", "Interaction") in tables  # D1 新增链接表
+    assert ("interaction", "InteractionConv") in tables
+    assert ("spawn_world_entity", "SpawnWorldEntity") in tables
+
+
+def test_npc_dialogue_reference_chain_correct():
+    """D1: 引用链 Base→interaction→conv（不跳过 Interaction 中间层）。"""
+    info = {"name": "铁匠", "model_id": "", "space_id": "", "pos": None,
+            "conv": "你好", "options": ["A"]}
+    intents = _build_npc_dialogue_intents(info)
+    base = next(i for i in intents if i.table_hint == "entity_prefab")
+    interaction = next(i for i in intents if i.table_hint == "interaction"
+                       and i.sheet_hint == "Interaction")
+    # Base.交互id 引用 <new_interaction_id>（非 <new_conv_id>）
+    assert base.fields["交互id"] == "<new_interaction_id>"
+    # Interaction.effect.data.3006.conv_id 引用 <new_conv_id>
+    assert interaction.fields["effect.key"] == "3006"
+    assert interaction.fields["effect.data.3006.conv_id"] == "<new_conv_id>"
+
+
+def test_npc_dialogue_produces_complete():
+    """D3: produces 标注完整 + spawn_id 独立。"""
+    info = {"name": "铁匠", "model_id": "", "space_id": "100",
+            "pos": None, "conv": "你好", "options": ["A"]}
+    intents = _build_npc_dialogue_intents(info)
+    produces = {i.table_hint + "." + (i.sheet_hint or ""): i.produces for i in intents}
+    assert produces["entity_prefab.Base"] == "new_prefab_id"
+    assert produces["interaction.Interaction"] == "new_interaction_id"
+    assert produces["interaction.InteractionConv"] == "new_conv_id"
+    assert produces["spawn_world_entity.SpawnWorldEntity"] == "spawn_id"  # D3 独立标注
+
+
+# ── D2 NPC 变体拆表模板 ──────────────────────────────────
+
+def test_detect_npc_teleport():
+    """D2: 传送 NPC 命中 npc_teleport。"""
+    assert detect_cross_table_action("新增NPC传送使者传送到10001") == "npc_teleport"
+
+
+def test_detect_npc_combat():
+    """D2: 战斗 NPC 命中 npc_combat。"""
+    assert detect_cross_table_action("新增NPC擂台挑战者战斗ID为102") == "npc_combat"
+
+
+def test_detect_npc_reward():
+    """D2: 奖励 NPC 命中 npc_reward。"""
+    assert detect_cross_table_action("新增NPC奖励使者获得reward_id 10006") == "npc_reward"
+
+
+def test_npc_teleport_intents_structure():
+    """D2: 传送 NPC 生成 Base + Interaction(3003) + spawn。"""
+    info = {"name": "传送使者", "model_id": "", "space_id": "100",
+            "pos": None, "target_space_id": "10001"}
+    intents = _build_npc_teleport_intents(info)
+    assert len(intents) == 3  # Base + Interaction + spawn
+    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
+    assert interaction.fields["effect.key"] == "3003"  # 传送效果
+    assert interaction.fields["effect.data.3003.to_space_id"] == "10001"
+
+
+def test_npc_combat_intents_structure():
+    """D2: 战斗 NPC 生成 Base + Interaction(3001) + spawn。"""
+    info = {"name": "擂台挑战者", "model_id": "", "space_id": "100",
+            "pos": None, "combat_id": "102"}
+    intents = _build_npc_combat_intents(info)
+    assert len(intents) == 3
+    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
+    assert interaction.fields["effect.key"] == "3001"  # 战斗效果
+    assert interaction.fields["effect.data.3001.combat_id"] == "102"
+
+
+def test_npc_reward_intents_structure():
+    """D2: 奖励 NPC 生成 Base + Interaction(3002) + spawn。"""
+    info = {"name": "奖励使者", "model_id": "", "space_id": "100",
+            "pos": None, "reward_id": "10006"}
+    intents = _build_npc_reward_intents(info)
+    assert len(intents) == 3
+    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
+    assert interaction.fields["effect.key"] == "3002"  # 奖励效果
+    assert interaction.fields["effect.data.3002.reward_id"] == "10006"
+
+
+# ── D4 跨表事务 ──────────────────────────────────────────
+
+def test_transaction_all_success():
+    """D4: 全成功提交（所有 res.ok=True）。"""
+    from agent.excel.operation_orchestrator import OperationOrchestrator
+
+    def fake_run_single(intent, confirm_token, session_id):
+        res = AgentResult(intent=intent)
+        res.add("write", True, "成功")
+        return res
+
+    orch = OperationOrchestrator(fake_run_single)
+    intents = [NLIntent(action="add", table_hint="t1", raw="t1"),
+               NLIntent(action="add", table_hint="t2", raw="t2")]
+    results = orch.run(intents)
+    assert len(results) == 2
+    assert all(r.ok is True for r in results)
+
+
+def test_transaction_middle_failure_marks_dirty():
+    """D4: 中间失败 → 标记 dirty_data + failed_tables + 中断后续。"""
+    from agent.excel.operation_orchestrator import OperationOrchestrator
+
+    call_count = [0]
+
+    def fake_run_single(intent, confirm_token, session_id):
+        call_count[0] += 1
+        res = AgentResult(intent=intent)
+        if call_count[0] == 2:  # 第2条失败
+            res.add("write", False, "写后验证失败")
+        else:
+            res.add("write", True, "成功")
+        return res
+
+    orch = OperationOrchestrator(fake_run_single)
+    intents = [NLIntent(action="add", table_hint="t1", raw="t1"),
+               NLIntent(action="add", table_hint="t2", raw="t2"),
+               NLIntent(action="add", table_hint="t3", raw="t3")]
+    results = orch.run(intents)
+    # 第3条被跳过（事务中断）
+    assert call_count[0] == 2, "第3条应被跳过"
+    # 失败结果有 dirty_data + failed_tables
+    failed = [r for r in results if r.ok is not True]
+    assert len(failed) >= 1
+    assert any(r.dirty_data for r in failed)
+    assert any(r.failed_tables for r in failed)
+
+
+# ── D5 RelationGraph ─────────────────────────────────────
+
+def test_relation_graph_npc_three_tables():
+    """D5: NPC 三表关系存在（entity_prefab↔interaction↔spawn_world_entity）。"""
+    from agent.excel.table_relations import RelationGraph
+    g = RelationGraph.load()
+    related = g.get_related_tables("entity_prefab")
+    related_stems = [s for s, _ in related]
+    assert "interaction" in related_stems
+    assert "spawn_world_entity" in related_stems
+
+
+def test_get_related_tables_returns_relation_type():
+    """D5: get_related_tables 返回 (related_stem, relation_type)。"""
+    from agent.excel.table_relations import RelationGraph
+    g = RelationGraph.load()
+    related = g.get_related_tables("entity_prefab")
+    for stem, rtype in related:
+        assert isinstance(stem, str)
+        assert isinstance(rtype, str)
+        assert rtype  # 非空
+
+
+def test_relation_graph_load_merges_runtime():
+    """D5: load() merge 运行时 table_relations.runtime.json（静态优先）。"""
+    from agent.excel.table_relations import RelationGraph
+    g = RelationGraph.load()
+    # 静态 6 条 + 运行时 merge（若有 runtime 文件，静态优先去重）
+    assert len(g.relations) >= 6  # 至少静态 6 条
+
+
+def test_get_related_tables_empty_for_unknown_stem():
+    """D5: 未知 stem 返回空列表。"""
+    from agent.excel.table_relations import RelationGraph
+    g = RelationGraph.load()
+    assert g.get_related_tables("nonexistent_table") == []
+
+
+# ── D5.2 schema_infer regex 扩展 + 落盘逻辑 ───────────────
+
+def test_infer_ref_table_extended_patterns():
+    """D5.2: _infer_ref_table 覆盖实际列名格式（含空格/大写 ID/数字冒号前缀）。"""
+    from agent.excel.schema_infer import _infer_ref_table
+    # 原格式兼容
+    assert _infer_ref_table("pet_id") == "pet"
+    assert _infer_ref_table("宠物id") == "宠物"
+    assert _infer_ref_table("物品编号") == "物品"
+    # D5 扩展：大写 ID + 空格
+    assert _infer_ref_table("实体Prefab ID") == "实体Prefab"
+    assert _infer_ref_table("对话ID") == "对话"
+    assert _infer_ref_table("战斗ID") == "战斗"
+    # D5 扩展：数字冒号前缀（raw 兜底）
+    assert _infer_ref_table("3006", "3006:对话ID") == "对话"
+    assert _infer_ref_table("3004", "3004: spawn ID") == "spawn"
+
+
+def test_generate_table_relations_format():
+    """D5.2: generate_table_relations 输出 RelationGraph 兼容格式。"""
+    from agent.excel.schema_infer import generate_table_relations
+    # 空表输入 → 空 relations
+    result = generate_table_relations({})
+    assert "relations" in result
+    assert isinstance(result["relations"], list)
+
+
+def test_regenerate_skills_merges_table_relations(tmp_path, monkeypatch):
+    """D5.2: regenerate_skills 自动发现关系 merge 到 table_relations.json（不覆盖既有）。"""
+    from agent.excel import schema_infer
+    from agent.excel.table_relations import RelationGraph
+
+    # 建最小 xlsx（pet + pet_evolve 外键关系）
+    import openpyxl
+    res = tmp_path / "res"
+    pet_dir = res / "pet"; pet_dir.mkdir(parents=True)
+    wb = openpyxl.Workbook()
+    s = wb.active; s.title = "Pet"
+    s.cell(1, 1, "灵兽id"); s.cell(2, 1, "pet_id:int")
+    s.cell(5, 1, 1)
+    wb.save(pet_dir / "pet.xlsx")
+
+    ev_dir = res / "pet_evolve"; ev_dir.mkdir(parents=True)
+    wb2 = openpyxl.Workbook()
+    s2 = wb2.active; s2.title = "PetEvolveData"
+    s2.cell(1, 1, "宠物id"); s2.cell(2, 1, "pet_id:int")
+    s2.cell(5, 1, 1)
+    wb2.save(ev_dir / "pet_evolve.xlsx")
+
+    # 备份原 table_relations.json
+    from agent.excel.table_relations import _relations_path
+    orig_path = _relations_path()
+    orig_content = orig_path.read_text(encoding="utf-8") if orig_path.exists() else None
+
+    try:
+        schema_infer.regenerate_skills(res)
+        # 重新加载，确认 pet_evolve→pet 关系被 merge
+        g = RelationGraph.load()
+        pet_rels = [r for r in g.relations if "pet.xlsx" in r.to_path]
+        assert len(pet_rels) >= 1, "应发现 pet_evolve→pet 外键关系"
+    finally:
+        # 恢复原 table_relations.json
+        if orig_content is not None:
+            orig_path.write_text(orig_content, encoding="utf-8")

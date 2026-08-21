@@ -1,0 +1,116 @@
+"""4-Step V2 Step4 Conclude SubAgent（§设计 S3）。
+
+职责（严格限定）：
+  - 汇总 results/failures → 面向用户的自然语言总结
+  - 结构化失败清单（#40）
+  - skill_updater 反模式归纳（pending_review → active 经门控）
+
+严禁：
+  - 执行/写入（属 Step3）
+  - 校验（属 Step2）
+  - 输入分析（属 Step1）
+
+复用 induce_anti_patterns（内联 _phase_conclude 核心逻辑，去掉 type("R",...)
+临时对象伪造）+ 简单汇总，不触发 Step3 那种补建写入越界。
+错误归属固定 step4_conclude。
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+from .contracts import STEP4_CONCLUDE, StepContext, StepError, StepResult
+
+logger = logging.getLogger(__name__)
+
+
+class Step4ConcludeSubAgent:
+    """Step4：总结归纳、生成经验。"""
+
+    def __init__(self, services: Any = None):
+        # 注入 ExcelAgentServices（替代原 agent=self 散播私态）。
+        # services 收口 enable_skill / ai_enhancer 接口。
+        self._services = services
+
+    def execute(self, ctx: StepContext) -> StepResult:
+        """Step4 执行：聚合 Step3 results/failures → summary + 反模式归纳。
+
+        - 无 LLM 汇总时走模板拼接（成功 X / 失败 Y / 跳过 Z）
+        - failures 非空 + skill 开启 → induce_anti_patterns（1 次 LLM，失败降级）
+        - 不做执行/补建（杜绝 Step4 越界）
+        """
+        t0 = time.time()
+        errors: list[StepError] = []
+        warnings: list[str] = []
+
+        s3 = ctx.get_result("step3_execute")
+        subtasks = (s3.artifacts.get("subtasks") if s3 else []) or []
+        failures = (s3.artifacts.get("failures") if s3 else []) or []
+
+        # §低危修复：Step4 ok 镜像 Step3（Step4 只汇总，不改 ok 语义）。
+        # 原独立判 all_ok = n_fail==0，与 s3.ok（not any hard）口径不一致：
+        # 如 s3 hard error 但 subtask 都 ok → s3.ok=False 但 Step4 all_ok=True 漂移；
+        # 或 s3 ok 但 subtask 有 soft fail → Step4 all_ok=False。镜像 s3.ok 保一致。
+        s3_ok = (s3.ok if s3 else None)
+        all_ok = bool(s3_ok)
+        # §低危修复：ok=None（needs_confirm 待确认）不计失败，与 Step3 口径一致。
+        # 原 `not s.get("ok")` 把 None 当失败 → n_fail 误计。
+        n_ok = sum(1 for s in subtasks if s.get("ok") is True)
+        n_fail = sum(1 for s in subtasks if s.get("ok") is False)
+        n_pending = sum(1 for s in subtasks if s.get("needs_confirm")
+                        and s.get("ok") is None)
+
+        # 汇总文案（模板，无 LLM）
+        if all_ok and subtasks:
+            summary = f"完成 {n_ok} 个子任务"
+            if n_pending:
+                summary += f"，{n_pending} 个待确认"
+        elif subtasks:
+            summary = f"完成 {n_ok}/{len(subtasks)} 个子任务，{n_fail} 个失败"
+            if n_pending:
+                summary += f"，{n_pending} 个待确认"
+            for f in failures[:5]:
+                loc = f"{f.get('table', '?')}/{f.get('sheet', '?')}"
+                col = f" 列[{f.get('col')}]" if f.get("col") else ""
+                rc = f.get("root_cause") or "未知"
+                summary += f"\n- {loc}{col}：{rc}"
+        else:
+            summary = ctx.folded_message()
+
+        # 反模式归纳（用共享 helper，替代原内联 _phase_conclude 核心逻辑）。
+        # _collect_failed_traces + _induce_anti_patterns_via 在 TableAgent 上，
+        # V2 Step4 与 legacy _phase_conclude 共用，消除双份漂移。
+        if failures and self._services is not None:
+            try:
+                if self._services.enable_skill:
+                    _enh = self._services.ai_enhancer
+                    if _enh is not None:
+                        from ..agent import TableAgent
+                        traces = TableAgent._collect_failed_traces(failures)
+                        n = TableAgent._induce_anti_patterns_via(traces, _enh)
+                        if n:
+                            warnings.append(
+                                f"反模式归纳产出 {n} 条候选"
+                                f"（pending_review，待 promote）")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Step4 反模式归纳失败（降级）", exc_info=True)
+                warnings.append(f"反模式归纳失败：{e}")
+
+        return StepResult(
+            step_id=STEP4_CONCLUDE, ok=all_ok,
+            errors=errors, warnings=warnings,
+            metrics={
+                "dur_ms": int((time.time() - t0) * 1000),
+                "subtasks_ok": n_ok, "subtasks_fail": n_fail,
+                "subtasks_pending": n_pending,
+                "failures": len(failures),
+            },
+            artifacts={
+                # 不再复制 s3 的 failures/subtasks（run_v2 顶层直接从 s3 取，避免口径漂移）。
+                # Step4 只产 summary + 反模式归纳标记（induced_count）。
+                "summary": summary, "induced_count": len(failures),
+            })
+
+
+__all__ = ["Step4ConcludeSubAgent"]

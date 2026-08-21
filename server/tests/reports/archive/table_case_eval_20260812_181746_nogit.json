@@ -1,0 +1,374 @@
+{
+  "_header": {
+    "run_id": "20260812_181746_nogit",
+    "git_hash": "nogit",
+    "generated_at": "2026-08-12 18:17:46",
+    "script": "table_case_eval",
+    "case_count": 0
+  },
+  "results": {
+    "summary": {
+      "n": 1,
+      "n_total": 1,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.0,
+      "truth_ok_rate": 0.0,
+      "error_rate": 1.0,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.8333,
+      "coverage": 0.8333,
+      "field_accuracy": 0.7333,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 1,
+      "avg_elapsed_ms": 232715.9,
+      "p50_elapsed_ms": 232715.9,
+      "p95_elapsed_ms": 232715.9,
+      "total_elapsed_s": 232.7,
+      "error_type_distribution": {
+        "unknown": 1
+      },
+      "total_llm_calls": 25,
+      "total_tokens": 22355,
+      "avg_llm_calls": 25,
+      "success_path_calls": 25,
+      "failure_path_calls": 0
+    },
+    "meta": {
+      "start": 1,
+      "end": 1,
+      "done": 1,
+      "span": 1,
+      "total_all": 111,
+      "last_cid": 1
+    },
+    "off": {
+      "n": 1,
+      "n_total": 1,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.0,
+      "truth_ok_rate": 0.0,
+      "error_rate": 1.0,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.8333,
+      "coverage": 0.8333,
+      "field_accuracy": 0.7333,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 2,
+      "avg_elapsed_ms": 233489.7,
+      "p50_elapsed_ms": 233489.7,
+      "p95_elapsed_ms": 233489.7,
+      "total_elapsed_s": 233.5,
+      "error_type_distribution": {
+        "unknown": 1
+      },
+      "total_llm_calls": 23,
+      "total_tokens": 16799,
+      "avg_llm_calls": 23,
+      "success_path_calls": 23,
+      "failure_path_calls": 0
+    },
+    "on": {
+      "n": 1,
+      "n_total": 1,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.0,
+      "truth_ok_rate": 0.0,
+      "error_rate": 1.0,
+      "confirm_rate": 0.0,
+      "locate_rate": 0.8333,
+      "coverage": 0.8333,
+      "field_accuracy": 0.7333,
+      "strict_pass_rate": 0.0,
+      "avg_extra_ops": 1,
+      "avg_elapsed_ms": 232715.9,
+      "p50_elapsed_ms": 232715.9,
+      "p95_elapsed_ms": 232715.9,
+      "total_elapsed_s": 232.7,
+      "error_type_distribution": {
+        "unknown": 1
+      },
+      "total_llm_calls": 25,
+      "total_tokens": 22355,
+      "avg_llm_calls": 25,
+      "success_path_calls": 25,
+      "failure_path_calls": 0
+    },
+    "off_results": [
+      {
+        "cid": 1,
+        "input_text": "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，选项为'好的，我要锻造'和'离开'",
+        "skill_enabled": false,
+        "ok": false,
+        "error": "失败：match_field - 未找到列[实体名字]",
+        "elapsed_ms": 233489.7,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 5,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 2,
+        "n_expected": 6,
+        "n_effective": 6,
+        "locate_rate": 0.8333,
+        "coverage": 0.8333,
+        "field_accuracy": 0.7333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 23,
+          "total_tokens": 16799,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 987
+            },
+            "confirm_table": {
+              "calls": 6,
+              "tokens": 3241
+            },
+            "plan_operation": {
+              "calls": 6,
+              "tokens": 5363
+            },
+            "react": {
+              "calls": 3,
+              "tokens": 4066
+            },
+            "fix_field_mapping": {
+              "calls": 1,
+              "tokens": 818
+            },
+            "summarize": {
+              "calls": 6,
+              "tokens": 2324
+            }
+          },
+          "success_path_calls": 23,
+          "failure_path_calls": 0
+        }
+      }
+    ],
+    "on_results": [
+      {
+        "cid": 1,
+        "input_text": "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，选项为'好的，我要锻造'和'离开'",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：match_field - 未找到列[最大生成数量]",
+        "elapsed_ms": 232715.9,
+        "needs_confirm_used": false,
+        "entries": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": ""
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": ""
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": ""
+          },
+          {
+            "index": 5,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 4,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或全部已被其它 expected 项占用）"
+          }
+        ],
+        "extra_ops": 1,
+        "n_expected": 6,
+        "n_effective": 6,
+        "locate_rate": 0.8333,
+        "coverage": 0.8333,
+        "field_accuracy": 0.7333,
+        "strict_pass": false,
+        "truth_ok": false,
+        "extra_ops_off_table": 0,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 25,
+          "total_tokens": 22355,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 987
+            },
+            "confirm_table": {
+              "calls": 6,
+              "tokens": 3241
+            },
+            "plan_operation": {
+              "calls": 6,
+              "tokens": 5340
+            },
+            "fix_field_mapping": {
+              "calls": 1,
+              "tokens": 861
+            },
+            "react": {
+              "calls": 4,
+              "tokens": 8386
+            },
+            "induce_anti_pattern": {
+              "calls": 1,
+              "tokens": 804
+            },
+            "summarize": {
+              "calls": 6,
+              "tokens": 2736
+            }
+          },
+          "success_path_calls": 25,
+          "failure_path_calls": 0
+        }
+      }
+    ]
+  }
+}

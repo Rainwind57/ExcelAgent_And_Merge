@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Case 文档 · AI 配表助手</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .sample { border:1px solid var(--c-border); border-radius:8px; padding:14px 18px; margin:0 0 14px; background:#fcfcfd; }
+  .sample .stitle { font-weight:700; color:var(--c-primary-dark); margin-bottom:6px; font-size:14px; }
+  .sample .sinput { margin:6px 0; }
+  .sample .sinput code { color:#9a3412; }
+  .result { margin-top:8px; }
+  .group-divider { margin:40px 0 20px; padding:10px 16px; border-radius:8px; font-weight:700; }
+  .group-divider.web { background:#eff6ff; color:var(--c-primary-dark); border-left:4px solid var(--c-primary); }
+  .group-divider.cm { background:#f0fdf4; color:var(--c-ok); border-left:4px solid var(--c-ok); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">Case 文档 · 18 例</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav"><a href="index.html">← 返回首页</a></nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">手册</div>
+      <nav class="nav">
+        <a href="user-manual.html"><span class="badge planner">用户</span> 后端 Agent</a>
+        <a href="tech-manual.html"><span class="badge tech">技术</span> 后端 Agent</a>
+        <a href="codemaker-user-manual.html"><span class="badge planner">用户</span> 配表模式</a>
+        <a href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 配表模式</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">后端 Agent（Web 端）</div>
+      <nav class="nav">
+        <a href="#case-1">1. 查询</a>
+        <a href="#case-2">2. 修改</a>
+        <a href="#case-3">3. 新增</a>
+        <a href="#case-4">4. 删除</a>
+        <a href="#case-5">5. 复合指令</a>
+        <a href="#case-6">6. 表格型增加</a>
+        <a href="#case-7">7. 智能问答</a>
+        <a href="#case-8">8. 公式表操作</a>
+        <a href="#case-9">9. 批量操作</a>
+        <a href="#case-10">10. 版本比对合并</a>
+        <a href="#case-11">11. 三阶段引导合并</a>
+        <a href="#case-12">12. 表格浏览</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">CodeMaker 配表模式</div>
+      <nav class="nav">
+        <a href="#case-13">13. 进入模式</a>
+        <a href="#case-14">14. 查询</a>
+        <a href="#case-15">15. 修改（相近项）</a>
+        <a href="#case-16">16. 删除</a>
+        <a href="#case-17">17. 新增（二段提交）</a>
+        <a href="#case-18">18. 拒答与退出</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Case 文档</h1>
+    <p class="lead">按功能分两组：<strong>后端 Agent（Web 端）</strong> 12 例、<strong>CodeMaker 配表模式</strong> 6 例。每例含输入 + 预期结果 + 真实截图。</p>
+
+    <div class="callout">
+      <span class="ctitle">约定</span>
+      前置：服务已启动。Web 端浏览器打开 <code>http://127.0.0.1:8000</code>；配表模式在 CodeMaker 插件对话框操作。截图取自实机（源 <code>doc/html/img/</code>），输入与截图内容一致。<strong>点击任一截图可在新窗口打开原图</strong>。
+    </div>
+
+    <div class="group-divider web">▍后端 Agent（Web 端）· AI 表格处理助手</div>
+
+    <!-- Case 1 -->
+    <section class="case" id="case-1">
+      <div class="case-head"><span class="case-num">1</span><h3>查询</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>用自然语言查数据。样例一查单行全部属性，样例二查单字段并处理多匹配。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 按名称查单行所有属性</div>
+        <div class="sinput">输入：<code>查询建筑炼金台的所有属性</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>AI 定位建筑表 BuildingType，返回“炼金台”所在行的全部字段。</div>
+        <div class="figure">
+          <img src="img/image.png" alt="查询建筑炼金台全属性">
+          <div class="fcaption">图 1-1　查询建筑“炼金台”的所有属性</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 按名称查单字段（多匹配）</div>
+        <div class="sinput">输入：<code>查询神通能力名称为再生的神通描述</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>命中多条匹配以卡片列出，点击“高级再生”查看具体内容。</div>
+        <div class="figure">
+          <img src="img/image-1.png" alt="查询再生-多匹配">
+          <div class="fcaption">图 1-2　命中 3 条匹配</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-2.png" alt="查询再生-高级再生">
+          <div class="fcaption">图 1-3　点击“高级再生”查看</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Case 2 -->
+    <section class="case" id="case-2">
+      <div class="case-head"><span class="case-num">2</span><h3>修改</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>改字段值。样例一改灵兽资质，样例二改人物面板数值。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 改灵兽数值字段</div>
+        <div class="sinput">输入：<code>将灵兽蕊花仙的体力资质修改为4443</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>蕊花仙体力资质变 4443，回执显示原值 → 新值。</div>
+        <div class="figure">
+          <img src="img/image-3.png" alt="修改蕊花仙体力资质">
+          <div class="fcaption">图 2-1　修改灵兽“蕊花仙”的体力资质为 4443</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 改人物面板数值字段</div>
+        <div class="sinput">输入：<code>将人物男角色的面板物理攻击修改为5554</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>男角色面板物理攻击列更新为 5554。</div>
+        <div class="figure">
+          <img src="img/image-4.png" alt="修改男角色物理攻击">
+          <div class="fcaption">图 2-2　修改人物“男角色”的面板物理攻击为 5554</div>
+        </div>
+      </div>
+      <div class="callout warn"><span class="ctitle">注意</span>改动只落工作目录，不自动提交 SVN。改含公式表时回执附公式缓存提示。</div>
+    </section>
+
+    <!-- Case 3 -->
+    <section class="case" id="case-3">
+      <div class="case-head"><span class="case-num">3</span><h3>新增</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>新增一行。样例一新增活动指定 ID + 时间，样例二新增法宝指定描述。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 新增活动（ID + 时间）</div>
+        <div class="sinput">输入：<code>新增活动名称为新周年庆，id是10006，活动开始时间是2026/5/21</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>活动表追加“新周年庆”行，id=10006，开始时间 2026/5/21。</div>
+        <div class="figure">
+          <img src="img/image-5.png" alt="新增活动新周年庆">
+          <div class="fcaption">图 3-1　新增活动“新周年庆”</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 新增法宝（名称 + 描述）</div>
+        <div class="sinput">输入：<code>新增法宝名称为测试法宝4，法宝描述为TEST</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>法宝表追加“测试法宝4”行，描述为 TEST。</div>
+        <div class="figure">
+          <img src="img/image-6.png" alt="新增法宝测试法宝4">
+          <div class="fcaption">图 3-2　新增法宝“测试法宝4”</div>
+        </div>
+      </div>
+      <div class="callout danger"><span class="ctitle">编号冲突</span>不同分支可能用同编号，合并时冲突。新增前先查编号是否被占用（查 id_mgr）。</div>
+    </section>
+
+    <!-- Case 4 -->
+    <section class="case" id="case-4">
+      <div class="case-head"><span class="case-num">4</span><h3>删除</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>按条件删行。样例一删活动，样例二删法宝。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 删活动</div>
+        <div class="sinput">输入：<code>删除活动新周年庆</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>“新周年庆”所在行从活动表移除。</div>
+        <div class="figure">
+          <img src="img/image-7.png" alt="删除活动新周年庆">
+          <div class="fcaption">图 4-1　删除活动“新周年庆”</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 按名称删法宝</div>
+        <div class="sinput">输入：<code>删除法宝名称为测试法宝4</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>“测试法宝4”所在行从法宝表移除。</div>
+        <div class="figure">
+          <img src="img/image-8.png" alt="删除法宝测试法宝4">
+          <div class="fcaption">图 4-2　删除法宝“测试法宝4”</div>
+        </div>
+      </div>
+      <div class="callout warn"><span class="ctitle">建议</span>删错难恢复，务必先查后删。</div>
+    </section>
+
+    <!-- Case 5 -->
+    <section class="case" id="case-5">
+      <div class="case-head"><span class="case-num">5</span><h3>复合指令（多字段）</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>一句话含多操作或多字段赋值。样例一新增 + 多字段，样例二一句改多个字段。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 新增 + 多字段赋值</div>
+        <div class="sinput">输入：<code>增加建筑名称为瞭望塔v2，建筑类型为654</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>建筑表新增“瞭望塔v2”行，名称 + 建筑类型（654）一次填入。</div>
+        <div class="figure">
+          <img src="img/image-9.png" alt="复合-新增建筑瞭望塔v2">
+          <div class="fcaption">图 5-1　新增建筑“瞭望塔v2”并指定建筑类型 654</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 一句改多个字段</div>
+        <div class="sinput">输入：<code>将门派名称为火法的大世界model_id改为1028，战斗model_id改为1068</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>门派“火法”的大世界 model_id 与战斗 model_id 一次性修改完成。</div>
+        <div class="figure">
+          <img src="img/image-10.png" alt="复合-多字段修改门派火法">
+          <div class="fcaption">图 5-2　一条指令同时修改门派“火法”的两个 model_id 字段</div>
+        </div>
+      </div>
+      <p class="muted">若第一次定位表格出错，可选择“搜索其他表格”（耗时相应变长），定位成功后返回相应信息。</p>
+    </section>
+
+    <!-- Case 6 -->
+    <section class="case" id="case-6">
+      <div class="case-head"><span class="case-num">6</span><h3>表格型增加</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code> + 表单校验合并</div>
+      <p><strong>目标：</strong>通过弹出表单填写并校验后新增一行。</p>
+
+      <div class="sample">
+        <div class="stitle">样例 · 弹出表单填写并合并</div>
+        <div class="sinput">输入：<code>增加灵兽</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>定位到灵兽表（pet/Pet）并弹出待填表单；填写后点“校验”或“确认新增”，确认时经一次校验，无误后自动合并进主表。</div>
+        <div class="figure">
+          <img src="img/image-11.png" alt="表格型增加-弹出待填表单">
+          <div class="fcaption">图 6-1　弹出待填表格</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-12.png" alt="表格型增加-校验合并">
+          <div class="fcaption">图 6-2　校验通过后合并到主表（已新增 Pet 行 53）</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Case 7 -->
+    <section class="case" id="case-7">
+      <div class="case-head"><span class="case-num">7</span><h3>智能问答</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat（qa 分支） · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>问表结构，不翻表头。样例一问相关表清单，样例二问列明细。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 问相关表清单</div>
+        <div class="sinput">输入：<code>建筑相关的表格有哪些</code>（也可问 <code>邮件相关的表格有哪些</code>）</div>
+        <div class="result"><span class="rtitle">预期结果</span>AI 基于 <code>_table_index.json</code> 列出与该主题相关的所有表名。</div>
+        <div class="figure">
+          <img src="img/image-13.png" alt="建筑相关的表格有哪些">
+          <div class="fcaption">图 7-1　建筑相关的表</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-15.png" alt="邮件相关的表格有哪些">
+          <div class="fcaption">图 7-2　邮件相关的表</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 问列明细</div>
+        <div class="sinput">输入：<code>item表格有哪些列</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>AI 列出 item 表所有列名及含义。</div>
+        <div class="figure">
+          <img src="img/image-14.png" alt="item表格有哪些列">
+          <div class="fcaption">图 7-3　item 表列明细</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Case 8 -->
+    <section class="case" id="case-8">
+      <div class="case-head"><span class="case-num">8</span><h3>公式表操作</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> <span class="badge tech">技术</span> · 页面：AI Chat · 公式列保护</div>
+      <p><strong>目标：</strong>改 / 删含公式的表，保证公式结果不出错。样例一改公式表数值，样例二删公式表行。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 改公式表数值</div>
+        <div class="sinput">输入：<code>将formula_basic表格中的段位名称为测试段位6的基础分修改为600</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>测试段位6 的基础分改为 600，公式列结果同步正确。</div>
+        <div class="figure">
+          <img src="img/image-30.png" alt="公式-修改基础分">
+          <div class="fcaption">图 8-1　修改基础分为 600</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-31.png" alt="公式-修改结果">
+          <div class="fcaption">图 8-2　公式结果同步正确</div>
+        </div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 删公式表行</div>
+        <div class="sinput">输入：<code>将formula_sum中赛季编号是7的行进行删除</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>赛季编号 7 的行被删除，删除后最终公式结果无误。</div>
+        <div class="figure">
+          <img src="img/image-32.png" alt="公式-删除行">
+          <div class="fcaption">图 8-3　删除赛季编号 7 的行</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-33.png" alt="公式-删除后结果正确">
+          <div class="fcaption">图 8-4　删除后公式结果无误</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Case 9 -->
+    <section class="case" id="case-9">
+      <div class="case-head"><span class="case-num">9</span><h3>批量操作</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：AI Chat · 接口：<code>POST /api/agent/chat</code></div>
+      <p><strong>目标：</strong>一条指令串联多步操作，助手按顺序逐条执行（查 → 改 → 查 → 删）。</p>
+
+      <div class="sample">
+        <div class="stitle">样例 · 串联查改查删</div>
+        <div class="sinput">输入：<code>查询建筑瞭望塔v2的所有信息；将建筑瞭望塔v2的地图图标修改为4444，代码中建筑实体类型名为CityTest；查询建筑瞭望塔v2的所有信息；删除灵兽玄武龟v2</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>助手拆分为 4 步依次执行并逐条回执：查询 → 修改 → 再查询确认 → 删除。</div>
+        <div class="figure">
+          <img src="img/image-16.png" alt="批量-查询瞭望塔v2">
+          <div class="fcaption">图 9-1　① 查询建筑“瞭望塔v2”</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-66.png" alt="批量-修改瞭望塔v2">
+          <div class="fcaption">图 9-2　② 修改地图图标 4444、实体类型名 CityTest</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-67.png" alt="批量-再次查询瞭望塔v2">
+          <div class="fcaption">图 9-3　③ 再次查询确认修改结果</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-68.png" alt="批量-删除玄武龟v2">
+          <div class="fcaption">图 9-4　④ 删除灵兽“玄武龟v2”</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Case 10 -->
+    <section class="case" id="case-10">
+      <div class="case-head"><span class="case-num">10</span><h3>版本比对合并</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> <span class="badge tech">技术</span> · 页面：版本比对 · 接口：<code>/api/compare</code> / <code>/api/merge</code></div>
+      <p><strong>目标：</strong>多版本比对、解决冲突并导出。</p>
+
+      <div class="sample">
+        <div class="stitle">完整流程</div>
+        <p><strong>步骤 1 · 进入与加载比对</strong>：点“版本比对”进入初始界面，从 merge 文件夹加载或选本地文件，比对后进入界面。</p>
+        <div class="figure">
+          <img src="img/image-39.png" alt="版本比对初始界面">
+          <div class="fcaption">图 10-1　初始界面</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-40.png" alt="比对界面">
+          <div class="fcaption">图 10-2　比对界面</div>
+        </div>
+
+        <p><strong>步骤 2 · 筛选 Sheet 与行类型</strong>：顶部按“全部 sheet / 仅冲突 / 仅增删改”过滤；选中 Sheet 后可选全部/冲突/修改/新增/删除。</p>
+        <div class="figure">
+          <img src="img/image-41.png" alt="筛选Sheet">
+          <div class="fcaption">图 10-3　筛选 Sheet</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-20.png" alt="行类型筛选1">
+          <div class="fcaption">图 10-4　Sheet 内行类型筛选</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-21.png" alt="行类型筛选2">
+          <div class="fcaption">图 10-5　筛选后展示</div>
+        </div>
+
+        <p><strong>步骤 3 · 解决冲突</strong>：点冲突单元格进入裁决页（当前冲突列拼接展示）。鼠标悬停选定单值，或“整行用此版本”一键采纳。</p>
+        <div class="figure">
+          <img src="img/image-22.png" alt="冲突处理页">
+          <div class="fcaption">图 10-6　冲突处理页</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-23.png" alt="选择某版本值">
+          <div class="fcaption">图 10-7　悬停选定单值</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-24.png" alt="整行用此版本">
+          <div class="fcaption">图 10-8　“整行用此版本”</div>
+        </div>
+        <p>解决一个后仅显示剩余冲突；点“已解决”可回溯重选。</p>
+        <div class="figure">
+          <img src="img/image-25.png" alt="仅显示剩余冲突">
+          <div class="fcaption">图 10-9　仅显示剩余冲突</div>
+        </div>
+        <div class="figure">
+          <img src="img/image-26.png" alt="查看已解决">
+          <div class="fcaption">图 10-10　“已解决”可回溯</div>
+        </div>
+
+        <p><strong>步骤 4 · 编号冲突自动处理</strong>：编号冲突按版本先后自动合并，编号改为当前最大编号 +1，并按主键 sort 排序。</p>
+        <div class="figure">
+          <img src="img/image-28.png" alt="编号冲突自动处理">
+          <div class="fcaption">图 10-11　编号冲突自动重映射并排序</div>
+        </div>
+
+        <p><strong>步骤 5 · 导出</strong>：所有冲突 sheet 解决后“导出全部表格”变绿，导出至 merge 文件夹。</p>
+        <div class="figure">
+          <img src="img/image-27.png" alt="导出合并版本">
+          <div class="fcaption">图 10-12　导出按钮变绿，导出合并版本</div>
+        </div>
+      </div>
+      <p class="muted">完整说明见 <a href="user-manual.html#merge">后端 Agent 用户手册第 3 章</a>。</p>
+    </section>
+
+    <!-- Case 11 -->
+    <section class="case" id="case-11">
+      <div class="case-head"><span class="case-num">11</span><h3>三阶段引导合并</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> <span class="badge tech">技术</span> · 页面：三阶段引导合并 · 接口：<code>/api/...stage1,2,3</code></div>
+      <p><strong>目标：</strong>本地合并 → 跨生产者综合 → 逐分组合回 trunk。</p>
+
+      <div class="sample">
+        <div class="stitle">阶段 1 · 本地合并提交</div>
+        <div class="result"><span class="rtitle">操作</span>选生产者分支 → 选是否参与/基准/衍生 → “合并此分组” → 处理冲突 → “产生中间版本” → “合并完成，进入阶段2”（可切换生产者）。</div>
+        <div class="figure"><img src="img/image-42.png" alt="三阶段初始"><div class="fcaption">图 11-1　初始界面选生产者</div></div>
+        <div class="figure"><img src="img/image-43.png" alt="选择分组"><div class="fcaption">图 11-2　选择分组与基准</div></div>
+        <div class="figure"><img src="img/image-44.png" alt="产生中间版本"><div class="fcaption">图 11-3　产生中间版本</div></div>
+        <div class="figure"><img src="img/image-45.png" alt="进入阶段2"><div class="fcaption">图 11-4　进入阶段 2</div></div>
+        <div class="figure"><img src="img/image-46.png" alt="切换生产者"><div class="fcaption">图 11-5　切换生产者继续阶段 1</div></div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">阶段 2 · 跨生产者综合</div>
+        <div class="result"><span class="rtitle">操作</span>模拟多来源提交合并，比对后生成“跨生产者综合”中间版本。</div>
+        <div class="figure"><img src="img/image-47.png" alt="跨生产者综合"><div class="fcaption">图 11-6　跨生产者综合</div></div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">阶段 3 · 逐分组合回 trunk</div>
+        <div class="result"><span class="rtitle">操作</span>中间版与 trunk 比对 → “确认合回全部” → 修改清单 → 结算页面。</div>
+        <div class="figure"><img src="img/image-48.png" alt="合回trunk"><div class="fcaption">图 11-7　合回 trunk</div></div>
+        <div class="figure"><img src="img/image-49.png" alt="修改清单"><div class="fcaption">图 11-8　修改清单</div></div>
+        <div class="figure"><img src="img/image-50.png" alt="结算页面"><div class="fcaption">图 11-9　结算页面</div></div>
+      </div>
+    </section>
+
+    <!-- Case 12 -->
+    <section class="case" id="case-12">
+      <div class="case-head"><span class="case-num">12</span><h3>表格浏览</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 页面：表格浏览 · 接口：<code>/api/tables/*</code></div>
+      <p><strong>目标：</strong>翻表看数据 + 单元格 / 快速编辑。</p>
+
+      <div class="sample">
+        <div class="stitle">样例一 · 浏览与单元格编辑</div>
+        <div class="result"><span class="rtitle">操作</span>进入表格浏览 → 点具体表格看信息 → 双击单元格编辑 → 确认完成。</div>
+        <div class="figure"><img src="img/image-29.png" alt="表格浏览初始"><div class="fcaption">图 12-1　浏览初始界面</div></div>
+        <div class="figure"><img src="img/image-34.png" alt="查看表格信息"><div class="fcaption">图 12-2　查看表格信息</div></div>
+        <div class="figure"><img src="img/image-35.png" alt="单元格编辑"><div class="fcaption">图 12-3　双击单元格编辑</div></div>
+        <div class="figure"><img src="img/image-36.png" alt="确认编辑"><div class="fcaption">图 12-4　确认完成编辑</div></div>
+      </div>
+
+      <div class="sample">
+        <div class="stitle">样例二 · 快速编辑</div>
+        <div class="result"><span class="rtitle">操作</span>点右上角“快速编辑”，对整个表体做快速编辑。</div>
+        <div class="figure"><img src="img/image-37.png" alt="快速编辑1"><div class="fcaption">图 12-5　点击“快速编辑”</div></div>
+        <div class="figure"><img src="img/image-38.png" alt="快速编辑2"><div class="fcaption">图 12-6　整个表体进入快速编辑</div></div>
+      </div>
+      <div class="callout warn"><span class="ctitle">搜索较慢</span>页面上方搜索框可全文搜索，但整体耗时较长。</div>
+    </section>
+
+    <div class="group-divider cm">▍CodeMaker 配表模式 · 插件内轻量配表</div>
+
+    <!-- Case 13 -->
+    <section class="case" id="case-13">
+      <div class="case-head"><span class="case-num">13</span><h3>查看项目文件夹，进入配表模式</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · CodeMaker 插件 · 读 <code>TABLE_MODE.md</code></div>
+      <p><strong>目标：</strong>在插件对话框激活配表模式。</p>
+      <div class="sample">
+        <div class="stitle">样例 · 激活</div>
+        <div class="sinput">输入：<code>查看项目文件夹，进入配表模式</code> → 点“确认进入”</div>
+        <div class="result"><span class="rtitle">预期结果</span>CodeMaker 读取 <code>TABLE_MODE.md</code>，确认后正式进入配表操作模式。</div>
+        <div class="figure"><img src="img/image-51.png" alt="输入查看项目文件夹，进入配表模式"><div class="fcaption">图 13-1　输入”查看项目文件夹，进入配表模式”</div></div>
+        <div class="figure"><img src="img/image-52.png" alt="确认进入"><div class="fcaption">图 13-2　确认进入</div></div>
+        <div class="figure"><img src="img/image-53.png" alt="已进入"><div class="fcaption">图 13-3　已进入配表操作模式</div></div>
+      </div>
+    </section>
+
+    <!-- Case 14 -->
+    <section class="case" id="case-14">
+      <div class="case-head"><span class="case-num">14</span><h3>查询</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 配表模式 · 原子 API 查询</div>
+      <p><strong>目标：</strong>查所有匹配行的全部字段。</p>
+      <div class="sample">
+        <div class="stitle">样例 · 查灵兽全部信息</div>
+        <div class="sinput">输入：<code>查询灵兽饕餮的所有信息</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>返回饕餮一阶/二阶/三阶等所有匹配行的全部字段。</div>
+        <div class="figure"><img src="img/image-54.png" alt="查询饕餮1"><div class="fcaption">图 14-1　命中 3 条并执行查询</div></div>
+        <div class="figure"><img src="img/image-55.png" alt="查询饕餮2"><div class="fcaption">图 14-2　饕餮一阶（id=1065）</div></div>
+        <div class="figure"><img src="img/image-56.png" alt="查询饕餮3"><div class="fcaption">图 14-3　饕餮二阶（id=2065）</div></div>
+        <div class="figure"><img src="img/image-57.png" alt="查询饕餮4"><div class="fcaption">图 14-4　饕餮三阶（id=3065）+ 进化链</div></div>
+      </div>
+    </section>
+
+    <!-- Case 15 -->
+    <section class="case" id="case-15">
+      <div class="case-head"><span class="case-num">15</span><h3>修改（相近项建议）</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 配表模式 · R19 相近项建议</div>
+      <p><strong>目标：</strong>名称未精确命中时给出相近项，确认后修改。</p>
+      <div class="sample">
+        <div class="stitle">样例 · 改神通描述</div>
+        <div class="sinput">输入：<code>将能力名称为三味真火测试版的神通描述修改为TEST</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>未精确命中 → 给出相近项建议 → 确认后执行，返回旧值 → 新值。</div>
+        <div class="figure"><img src="img/image-58.png" alt="相近项建议"><div class="fcaption">图 15-1　给出相近项建议</div></div>
+        <div class="figure"><img src="img/image-59.png" alt="执行结果"><div class="fcaption">图 15-2　确认后执行修改</div></div>
+      </div>
+    </section>
+
+    <!-- Case 16 -->
+    <section class="case" id="case-16">
+      <div class="case-head"><span class="case-num">16</span><h3>删除</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 配表模式 · <code>row/delete</code></div>
+      <p><strong>目标：</strong>按名称删行。</p>
+      <div class="sample">
+        <div class="stitle">样例 · 删法宝</div>
+        <div class="sinput">输入：<code>删除法宝名称为测试法宝3的信息</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>“测试法宝3”所在行从法宝表移除。</div>
+        <div class="figure"><img src="img/image-60.png" alt="删除法宝"><div class="fcaption">图 16-1　删除法宝“测试法宝3”</div></div>
+      </div>
+    </section>
+
+    <!-- Case 17 -->
+    <section class="case" id="case-17">
+      <div class="case-head"><span class="case-num">17</span><h3>新增（二段提交）</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 配表模式 · R23 二段提交</div>
+      <p><strong>目标：</strong>先预览校验值，确认后写盘。</p>
+      <div class="sample">
+        <div class="stitle">样例 · 新增灵兽</div>
+        <div class="sinput">输入：<code>增加灵兽名称为测试灵兽1，id是1145</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>先预览校验后的值 → 确认后写盘，返回新行行号。</div>
+        <div class="figure"><img src="img/image-61.png" alt="新增预览"><div class="fcaption">图 17-1　新增预览（dry_run）</div></div>
+        <div class="figure"><img src="img/image-62.png" alt="写盘结果"><div class="fcaption">图 17-2　确认后写盘</div></div>
+      </div>
+    </section>
+
+    <!-- Case 18 -->
+    <section class="case" id="case-18">
+      <div class="case-head"><span class="case-num">18</span><h3>拒答与退出</h3></div>
+      <div class="meta"><span class="badge planner">用户</span> · 配表模式 · 权限隔离</div>
+      <p><strong>目标：</strong>无关请求被拒答；退出恢复完整能力。</p>
+      <div class="sample">
+        <div class="stitle">样例一 · 无关请求拒答</div>
+        <div class="sinput">输入与表格操作无关的内容（写代码、查项目结构、闲聊等）</div>
+        <div class="result"><span class="rtitle">预期结果</span>请求被拒答，提示先退出配表模式。</div>
+        <div class="figure"><img src="img/image-64.png" alt="拒答"><div class="fcaption">图 18-1　无关请求被拒答</div></div>
+      </div>
+      <div class="sample">
+        <div class="stitle">样例二 · 退出模式</div>
+        <div class="sinput">输入：<code>退出配表模式</code></div>
+        <div class="result"><span class="rtitle">预期结果</span>退出配表模式，恢复完整能力。</div>
+        <div class="figure"><img src="img/image-63.png" alt="退出配表模式"><div class="fcaption">图 18-2　退出配表模式</div></div>
+      </div>
+    </section>
+
+    <hr class="hr">
+    <p class="muted">Web 端用法见 <a href="user-manual.html">后端 Agent 用户手册</a>，配表模式见 <a href="codemaker-user-manual.html">配表模式用户手册</a>。点击任一截图可在新窗口打开原图。</p>
+  </main>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.figure img').forEach(function (img) {
+      img.title = '点击查看原图';
+      img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+    });
+  });
+</script>
+</body>
+</html>

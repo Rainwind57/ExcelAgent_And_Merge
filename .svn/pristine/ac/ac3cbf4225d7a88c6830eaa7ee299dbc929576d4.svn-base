@@ -1,0 +1,98 @@
+"""分词与候选词生成：jieba 优先，n-gram 兜底。
+
+用途：把带噪声的自然语言片段（如"属性这一列""所有属性""灵兽饕餮"）拆成
+多个候选词，逐个交给表/列/行匹配器，命中取最高分。
+
+- 有 jieba 时用 jieba 精确切词；import 失败自动退回 unigram + bigram 的 n-gram 切法。
+- candidate_terms 在切词基础上剥离指示性/量词性填充词（"这一列""所有"等噪声），
+  并生成"整串 / 去填充整串 / 单词 / 相邻二元组合"多组候选，覆盖不同分词可能。
+"""
+
+from __future__ import annotations
+
+import re
+
+try:
+    import jieba
+    # 静默初始化，避免首次调用时的构建日志干扰
+    jieba.setLogLevel(60)
+    jieba.initialize()
+    _HAS_JIEBA = True
+except Exception:
+    _HAS_JIEBA = False
+
+# 中文连续块 / 英文数字块
+_CHUNK_RE = re.compile(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]+")
+_ASCII_RE = re.compile(r"[A-Za-z0-9_]+")
+
+# 填充词：指示代词、量词、结构词等，对表/列/行匹配无区分价值，需从候选中剥离。
+# 注意保持克制——只放结构性噪声，避免误删真实列名 token（如"名称""类型"不入表）。
+_FILLER_WORDS = {
+    "的", "了", "吗", "呢", "啊", "呀", "请", "帮", "我", "你", "把", "将", "给",
+    "让", "使", "对", "为", "是", "有", "这", "那", "个", "些", "里",
+    "这个", "那个", "这一", "那一", "这些", "那些", "这里", "那里",
+    "这列", "那列", "这个列", "那个列", "这一列", "那一列",
+    "一列", "个列", "一个列", "一行", "这行", "那行", "一个",
+    "列", "字段", "名", "叫", "名为", "名叫",
+    "所有", "全部", "整个", "一下", "的话", "以及", "还有",
+}
+
+
+def _ngram(chunk: str) -> list[str]:
+    """单个中文块的 unigram + bigram 切分（无 jieba 时的兜底）。"""
+    toks = list(chunk)
+    if len(chunk) >= 2:
+        toks.extend(chunk[i:i + 2] for i in range(len(chunk) - 1))
+    return toks
+
+
+def segment(text: str) -> list[str]:
+    """分词：jieba 优先，失败退回 n-gram。返回保序词序列（可含重复）。"""
+    if not text:
+        return []
+    words: list[str] = []
+    for chunk in _CHUNK_RE.findall(text):
+        if _ASCII_RE.fullmatch(chunk):
+            words.append(chunk.lower())
+        elif _HAS_JIEBA:
+            words.extend(w.strip() for w in jieba.cut(chunk) if w.strip())
+        else:
+            words.extend(_ngram(chunk))
+    return words
+
+
+def candidate_terms(text: str, *, drop_filler: bool = True,
+                    max_terms: int = 16) -> list[str]:
+    """从带噪声文本生成候选匹配串（去重、保序）。
+
+    候选来源（按加入顺序）：
+      1. 原始整串
+      2. 剥离填充词后的整串（如"属性这一"→"属性"、"所有属性"→"属性"）
+      3. 各有效单词（长→短，长词更具区分度）
+      4. 相邻有效单词的二元组合（覆盖 jieba 过度切分，如"槽""位"→"槽位"）
+
+    调用方对每个候选各匹配一次，命中多个取分最高者。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    out: list[str] = []
+
+    def add(t: str) -> None:
+        t = (t or "").strip()
+        if t and t not in out:
+            out.append(t)
+
+    add(text)
+
+    words = segment(text)
+    meaningful = [w for w in words if not (drop_filler and w in _FILLER_WORDS)]
+
+    add("".join(meaningful))
+    for w in sorted(set(meaningful), key=len, reverse=True):
+        add(w)
+    for i in range(len(meaningful) - 1):
+        add(meaningful[i] + meaningful[i + 1])
+
+    return out[:max_terms]

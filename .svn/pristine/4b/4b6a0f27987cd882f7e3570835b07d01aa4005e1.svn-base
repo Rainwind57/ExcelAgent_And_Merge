@@ -1,0 +1,95 @@
+"""语义别名管理（层1）：维护 alias_mapping.json，把自然语言别名映射到具体文件。
+
+例：{"灵兽": "pet.xlsx", "宠物": "pet.xlsx", "神通": "ability.xlsx"}
+
+用途：表格定位器（层3）的别名匹配级（置信度 90%），支持自然语言反查文件。
+文件持久化在 agent/alias_mapping.json，缺失时返回空映射并降级运行。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+def _alias_path() -> Path:
+    return Path(__file__).parent / "alias_mapping.json"
+
+
+@dataclass
+class AliasMapping:
+    """别名 → 文件路径映射。
+
+    Attributes:
+        mapping: {alias: file_path}，file_path 为相对 workspace 的路径（如 pet.xlsx）
+    """
+    mapping: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls) -> "AliasMapping":
+        """从 alias_mapping.json 加载；文件缺失或损坏返回空映射。"""
+        p = _alias_path()
+        if not p.exists():
+            return cls()
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return cls()
+        # 容忍两种结构：{alias: file} 或 {"aliases": {alias: file}}
+        raw = data.get("aliases", data) if isinstance(data, dict) else {}
+        mapping = {str(k): str(v) for k, v in raw.items() if v}
+        return cls(mapping=mapping)
+
+    def save(self) -> None:
+        """持久化到 alias_mapping.json。"""
+        _alias_path().write_text(
+            json.dumps({"aliases": self.mapping}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def set(self, alias: str, file_path: str) -> None:
+        """新增/更新一条别名映射。"""
+        if alias and file_path:
+            self.mapping[alias] = file_path
+
+    def remove(self, alias: str) -> bool:
+        """删除一条别名映射，返回是否实际删除。"""
+        if alias in self.mapping:
+            del self.mapping[alias]
+            return True
+        return False
+
+    def lookup(self, alias: str) -> Optional[str]:
+        """精确别名 → 文件路径；未命中返回 None。"""
+        return self.mapping.get(alias)
+
+    def lookup_in_text(self, text: str) -> list[tuple[str, str]]:
+        """在自然语言文本中反查别名，返回所有命中的 (alias, file_path) 列表。
+
+        按别名长度降序返回（越长越具体，定位器优先采纳）。
+        """
+        if not text:
+            return []
+        hits: list[tuple[str, str]] = []
+        for alias, fp in self.mapping.items():
+            if alias and alias in text:
+                hits.append((alias, fp))
+        hits.sort(key=lambda x: len(x[0]), reverse=True)
+        return hits
+
+    def files_for_stem(self, stem: str) -> list[str]:
+        """返回所有指向指定 stem（文件名无后缀）的别名。"""
+        return [a for a, fp in self.mapping.items() if Path(fp).stem == stem]
+
+
+if __name__ == "__main__":
+    am = AliasMapping.load()
+    if not am.mapping:
+        am.set("灵兽", "pet.xlsx")
+        am.set("宠物", "pet.xlsx")
+        am.set("神通", "ability.xlsx")
+        am.save()
+    print(am.mapping)
+    print(am.lookup_in_text("查看灵兽饕餮的数据"))

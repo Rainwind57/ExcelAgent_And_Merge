@@ -1,0 +1,2833 @@
+<script setup>
+// ── MergeGuideView：合并引导统一界面（分支合并 / 目录合并） ──
+// 步骤1 选合并方式（分支/子目录）→ 选源与目标 → 开始比对(一次比对全部交集表)
+// 步骤2 选表标签+sheet下拉(冲突优先排序)+行筛选+搜索+多选行+冲突modal解决(含AI建议/撤销/跳下一个)
+//       结构增删的表/sheet 以只读内容挂入，可直接点击查看
+// 步骤3 全部解决→应用（可选填 commit 名称；子目录可选覆盖/新版本两种落点）
+// 底部 提交历史：右上角按钮弹出大弹窗（时间、模式、涉及目录、表、产出、commit 名称）
+import { ref, reactive, computed, watch, nextTick, onActivated, onDeactivated } from 'vue'
+import { useRoute } from 'vue-router'
+
+const API_BRANCH = '/api/merge/branch'
+const API_SUBDIR = '/api/merge/subdir'
+
+const route = useRoute()
+const mode = ref(route.query.mode === 'subdir' ? 'subdir' : 'branch')   // 合并方式：branch | subdir
+
+// 分支合并状态
+const direction = ref('absorb')
+const branchDirs = ref([])
+const sourceBranch = ref('')
+const targetBranch = ref('')
+const newVersionDir = ref('')        // branch absorb 产出的新版本目录名（如 B_r3）
+const sourceRev = ref('')            // source 指定 SVN revision（空=HEAD）
+const targetRev = ref('')            // target 指定 SVN revision（空=HEAD）
+const baseRev = ref('')              // 共同祖先 base 指定 revision（空=自动 LCA）
+
+// 目录合并状态
+const subdirDirs = ref([])
+const sourceDir = ref('')
+const targetDir = ref('')
+// subdir 复用 sourceRev / baseRev（单源 fork，无 target_rev）
+
+// 提交历史
+const commits = ref([])
+const commitName = ref('')           // 本次合并的 commit 名称（可空）
+const showHistory = ref(false)       // 右上角「提交历史」大弹窗开关
+
+const compareResp = ref(null)       // 多表 CompareResponse
+const activeTable = ref('')          // 当前查看的表名
+const activeSheet = ref('')          // 当前 sheet
+const filterType = ref('diff')        // 行筛选 diff(默认：增删改冲突并集)|conflict|changed|inserted|deleted
+const viewMode = ref('table')         // 展示模式 table(全表单元格)|split(并排两表)
+const loading = ref(false)
+const applying = ref(false)
+const error = ref('')
+const msg = ref('')
+
+// 冲突弹窗
+const modalCell = ref(null)          // {cell,key,header,ri,ci}
+const conflictIdx = ref(-1)
+// AI 冲突建议
+const aiSuggestion = ref(null)
+const aiSuggestBusy = ref(false)
+const aiSuggestError = ref('')
+const aiRowBatchBusy = ref(false)
+const aiRowBatchError = ref('')
+const aiRowBatchDone = ref(false)
+const aiSheetBusy = ref(false)
+const aiSheetError = ref('')
+const aiSheetProgress = ref('')
+// #38 批量采纳高置信建议；#39 表标签按冲突密度排序
+const batchAdoptThreshold = ref(0.8)
+const batchAdoptBusy = ref(false)
+const batchAdoptMsg = ref('')
+const sortByConflict = ref(false)
+
+// 撤销/恢复
+const history = ref([])
+const historyIdx = ref(-1)
+
+// 多选行 + 行预览
+const selectedRows = ref(new Set())
+const rowPreviewRis = ref([])
+
+// 整表改用某版本（预览）
+const previewVersion = ref(null)
+const previewData = ref(null)
+const previewFilter = ref('all')
+
+// 搜索
+const rowSearchKey = ref('')
+
+// 侧栏面板
+const showConflictPanel = ref(false)
+const showAuditPanel = ref(false)
+
+// compare 刚完成时各表/各 sheet 的初始冲突数快照（用于区分「已解决」vs「本就无冲突」的着色/提示）
+const initialConflicts = ref({})   // { [group_name]: { total, sheets: { [sheet_name]: n } } }
+// 全部冲突解决后弹出确认框，询问是否立即应用合并
+const showAllResolvedConfirm = ref(false)
+// 应用合并是否已成功（步骤指示器第4步完成态）
+const applyDone = ref(false)
+
+// ── 基础工具函数 ──
+function str(v) { return v === null || v === undefined ? '' : String(v) }
+function truncated(val, max) { const s = val == null ? '' : String(val); return s.length > max ? s.slice(0, max) + '…' : s }
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+// 搜索词在单元格内片段高亮（先截断 → 用 ⟦⟧ 占位标记命中位置 → escapeHtml 转义 → 替换为 <mark>，防 XSS）
+function highlightSearchHit(val, max, key) {
+  let s = val == null ? '' : String(val)
+  if (s.length > max) s = s.slice(0, max) + '…'
+  const kw = (key || '').trim()
+  if (!kw) return escapeHtml(s)
+  const k = kw.toLowerCase()
+  const lower = s.toLowerCase()
+  let marked = '', i = 0
+  while (i < s.length) {
+    const idx = lower.indexOf(k, i)
+    if (idx === -1) { marked += s.slice(i); break }
+    marked += s.slice(i, idx) + '⟦' + s.slice(idx, idx + kw.length) + '⟧'
+    i = idx + kw.length
+  }
+  return escapeHtml(marked).replace(/⟦/g, '<mark class="search-hit">').replace(/⟧/g, '</mark>')
+}
+function colLetter(n) { let s = ''; n += 1; while (n > 0) { n--; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) } return s }
+function versionLabel(fname) {
+  if (!fname) return ''
+  const meta = curGroup.value?.version_meta?.[fname]
+  if (meta && meta.rev) return 'r' + meta.rev
+  const stem = fname.replace(/\.xlsx$/i, '')
+  const m = stem.match(/_(\d+)$/)
+  return m ? 'v' + m[1] : stem
+}
+function versionMeta(fname) {
+  return curGroup.value?.version_meta?.[fname] || null
+}
+function fmtRevDate(s) {
+  if (!s) return ''
+  return s.replace('T', ' ').replace(/\.\d+Z$/, '').replace('Z', '')
+}
+// 文件名中的 _src_/_tgt_/_base_ 标记来自后端 compare 接口的临时文件命名规则，用来标注该版本文件的操作来源
+function versionOrigin(fname) {
+  if (!fname) return ''
+  if (/_base(?:_|\.|$)/.test(fname)) return 'base'
+  if (/_src(?:_|\.|$)/.test(fname)) return 'source'
+  if (/_tgt(?:_|\.|$)/.test(fname)) return 'target'
+  return ''
+}
+// 来源徽标文案：source→From，target→To；base（基准）已有专门的「基准」标签，这里不重复标注
+function versionOriginLabel(fname) {
+  const o = versionOrigin(fname)
+  return o && o !== 'base' ? structOriginLabel(o) : ''
+}
+function resolvedLabel(cell) {
+  const s = cell.resolvedBy || ''
+  if (!s) return '已解决'
+  const originLabel = versionOriginLabel(s)
+  return versionLabel(s) + (originLabel ? ' · ' + originLabel : '')
+}
+// 单元格展示文本：公式格（已解决且保留 formula_text）显示「=公式=计算值」，否则显示值
+function cellDisplayText(cell) {
+  if (cell.formula_text && cell.formula_resolved && typeof cell.formula_text === 'string' && cell.formula_text.startsWith('=')) {
+    return cell.formula_text + '=' + (cell.value ?? '')
+  }
+  return cell.value
+}
+// 基准旧值：取基准版本的值（供「旧→新」对比展示）。
+// 全等行（后端 sparse 优化）不携带 versions，回退 cell.value（各版本一致）
+function baseValOf(cell) {
+  const base = curGroup.value?.base_file
+  return cell.versions?.[base] ?? cell.value
+}
+function lcsDiff(a, b) {
+  const n = a.length, m = b.length
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const res = []; let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { res.push({ type: 'eq', text: a[i] }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { res.push({ type: 'del', text: a[i] }); i++ }
+    else { res.push({ type: 'add', text: b[j] }); j++ }
+  }
+  while (i < n) { res.push({ type: 'del', text: a[i] }); i++ }
+  while (j < m) { res.push({ type: 'add', text: b[j] }); j++ }
+  return res
+}
+function renderDiffFor(val, baseVal) {
+  const valStr = val == null ? '' : String(val)
+  const baseStr = baseVal == null ? '' : String(baseVal)
+  if (valStr === baseStr) return escapeHtml(valStr)
+  // 阈值 80：lcsDiff 为 O(n*m) DP，长串（公式/JSON/长描述）内联 diff 既慢又难读，超限走 del→add 降级
+  if (valStr.length > 80 || baseStr.length > 80) {
+    return `<span class="diff-del">${escapeHtml(baseStr)}</span> → <span class="diff-add">${escapeHtml(valStr)}</span>`
+  }
+  return lcsDiff(baseStr, valStr).map(p => {
+    if (p.type === 'eq') return escapeHtml(p.text)
+    if (p.type === 'del') return `<span class="diff-del">${escapeHtml(p.text)}</span>`
+    return `<span class="diff-add">${escapeHtml(p.text)}</span>`
+  }).join('')
+}
+
+// 解决单元格冲突：写入新值并清除冲突标记，记录 resolvedBy 来源（用于审计/撤销）
+// 公式冲突选版本：选中值是公式文本(以 = 开头)时同步 formula_text 并保留 diff_type='formula'，
+// 触发 recomputeRowFormula 重算出计算值展示；formula_resolved 标记供 apply 写回选定的公式文本
+function resolveCell(cell, newVal, source = '') {
+  const wasConflict = cell.conflict
+  if (newVal !== undefined) cell.value = newVal
+  if (typeof newVal === 'string' && newVal.startsWith('=')) {
+    cell.formula_text = newVal
+    cell.diff_type = 'formula'
+    cell.formula_resolved = true
+  } else {
+    cell.diff_type = ''
+    cell.formula_resolved = false
+  }
+  cell.conflict = false; cell.changed = false; cell.resolved = true; cell.resolvedBy = source
+  // 增量计数：冲突格解决 → 该表/sheet conflicts 减 1（避免全表重扫）
+  if (wasConflict) {
+    const lc = liveCounts[activeTable.value]?.[activeSheet.value]
+    if (lc && lc.conflicts > 0) lc.conflicts--
+  }
+}
+
+// split 模式：点击冲突格 → 直接采纳该侧版本值，不弹 modal；左右两表同 cell 引用，双边同步消冲突
+function resolveCellSplit(cell, fn, ri, ci) {
+  if (!cell || !cell.conflict) return
+  pushSnapshot([{ ri, ci }])
+  const adopted = cell.versions?.[fn]
+  resolveCell(cell, adopted, fn)
+  recomputeRowFormula(curSheet.value.rows[ri])
+  const idx = diffList.value.findIndex(d => d.ri === ri && d.ci === ci)
+  if (idx >= 0) conflictIdx.value = Math.min(idx, diffList.value.length - 2)
+}
+
+// split 模式：某表某格的渲染 HTML
+//  - 冲突格：显该侧↔base 的 diff（两侧都改且不同才是 conflict，两侧都显）
+//  - 已解决格：采纳侧显值，非采纳侧划横线
+//  - 单向修改格：该侧显 diff，对侧（未改）显 base 值（无 diff）
+//  - 无变化：显 base 值
+function splitCellHtml(cell, fn, rowStatus) {
+  const base = curGroup.value?.base_file
+  const baseVal = cell.versions?.[base] ?? cell.value
+  const sideVal = sideCellVal(cell, fn, rowStatus)
+  if (cell.resolved) {
+    // 已解决：采纳侧显 base→采纳值 diff（强调采纳结果），非采纳侧保留 base→该侧 diff 但整格虚化（横线+半透明），
+    // 既体现该版本修改过程、便于后续切换，又不显眼
+    const adopted = cell.resolvedBy === fn
+    const val = adopted ? cell.value : sideVal
+    const html = renderDiffFor(val, baseVal)
+    if (adopted) return html
+    return `<span class="sp-struck">${html}</span>`
+  }
+  if (cell.conflict) {
+    // 冲突：两侧都显各自↔base 的 diff
+    return renderDiffFor(sideVal, baseVal)
+  }
+  if (cell.changed && cell.versions?.[fn] != null && String(cell.versions[fn]) !== String(baseVal)) {
+    // 该侧有单向修改 → 显该侧 diff
+    return renderDiffFor(sideVal, baseVal)
+  }
+  // 无变化或该侧未改 → 显 base 值（不显 diff）
+  return escapeHtml(baseVal == null ? '' : String(baseVal))
+}
+
+// 调后端重算指定行所有公式列的结果（用户改输入列值后实时预览下游公式）
+async function recomputeRowFormula(row) {
+  if (!row.cells.some(c => c.diff_type === 'formula')) return
+  try {
+    const payload = { cells: row.cells.map(c => ({ col: c.col, value: c.value, formula_text: c.formula_text || '', diff_type: c.diff_type })) }
+    const res = await fetch('/api/preview-row-formula', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    })
+    const data = await res.json()
+    if (data.cells) for (const r of data.cells) {
+      const fc = row.cells.find(c => c.col === r.col)
+      if (fc) fc.value = r.value
+    }
+  } catch (e) { /* 重算失败不阻断，导出时由 libreoffice 兜底 */ }
+}
+// 撤销/恢复：轻量快照（仅单元格可变状态）
+// 撤销/恢复：稀疏快照（仅记录本次将变化的单元格；10w 行表不做全量克隆）
+// entries: [{ri, ci}] 当前 sheet 内本次将变更的单元格
+function pushSnapshot(entries) {
+  const snap = {}
+  const gk = activeTable.value, sk = activeSheet.value
+  const sheet = curSheet.value
+  if (sheet) {
+    for (const { ri, ci } of entries || []) {
+      const cell = sheet.rows[ri]?.cells[ci]
+      if (!cell) continue
+      snap[gk] = snap[gk] || {}; snap[gk][sk] = snap[gk][sk] || {}
+      const rows = snap[gk][sk]
+      rows[ri] = rows[ri] || {}
+      rows[ri][ci] = {
+        value: cell.value, conflict: cell.conflict, changed: cell.changed,
+        resolved: cell.resolved || false, resolvedBy: cell.resolvedBy || '',
+        diff_type: cell.diff_type || '', formula_text: cell.formula_text || '',
+        formula_resolved: cell.formula_resolved || false,
+      }
+    }
+  }
+  history.value = history.value.slice(0, historyIdx.value + 1)
+  history.value.push(snap)
+  historyIdx.value = history.value.length - 1
+}
+function restoreSnapshot(snap) {
+  const touched = new Set()   // 'gk/sk'：撤销后重算该 sheet 的实时计数
+  for (const [gk, sheets] of Object.entries(snap)) {
+    for (const [sk, rows] of Object.entries(sheets)) {
+      const sheet = compareResp.value?.groups?.[gk]?.sheets?.[sk]
+      if (!sheet) continue
+      touched.add(`${gk}/${sk}`)
+      for (const riS of Object.keys(rows)) {
+        const ri = Number(riS)
+        const row = sheet.rows[ri]
+        if (!row) continue
+        for (const ciS of Object.keys(rows[riS])) {
+          const ci = Number(ciS)
+          const cell = row.cells[ci]
+          const st = rows[riS][ciS]
+          if (!cell) continue
+          cell.value = st.value
+          cell.conflict = st.conflict
+          cell.changed = st.changed
+          cell.resolved = st.resolved
+          cell.resolvedBy = st.resolvedBy || ''
+          cell.diff_type = st.diff_type || ''
+          cell.formula_text = st.formula_text || ''
+          cell.formula_resolved = st.formula_resolved || false
+        }
+      }
+    }
+  }
+  for (const key of touched) {
+    const [gk, sk] = key.split('/')
+    recomputeLiveCounts(gk, sk)
+  }
+}
+function undo() { if (historyIdx.value <= 0) return; historyIdx.value--; restoreSnapshot(history.value[historyIdx.value]) }
+function redo() { if (historyIdx.value >= history.value.length - 1) return; historyIdx.value++; restoreSnapshot(history.value[historyIdx.value]) }
+
+function onKeyDown(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
+  // Alt+→ 当前 Sheet 冲突已全部解决时跳转下一个有冲突的 Sheet
+  if (e.altKey && !e.ctrlKey && e.key === 'ArrowRight' && pendingCount.value === 0 && nextConflictSheet.value) {
+    e.preventDefault(); switchSheet(nextConflictSheet.value); return
+  }
+  // Ctrl+Alt+→ 当前表格冲突已全部解决时跳转下一个有冲突的表格
+  if (e.altKey && (e.ctrlKey || e.metaKey) && e.key === 'ArrowRight' && curTableConflicts.value === 0 && nextConflictTable.value) {
+    e.preventDefault(); switchTable(nextConflictTable.value); return
+  }
+  const tag = e.target?.tagName
+  const inInput = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
+  if (modalCell.value && !inInput) {
+    if (e.key === 'Escape') { e.preventDefault(); closeModal() }
+    else if (modalCell.value.cell.conflict || modalCell.value.cell.resolved) {
+      if (e.key === ' ') { e.preventDefault(); advanceModal() }
+      else if (/^[1-9]$/.test(e.key)) {
+        const fns = (curGroup.value?.files || []).filter(fn => fn !== curGroup.value?.base_file)
+        const idx = parseInt(e.key) - 1
+        if (idx < fns.length) { e.preventDefault(); chooseVersionForCell(modalCell.value.ci, fns[idx]) }
+      }
+    }
+  }
+}
+onActivated(() => { window.addEventListener('keydown', onKeyDown) })
+onDeactivated(() => { window.removeEventListener('keydown', onKeyDown) })
+
+function dirLabel(d) {
+  const base = d.base_suffix || d.base_snapshot || d.copyfrom || ''
+  if (d.inferred) return `${d.name} (新建,继承:${base})`
+  if (base) return `${d.name} (继承:${base})`
+  return d.name
+}
+
+// rev 下拉值转数字（'r2'→2，'123'→123）；demo 的版本后缀（'s1' 等）或空值返回 null 不发送
+function toRevNum(v) {
+  const m = String(v ?? '').match(/^r?(\d+)$/)
+  return m ? parseInt(m[1], 10) : null
+}
+function revNum(v) {
+  const n = toRevNum(v)
+  return n != null ? n : undefined
+}
+
+// ── 目录合并：先选目标、再在目标内选源子目录 ──
+// 目标目录：含至少一个子开发子目录（subdev_*）；排除 demo/legacy/samples 等非真实工作副本
+const _SUBDIR_SKIP_PREFIXES = ['demo', 'legacy', 'samples', 'mergebase', 'src', 'scripts', 'history']
+const targetOptions = computed(() => {
+  const names = subdirDirs.value.map(d => d.name)
+  return subdirDirs.value.filter(d => {
+    if (!names.some(n => n !== d.name && n.startsWith(d.name + '/'))) return false
+    if (_SUBDIR_SKIP_PREFIXES.some(p => d.name === p || d.name.startsWith(p + '/'))) return false
+    return true
+  })
+})
+
+// 源子目录：所选目标目录下的直接子目录；仅保留子开发目录（subdev_*），排除
+// assistant/city/combat 等业务表分类目录（这些是表结构子目录，非可合并的独立子项目）
+const _SUBDEV_PREFIX = 'subdev'
+const sourceOptions = computed(() => {
+  if (!targetDir.value) return []
+  const prefix = targetDir.value + '/'
+  return subdirDirs.value
+    .filter(d => {
+      if (!d.name.startsWith(prefix)) return false
+      const short = d.name.slice(prefix.length)
+      if (short.includes('/')) return false
+      // 只保留 subdev_* 子开发目录，排除业务分类子目录
+      return short === _SUBDEV_PREFIX || short.startsWith(_SUBDEV_PREFIX + '_') || short.startsWith(_SUBDEV_PREFIX + '-')
+    })
+    .map(d => {
+      const short = d.name.slice(prefix.length)
+      const base = d.base_suffix || d.base_snapshot || ''
+      const tag = d.inferred ? ` (新建,继承${base})` : (base ? ` (继承${base})` : '')
+      return { ...d, short, label: `${short}${tag}` }
+    })
+})
+
+// 切换目标目录时清空已选源子目录与目标 rev（旧源不在新目标下；To rev 待重新 preview 填充）
+watch(targetDir, () => { sourceDir.value = ''; targetRev.value = '' })
+
+// ── 分支合并：方向 + 源/目标分支；merge_back 目标自动取最新 trunk ──
+// 下拉仅显示名称 + fork 来源；具体版本号由右侧信息卡展示，避免冗杂
+const branchOptions = computed(() => branchDirs.value.map(d => ({
+  name: d.name,
+  label: d.copyfrom ? `${d.name} (base:${d.copyfrom})` : d.name,
+})))
+
+function isTrunkDir(name) {
+  return name === 'trunk' || name.endsWith('/trunk') || /^trunk_r\d+$/.test(name)
+}
+function _revNum(name) { const m = name.match(/r(\d+)$/); return m ? parseInt(m[1]) : 0 }
+function autoTargetForMergeBack(sourceName) {
+  if (!sourceName) return ''
+  // demo 快照源（扁平名，如 A_r2）→ 最新 trunk_rN
+  if (!sourceName.includes('/')) {
+    const demoTrunks = branchDirs.value.filter(d => /^trunk_r\d+$/.test(d.name))
+      .sort((a, b) => _revNum(a.name) - _revNum(b.name))
+    return demoTrunks.length ? demoTrunks[demoTrunks.length - 1].name : ''
+  }
+  // 真实工作副本源：目标 = 同根的 trunk 目录
+  const parts = sourceName.split('/')
+  const bi = parts.indexOf('branches')
+  const root = bi > 0 ? parts.slice(0, bi).join('/') : ''
+  const trunkName = root ? root + '/trunk' : 'trunk'
+  if (branchDirs.value.some(d => d.name === trunkName)) return trunkName
+  const trunks = branchDirs.value.filter(d => isTrunkDir(d.name))
+  return trunks.find(d => d.name === 'trunk')?.name || trunks[0]?.name || ''
+}
+// merge_back 下源分支一变，目标自动跟随；absorb 不干预（用户手选目标）
+watch([direction, sourceBranch], ([dir, src]) => {
+  if (dir === 'merge_back') targetBranch.value = autoTargetForMergeBack(src)
+})
+
+// 选完 From/To 时：清空对应 rev（旧分支的 rev 在新分支历史里匹配不到 option，会导致下拉显示空），
+// 并行加载历史 + preview-base。base_rev 不作为触发源——用户改 base 只重算 base，不清 source/target。
+watch([sourceBranch, targetBranch, sourceDir, targetDir], async (nv, ov) => {
+  const isBranch = mode.value === 'branch'
+  if (isBranch) {
+    if (nv[0] !== ov[0]) sourceRev.value = ''     // From 变 → 清 From rev
+    if (nv[1] !== ov[1]) targetRev.value = ''     // To 变 → 清 To rev
+  } else {
+    if (nv[2] !== ov[2]) sourceRev.value = ''
+    if (nv[3] !== ov[3]) targetRev.value = ''
+  }
+  baseRev.value = ''   // From/To 任一变 → 共同祖先 base 随之变，清空让 preview-base 重填
+  const src = isBranch ? sourceBranch.value : sourceDir.value
+  const tgt = isBranch ? targetBranch.value : targetDir.value
+  await Promise.all([
+    src ? loadHistory(src) : Promise.resolve(),
+    tgt ? loadHistory(tgt) : Promise.resolve(),
+    previewBase(),
+  ])
+})
+
+const canStart = computed(() =>
+  mode.value === 'branch'
+    ? !!sourceBranch.value && !!targetBranch.value
+    : !!targetDir.value && !!sourceDir.value)
+
+// 切换合并方式：清空比对状态，重新选择
+// mode 切换时标记，防止 compareResp 清空导致 unresolvedCount 误触发"全部冲突已解决"弹窗
+const modeSwitching = ref(false)
+watch(mode, () => {
+  modeSwitching.value = true
+  compareResp.value = null; error.value = ''; msg.value = ''; newVersionDir.value = ''; applyDone.value = false
+  sourceRev.value = ''; targetRev.value = ''; baseRev.value = ''   // 清空 rev，选完 From/To 后重新自动填充
+  buildSparseIndex({ groups: {} })   // 清空稀疏索引/增量计数，防 stale 计数误弹「全部解决」
+  history.value = []; historyIdx.value = -1; selectedRows.value = new Set(); conflictIdx.value = -1
+  modalCell.value = null; previewVersion.value = null; previewData.value = null; rowPreviewRis.value = []
+  rowSearchKey.value = ''; showAllResolvedConfirm.value = false; showSummaryModal.value = false; showApplyModeModal.value = false
+  nextTick(() => { modeSwitching.value = false })
+})
+
+// 结构增删徽标（表/sheet 的结构状态直接来自 FileGroup/SheetDiff 字段；detail 从 structural_changes 查）
+const structBadge = (status) => (String(status).includes('deleted') ? '删除' : '新增')
+const structOriginLabel = (origin) => ({ source: 'From', target: 'To', both: '双方' }[origin] || origin)
+const structDetailMap = computed(() => {
+  const m = {}
+  for (const c of (compareResp.value?.structural_changes || [])) {
+    m[c.kind === 'table' ? c.table : `${c.table}/${c.sheet}`] = c.detail
+  }
+  return m
+})
+
+// 表标签 + 统计（compareResp 深度响应，随单元格解决状态实时刷新）
+// 结构增删表已作为只读展示分组含在 groups 内（files 仅 1 个、无比对数据），徽标取自 group 字段
+// #33: no_change 表（svn 未改动，后端跳过 compare）纳入标签栏显示"无差异"徽标
+// #39: sortByConflict 开启时按冲突数降序，让用户先啃高密度表
+const tableTabs = computed(() => {
+  if (!compareResp.value) return []
+  const tabs = Object.entries(compareResp.value.groups).map(([name, g]) => {
+    let conflicts = 0, changed = 0, inserted = 0, deleted = 0
+    for (const sk of Object.keys(g.sheets)) {
+      const c = sheetCounts(name, sk)
+      conflicts += c.conflicts; changed += c.changed; inserted += c.inserted; deleted += c.deleted
+    }
+    const hadConflict = (initialConflicts.value[name]?.total || 0) > 0
+    const st = g.structural_status || 'common'
+    return { name, conflicts, changed, inserted, deleted, hadConflict,
+             structOnly: st !== 'common' && st !== 'both_added' && st !== 'no_change' && (g.files || []).length <= 1,
+             structStatus: st === 'common' ? '' : st, structOrigin: g.origin || '',
+             structDetail: structDetailMap.value[name] || '' }
+  }).filter(t => t.conflicts > 0 || t.changed > 0 || t.inserted > 0 || t.deleted > 0
+                || t.hadConflict || t.structOnly || t.structStatus === 'no_change')
+  if (sortByConflict.value) {
+    tabs.sort((a, b) => (b.conflicts - a.conflicts) || (b.changed - a.changed))
+  }
+  return tabs
+})
+
+const curGroup = computed(() => compareResp.value?.groups?.[activeTable.value] || null)
+
+// sheet 下拉选项：冲突 > 增删改 > 无变化 排序，同优先级保持原顺序稳定
+// 结构增删 sheet 已含在 group.sheets 内（只读内容），徽标取自 sheet 字段
+const sheetOptions = computed(() => {
+  if (!curGroup.value) return []
+  const sheetIc = initialConflicts.value[activeTable.value]?.sheets || {}
+  const arr = Object.keys(curGroup.value.sheets).map((name, idx) => {
+    const s = curGroup.value.sheets[name]
+    const c = sheetCounts(activeTable.value, name)
+    const st = s.structural_status || 'common'
+    return { name, ...c, idx, hadConflict: (sheetIc[name] || 0) > 0,
+             structOnly: st !== 'common' && st !== 'both_added',
+             structStatus: st === 'common' ? '' : st, structOrigin: s.origin || '',
+             structDetail: structDetailMap.value[`${activeTable.value}/${name}`] || '' }
+  })
+  // 只保留存在冲突或增删改或结构增删的 sheet；全无变化的 sheet 不进下拉
+  const hasChange = (o) => o.conflicts > 0 || o.changed > 0 || o.inserted > 0 || o.deleted > 0 || o.structOnly
+  const filtered = arr.filter(hasChange)
+  const list = filtered.length ? filtered : arr   // 兜底：全部 sheet 都无变化时仍展示，避免空下拉
+  const rank = (o) => (o.conflicts > 0 ? 0 : (o.changed || o.inserted || o.deleted || o.structOnly) > 0 ? 1 : 2)
+  return list.slice().sort((a, b) => (rank(a) - rank(b)) || (a.idx - b.idx))
+})
+
+const curSheet = computed(() => curGroup.value?.sheets?.[activeSheet.value] || null)
+
+// ── 大表性能：比对完成后建立稀疏索引（冲突格候选 + 差异行候选 + 增量计数）──
+// 10w 行表避免每步「解决冲突/切换表」对全部行×列做全表扫描：候选/计数 O(冲突数) 维护。
+const diffCandidates = ref([])   // [{gk, sk, ri, ci, key, header, cell}] 比对时的全部冲突格（解决/重开共用）
+const rowCandidates = ref([])    // [{gk, sk, ri, row}] 所有含差异的行（冲突/变更/增删）
+const liveCounts = reactive({})  // {gk: {sk: {conflicts, changed, inserted, deleted}}} 随解决/撤销 O(1) 更新
+
+function buildSparseIndex(resp) {
+  // resp 须为 reactive 引用（compareResp.value）：候选保存代理对象引用，
+  // 后续 visibleRows/diffList 过滤才能被 Vue 追踪（解决/撤销时自动重算）
+  for (const k of Object.keys(liveCounts)) delete liveCounts[k]
+  const cands = [], rows = []
+  for (const [gk, g] of Object.entries(resp.groups)) {
+    liveCounts[gk] = {}
+    for (const [sk, s] of Object.entries(g.sheets)) {
+      const cnt = { conflicts: 0, changed: 0, inserted: 0, deleted: 0 }
+      s.rows.forEach((row, ri) => {
+        let hasDiff = row.row_type === 'inserted' || row.row_type === 'deleted' || row.row_type === 'missing_row'
+        if (row.row_type === 'inserted') cnt.inserted++
+        else if (row.row_type === 'deleted') cnt.deleted++
+        const isMatched = row.row_type === 'matched'
+        row.cells.forEach((cell, ci) => {
+          if (cell.conflict) {
+            cnt.conflicts++
+            cands.push({ gk, sk, ri, ci, key: row.key, header: s.headers[ci] || '', cell })
+            hasDiff = true
+          } else if (isMatched && cell.changed) {
+            cnt.changed++
+            hasDiff = true
+          }
+        })
+        if (hasDiff) rows.push({ gk, sk, ri, row })
+      })
+      liveCounts[gk][sk] = cnt
+    }
+  }
+  diffCandidates.value = cands
+  rowCandidates.value = rows
+}
+// 差异行候选按 (表/sheet) 分组索引：visibleRows 查 Map O(1)，避免每次切表/sheet 全表 filter
+const rowCandBySheet = computed(() => {
+  const m = new Map()
+  for (const d of rowCandidates.value) {
+    const k = d.gk + '/' + d.sk
+    let arr = m.get(k)
+    if (!arr) { arr = []; m.set(k, arr) }
+    arr.push(d)
+  }
+  return m
+})
+// 撤销/重做后重算某表/sheet 的实时计数（稀疏快照只动少数格，重扫一次成本可控）
+function recomputeLiveCounts(gk, sk) {
+  const s = compareResp.value?.groups?.[gk]?.sheets?.[sk]
+  if (!s) return
+  const cnt = { conflicts: 0, changed: 0, inserted: 0, deleted: 0 }
+  s.rows.forEach(row => {
+    if (row.row_type === 'inserted') cnt.inserted++
+    else if (row.row_type === 'deleted') cnt.deleted++
+    const isMatched = row.row_type === 'matched'
+    row.cells.forEach(c => {
+      if (c.conflict) cnt.conflicts++
+      else if (isMatched && c.changed) cnt.changed++
+    })
+  })
+  liveCounts[gk][sk] = cnt
+}
+function sheetCounts(gk, sk) {
+  return liveCounts[gk]?.[sk] || { conflicts: 0, changed: 0, inserted: 0, deleted: 0 }
+}
+
+// 冲突列表（未决冲突 + 已解决项保留可见，可重开 modal 切换版本）——基于候选，O(冲突数)
+const diffList = computed(() => diffCandidates.value.filter(d =>
+  d.gk === activeTable.value && d.sk === activeSheet.value && (d.cell.conflict || d.cell.resolved)))
+const resolvedCount = computed(() => diffCandidates.value.reduce((n, d) =>
+  n + (d.gk === activeTable.value && d.sk === activeSheet.value && d.cell.resolved ? 1 : 0), 0))
+const resolvedList = computed(() => diffCandidates.value
+  .filter(d => d.gk === activeTable.value && d.sk === activeSheet.value && d.cell.resolved)
+  .map(d => ({ ri: d.ri, ci: d.ci, key: d.key, header: d.header || colLetter(d.ci), source: d.cell.resolvedBy || '' })))
+const auditStats = computed(() => {
+  const counts = {}
+  for (const d of diffCandidates.value) {
+    if (d.gk === activeTable.value && d.sk === activeSheet.value && d.cell.resolved && d.cell.resolvedBy) {
+      counts[d.cell.resolvedBy] = (counts[d.cell.resolvedBy] || 0) + 1
+    }
+  }
+  return Object.entries(counts).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count)
+})
+
+// 全局未决冲突（跨全部表格，用于「应用合并」按钮阻断）——基于增量计数，O(表数)
+const unresolvedCount = computed(() => {
+  let n = 0
+  for (const g of Object.values(liveCounts)) for (const s of Object.values(g)) n += s.conflicts
+  return n
+})
+const pendingCount = computed(() => diffList.value.filter(d => d.cell.conflict).length)
+const allDone = computed(() => pendingCount.value === 0)
+
+// 应用合并汇总：跨全部表格/sheet 收集「冲突解决 + 变更 + 新增 + 删除」项（旧值→新值），供确认 modal 展示
+const applySummary = computed(() => {
+  if (!compareResp.value) return []
+  const items = []
+  for (const [gn, g] of Object.entries(compareResp.value.groups)) {
+    if ((g.files || []).length <= 1) continue   // 跳过结构增删只读分组
+    const base = g.base_file
+    for (const s of Object.values(g.sheets)) {
+      s.rows.forEach((row, ri) => {
+        if (row.row_type === 'inserted') {
+          const vals = (row.cells || []).map(c => cellDisplayText(c)).join(' | ')
+          items.push({
+            table: gn, sheet: s.name, key: row.key, header: '(新增行)',
+            old: '', new: vals == null ? '' : String(vals),
+            type: '新增', source: row.source_file || '',
+          })
+          return
+        }
+        if (row.row_type === 'deleted') {
+          const vals = (row.cells || []).map(c => cellDisplayText(c)).join(' | ')
+          items.push({
+            table: gn, sheet: s.name, key: row.key, header: '(删除行)',
+            old: vals == null ? '' : String(vals), new: '',
+            type: '删除', source: '',
+          })
+          return
+        }
+        row.cells.forEach((c, ci) => {
+          const isResolved = !!c.resolved
+          const isChanged = !c.conflict && !!c.changed && row.row_type === 'matched'
+          if (!isResolved && !isChanged) return
+          const oldVal = c.versions?.[base]
+          const newVal = (c.formula_text && c.formula_resolved && String(c.formula_text).startsWith('=')) ? c.formula_text : c.value
+          items.push({
+            table: gn, sheet: s.name, key: row.key, header: s.headers[ci] || colLetter(ci),
+            old: oldVal == null ? '' : String(oldVal),
+            new: newVal == null ? '' : String(newVal),
+            type: isResolved ? '冲突解决' : '变更',
+            source: c.resolvedBy || '',
+            formulaVal: (c.formula_text && c.formula_resolved && String(c.formula_text).startsWith('=')) ? String(c.value ?? '') : '',
+          })
+        })
+      })
+    }
+  }
+  return items
+})
+
+// ── 步骤指示器：1 选方式 → 2 比对 → 3 解决冲突 → 4 应用 ──
+// done=已完成，active=当前步骤，todo=未到。比对完成才能解决冲突，全部解决才能应用
+const steps = computed(() => {
+  const compared = !!compareResp.value
+  const resolved = compared && unresolvedCount.value === 0
+  const applied = applyDone.value
+  return [
+    { n: 1, label: '选择合并方式', status: 'done' },
+    { n: 2, label: '比对差异', status: compared ? 'done' : 'active' },
+    { n: 3, label: '解决冲突', status: !compared ? 'todo' : resolved ? 'done' : 'active' },
+    { n: 4, label: '应用合并', status: !resolved ? 'todo' : applied ? 'done' : 'active' },
+  ]
+})
+// 本分组下一个仍有冲突的 Sheet（完成后跳转）
+const nextConflictSheet = computed(() => {
+  if (!curGroup.value) return null
+  const entries = Object.keys(curGroup.value.sheets)
+  const hasIssue = (sk) => sheetCounts(activeTable.value, sk).conflicts > 0
+  let found = false
+  for (const sk of entries) { if (sk === activeSheet.value) { found = true; continue } if (found && hasIssue(sk)) return sk }
+  for (const sk of entries) { if (sk === activeSheet.value) break; if (hasIssue(sk)) return sk }
+  return null
+})
+// 当前表格剩余未决冲突总数（跨该表全部 sheet）
+const curTableConflicts = computed(() => tableTabs.value.find(t => t.name === activeTable.value)?.conflicts || 0)
+// 下一个仍有未决冲突的表格（完成当前表后跳转）
+const nextConflictTable = computed(() => {
+  const tabs = tableTabs.value
+  if (!tabs.length) return null
+  const curIdx = tabs.findIndex(t => t.name === activeTable.value)
+  for (let i = 1; i <= tabs.length; i++) {
+    const t = tabs[(curIdx + i) % tabs.length]
+    if (t.name !== activeTable.value && t.conflicts > 0) return t.name
+  }
+  return null
+})
+
+// 全部表格冲突从「有」变为「全部解决」时，弹出确认框询问是否立即应用合并
+// mode 切换期间（compareResp 清空）不弹，避免误触发
+watch(unresolvedCount, (nv, ov) => {
+  if (modeSwitching.value) return
+  if (nv === 0 && ov > 0) showAllResolvedConfirm.value = true
+})
+
+// 行内容搜索（本地过滤当前 sheet 所有行）
+function rowMatchesSearch(row, kw) {
+  if (!kw) return true
+  const k = kw.toLowerCase()
+  if (row.key && String(row.key).toLowerCase().includes(k)) return true
+  return row.cells.some(c => c.value != null && String(c.value).toLowerCase().includes(k))
+}
+const visibleRows = computed(() => {
+  if (!curSheet.value) return []
+  // 结构增删只读 sheet（From/To 新增）：显示全部内容行，不做变化过滤
+  if (isStructSheet.value) {
+    let all = curSheet.value.rows.map((row, ri) => ({ row, ri }))
+    const kw = rowSearchKey.value.trim()
+    if (kw) all = all.filter(({ row }) => rowMatchesSearch(row, kw))
+    return all
+  }
+  // 大表性能：基于比对时构建的差异行候选（稀疏索引），按 (表/sheet) 分组取，实时按当前标志过滤
+  let all = rowCandBySheet.value.get(activeTable.value + '/' + activeSheet.value) || []
+  // 默认 diff：显示所有有变化的行（冲突/已解决/修改/新增/删除 并集）
+  if (filterType.value === 'diff') all = all.filter(({ row }) =>
+    row.cells.some(c => c.conflict || c.resolved || c.changed) || row.row_type === 'inserted' || row.row_type === 'deleted')
+  else if (filterType.value === 'conflict') all = all.filter(({ row }) => row.cells.some(c => c.conflict || c.resolved))
+  else if (filterType.value === 'changed') all = all.filter(({ row }) => row.row_type === 'matched' && row.cells.some(c => c.changed && !c.conflict))
+  else if (filterType.value === 'inserted') all = all.filter(({ row }) => row.row_type === 'inserted')
+  else if (filterType.value === 'deleted') all = all.filter(({ row }) => row.row_type === 'deleted')
+  const kw = rowSearchKey.value.trim()
+  if (kw) all = all.filter(({ row }) => rowMatchesSearch(row, kw))
+  return all.map(d => ({ row: d.row, ri: d.ri }))
+})
+const rowSearchStats = computed(() => {
+  if (!curSheet.value) return { hits: 0, total: 0 }
+  const total = curSheet.value.rows.length
+  const kw = rowSearchKey.value.trim()
+  if (!kw) return { hits: total, total }
+  const hits = curSheet.value.rows.filter(r => rowMatchesSearch(r, kw)).length
+  return { hits, total }
+})
+
+// 当前 sheet 是否为结构增删只读 sheet（From/To 新增，无比对数据，全量展示内容）
+const isStructSheet = computed(() => {
+  const s = curSheet.value
+  if (!s) return false
+  const st = s.structural_status || 'common'
+  return st !== 'common' && st !== 'both_added'
+})
+
+// 结构增删 sheet 的行类型：新增(origin 含 added)→ 全部绿色 inserted；删除 → 红色 deleted
+function structRowType(row) {
+  if (!isStructSheet.value) return row.row_type
+  const st = curSheet.value?.structural_status || ''
+  return String(st).includes('added') ? 'inserted' : 'deleted'
+}
+
+// 行类型图标 + 标签（行首徽标，颜色区分新增/修改/删除/匹配）
+function rowTypeIcon(row) {
+  const rt = structRowType(row)
+  if (rt === 'inserted') return '＋'
+  if (rt === 'deleted') return '－'
+  if (rt === 'missing_row') return '⌂'
+  if (rt === 'matched' && row.cells.some(c => c.changed)) return '✎'
+  return '·'
+}
+function rowTypeLabel(row) {
+  const rt = structRowType(row)
+  if (isStructSheet.value) {
+    const st = curSheet.value?.structural_status || ''
+    if (String(st).includes('added')) return '结构新增行（仅 ' + structOriginLabel(curSheet.value?.origin) + ' 新增，只读展示）'
+    return '结构删除行（仅 ' + structOriginLabel(curSheet.value?.origin) + ' 存在，只读展示）'
+  }
+  if (rt === 'inserted') return '新增行（基准不存在）'
+  if (rt === 'deleted') return '删除行（基准有，派生全无）'
+  if (rt === 'missing_row') return '漏行（trunk 基准有，派生全缺，可补回）'
+  if (rt === 'matched' && row.cells.some(c => c.changed)) return '修改行（与基准有差异）'
+  return '匹配行（与基准一致）'
+}
+
+// ── 多选行 ──
+function toggleRow(ri) { const next = new Set(selectedRows.value); if (next.has(ri)) next.delete(ri); else next.add(ri); selectedRows.value = next }
+function toggleAllRows() {
+  if (!curSheet.value) return
+  if (selectedRows.value.size === curSheet.value.rows.length) selectedRows.value = new Set()
+  else selectedRows.value = new Set(curSheet.value.rows.map((_, i) => i))
+}
+function clearSelection() { selectedRows.value = new Set() }
+
+function switchSheet(sk) {
+  activeSheet.value = sk; conflictIdx.value = -1; selectedRows.value = new Set()
+  modalCell.value = null; previewVersion.value = null; previewData.value = null; rowPreviewRis.value = []
+  filterType.value = 'diff'; rowSearchKey.value = ''
+  nextTick(() => {
+    // 基于候选索引定位首个冲突行（10w 行表不逐行扫描）
+    const first = diffCandidates.value.find(d => d.gk === activeTable.value && d.sk === activeSheet.value && d.cell.conflict)
+    if (first) {
+      conflictIdx.value = 0
+      const el = document.getElementById('bm-row-' + first.ri)
+      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  })
+}
+function switchTable(gk) {
+  activeTable.value = gk
+  const sheets = compareResp.value?.groups?.[gk]?.sheets || {}
+  const sk = Object.keys(sheets)
+  if (sk.length) {
+    // 优先跳到冲突最多的 sheet（与下拉排序一致）
+    const ordered = sk.slice().sort((a, b) => {
+      const ca = sheetCounts(activeTable.value, a), cb = sheetCounts(activeTable.value, b)
+      const rank = (c) => (c.conflicts > 0 ? 0 : (c.changed || c.inserted || c.deleted) > 0 ? 1 : 2)
+      return rank(ca) - rank(cb)
+    })
+    switchSheet(ordered[0])
+  }
+}
+
+function goConflict(delta) {
+  const list = diffList.value; if (!list.length) return
+  let idx = conflictIdx.value + delta
+  if (idx < 0) idx = list.length - 1
+  if (idx >= list.length) idx = 0
+  conflictIdx.value = idx
+  // split 模式：仅定位行，不弹 modal
+  if (viewMode.value !== 'split') modalCell.value = list[idx]
+  nextTick(() => {
+    const el = document.getElementById('bm-row-' + list[idx].ri)
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    // split 右表同步滚动
+    if (viewMode.value === 'split' && scrollLeft.value && scrollRight.value) {
+      scrollRight.value.scrollTop = scrollLeft.value.scrollTop
+    }
+  })
+}
+
+function cellClick(cell, ri, ci) {
+  if (!cell.conflict && !cell.resolved) return
+  // split 模式：点击已解决格 → 切换采纳方；冲突格由 resolveCellSplit 处理，均不弹 modal
+  if (viewMode.value === 'split') {
+    if (cell.resolved) switchResolveSide(cell, ri, ci)
+    return
+  }
+  aiSuggestion.value = null; aiSuggestError.value = ''
+  aiRowBatchDone.value = false; aiRowBatchError.value = ''
+  const row = curSheet.value.rows[ri]
+  modalCell.value = { cell, key: row.key, header: curSheet.value.headers[ci] || '', ri, ci }
+  const idx = diffList.value.findIndex(d => d.ri === ri && d.ci === ci)
+  if (idx >= 0) conflictIdx.value = idx
+  const ck = `${ri}-${ci}`
+  if (aiCache[ck]) aiSuggestion.value = aiCache[ck]
+}
+
+// split 模式：已解决格点击 → 切换到另一侧版本（重新采纳）
+function switchResolveSide(cell, ri, ci) {
+  if (!cell.resolved || !cell.versions) return
+  const other = sideFiles.value.find(f => f !== cell.resolvedBy)
+  if (!other) return
+  pushSnapshot([{ ri, ci }])
+  resolveCell(cell, cell.versions[other], other)
+  recomputeRowFormula(curSheet.value.rows[ri])
+}
+function reopenConflict(ri, ci) {
+  if (!curSheet.value) return
+  const cell = curSheet.value.rows[ri].cells[ci]
+  if (!cell.resolved) return
+  pushSnapshot([{ ri, ci }])
+  aiSuggestion.value = null; aiSuggestError.value = ''
+  // 公式格撤销：恢复为待选择的 formula_conflict 态（versions 仍存各版本公式文本，
+  // 重新点开弹窗可再次对比选择）。恢复 formula_text/value 为基准公式，清 formula_resolved
+  if (cell.formula_resolved) {
+    const base = curGroup.value?.base_file
+    const baseFormula = base && cell.versions ? cell.versions[base] : ''
+    cell.formula_resolved = false
+    cell.diff_type = base && typeof baseFormula === 'string' && String(baseFormula).startsWith('=') ? 'formula_conflict' : ''
+    if (base && typeof baseFormula === 'string' && String(baseFormula).startsWith('=')) {
+      cell.formula_text = baseFormula
+      cell.value = baseFormula
+    }
+  }
+  cell.resolved = false; cell.conflict = true; cell.changed = false; cell.resolvedBy = ''
+  // 增量计数：撤销解决 → 该表/sheet conflicts 加 1
+  const lc = liveCounts[activeTable.value]?.[activeSheet.value]
+  if (lc) lc.conflicts++
+  const row = curSheet.value.rows[ri]
+  modalCell.value = { cell, key: row.key, header: curSheet.value.headers[ci] || '', ri, ci }
+  const idx = diffList.value.findIndex(d => d.ri === ri && d.ci === ci)
+  if (idx >= 0) conflictIdx.value = idx
+}
+// 单元格弹窗：点击某版本列的单元格值 → 仅当前单元格采用该版本；若行有公式列，异步重算下游公式预览值
+function chooseVersionForCell(ci, fname) {
+  if (!modalCell.value || !modalRow.value) return
+  const cell = modalRow.value.cells[ci]
+  if (!cell) return
+  pushSnapshot([{ ri: modalCell.value.ri, ci }])
+  resolveCell(cell, cell.versions[fname] ?? cell.value, fname)
+  recomputeRowFormula(modalRow.value)
+  advanceModal()
+}
+// 单元格弹窗：点击列首「整行用此版本」→ 当前行所有冲突列都采用该版本
+function chooseVersionForRow(fname) {
+  if (!modalRow.value) return
+  const entries = []
+  modalRow.value.cells.forEach((cell, ci) => { if (cell.conflict) entries.push({ ri: modalCell.value.ri, ci }) })
+  pushSnapshot(entries)
+  modalRow.value.cells.forEach(cell => { if (cell.conflict) resolveCell(cell, cell.versions[fname] ?? cell.value, fname) })
+  recomputeRowFormula(modalRow.value)
+  advanceModal()
+}
+function closeModal() { modalCell.value = null; aiSuggestion.value = null; aiSuggestError.value = ''; aiRowBatchDone.value = false; aiRowBatchError.value = '' }
+// 按「行优先」顺序查找下一个未决冲突：当前行仍有冲突时继续处理当前行，
+// 当前行全部解决后再进入下一行；支持在当前 sheet 内循环。
+// 基于冲突候选索引（按 ri/ci 升序构建），10w 行表 O(冲突数) 而非 O(总行数)。
+function nextConflictTarget(startRi, startCi) {
+  if (!curSheet.value) return null
+  const cands = diffCandidates.value.filter(d =>
+    d.gk === activeTable.value && d.sk === activeSheet.value && d.cell.conflict)
+  let next = null
+  for (const d of cands) {
+    if (d.ri > startRi || (d.ri === startRi && d.ci > startCi)) { next = d; break }
+  }
+  if (!next && cands.length) next = cands[0]   // 循环回卷到 sheet 内首个冲突
+  return next ? { ri: next.ri, ci: next.ci } : null
+}
+// 解决后自动跳到下一个未决冲突，全部解决则关闭弹窗
+function advanceModal() {
+  aiSuggestion.value = null; aiSuggestError.value = ''
+  if (!modalCell.value) { modalCell.value = null; return }
+  const { ri, ci } = modalCell.value
+  const next = nextConflictTarget(ri, ci)
+  if (!next) { modalCell.value = null; return }
+  const list = diffList.value
+  const idx = list.findIndex(d => d.ri === next.ri && d.ci === next.ci)
+  conflictIdx.value = idx >= 0 ? idx : -1
+  modalCell.value = idx >= 0 ? list[idx] : {
+    cell: curSheet.value.rows[next.ri].cells[next.ci],
+    key: curSheet.value.rows[next.ri].key,
+    header: curSheet.value.headers[next.ci] || '',
+    ri: next.ri, ci: next.ci
+  }
+  nextTick(() => scrollToRow(next.ri))
+}
+
+// M13: 请求 AI 冲突建议
+const aiCache = {}  // key=`${ri}-${ci}` → 建议结果，避免同格重复请求
+function openCellModal(cell, ri, ci) {
+  if (!curSheet.value) return
+  aiSuggestion.value = null; aiSuggestError.value = ''
+  aiRowBatchDone.value = false; aiRowBatchError.value = ''
+  const row = curSheet.value.rows[ri]
+  modalCell.value = { cell, key: row.key, header: curSheet.value.headers[ci] || '', ri, ci }
+  const idx = diffList.value.findIndex(d => d.ri === ri && d.ci === ci)
+  if (idx >= 0) conflictIdx.value = idx
+  const ck = `${ri}-${ci}`
+  if (aiCache[ck]) aiSuggestion.value = aiCache[ck]
+}
+async function requestAiSuggest() {
+  if (!modalCell.value || !curSheet.value || !curGroup.value) return
+  const mc = modalCell.value
+  const cell = mc.cell
+  const baseFile = curGroup.value.base_file || ''
+  const ck = `${mc.ri}-${mc.ci}`
+  if (aiCache[ck]) { aiSuggestion.value = aiCache[ck]; return }
+  aiSuggestBusy.value = true; aiSuggestError.value = ''; aiSuggestion.value = null
+  try {
+    const res = await fetch('/api/agent/suggest-merge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_stem: activeTable.value, sheet: activeSheet.value, col_name: mc.header, row_key: mc.key,
+        base_value: cell.versions?.[baseFile] ?? cell.value, versions: cell.versions || {},
+        version_meta: curGroup.value?.version_meta || {},
+        base_file: baseFile,
+      })
+    })
+    if (!res.ok) { aiSuggestError.value = '建议请求失败：' + await res.text(); return }
+    aiSuggestion.value = await res.json()
+    aiCache[ck] = aiSuggestion.value
+    prefetchNextAi()
+  } catch (e) { aiSuggestError.value = '建议请求失败：' + (e.message || e) } finally { aiSuggestBusy.value = false }
+}
+// 顺序预热下一个未缓存冲突格（fire-and-forget，切到时秒读）
+function prefetchNextAi() {
+  const list = diffList.value
+  if (!list || !list.length || !curSheet.value || !curGroup.value) return
+  const cur = modalCell.value
+  if (!cur) return
+  const idx = list.findIndex(d => d.ri === cur.ri && d.ci === cur.ci)
+  for (let i = idx + 1; i < list.length; i++) {
+    const d = list[i]
+    const k = `${d.ri}-${d.ci}`
+    if (aiCache[k]) continue
+    const cell = curSheet.value.rows[d.ri]?.cells[d.ci]
+    if (!cell || !cell.conflict) continue
+    _fetchAiRaw(cell, d.ri, d.ci).then(r => { if (r) aiCache[k] = r })
+    break
+  }
+}
+async function _fetchAiRaw(cell, ri, ci) {
+  const baseFile = curGroup.value.base_file || ''
+  const header = curSheet.value.headers[ci] || ''
+  const row = curSheet.value.rows[ri]
+  try {
+    const res = await fetch('/api/agent/suggest-merge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_stem: activeTable.value, sheet: activeSheet.value, col_name: header, row_key: row.key,
+        base_value: cell.versions?.[baseFile] ?? cell.value, versions: cell.versions || {},
+        version_meta: curGroup.value?.version_meta || {},
+        base_file: baseFile,
+      })
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch { return null }
+}
+
+// modal 内全行 AI 建议：并行调该行所有冲突格，结果存 aiCache 并用颜色标在版本列上
+async function requestRowAiBatch() {
+  if (!modalCell.value || !curSheet.value || !curGroup.value) return
+  const cells = modalConflictCells.value
+  if (!cells.length) return
+  const baseFile = curGroup.value.base_file || ''
+  const ri = modalCell.value.ri
+  // 只请求未缓存的冲突格
+  const todo = cells.filter(({ c, ci }) => c.conflict && !aiCache[`${ri}-${ci}`])
+  if (!todo.length) { aiRowBatchDone.value = true; return }
+  aiRowBatchBusy.value = true; aiRowBatchError.value = ''; aiRowBatchDone.value = false
+  const items = todo.map(({ c, ci }) => ({
+    ri, ci,
+    col_name: curSheet.value.headers[ci] || '',
+    row_key: modalCell.value.key,
+    base_value: c.versions?.[baseFile] ?? c.value,
+    versions: c.versions || {},
+  }))
+  try {
+    const res = await fetch('/api/agent/suggest-merge-batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_stem: activeTable.value, sheet: activeSheet.value,
+        version_meta: curGroup.value?.version_meta || {},
+        base_file: baseFile,
+        items,
+      })
+    })
+    if (!res.ok) { aiRowBatchError.value = '批量请求失败：' + await res.text(); return }
+    const data = await res.json()
+    const results = data.results || {}
+    let hit = 0
+    for (const { ci } of todo) {
+      const k = `${ri}-${ci}`
+      const r = results[k]
+      if (r && r.suggested_version) { aiCache[k] = r; hit++ }
+    }
+    aiRowBatchDone.value = true
+    aiSuggestion.value = aiCache[`${ri}-${modalCell.value.ci}`] || null
+  } catch (e) { aiRowBatchError.value = '批量请求失败：' + (e.message || e) }
+  finally { aiRowBatchBusy.value = false }
+}
+
+// split 全 Sheet AI 建议：并行调当前 Sheet 所有未解决冲突格，结果存 aiCache 并用 🎯 标在建议侧
+async function requestSheetAiBatch() {
+  if (!curSheet.value || !curGroup.value) return
+  const list = diffList.value.filter(d => d.cell.conflict)
+  if (!list.length) { aiSheetError.value = '当前 Sheet 无未解决冲突'; return }
+  aiSheetBusy.value = true; aiSheetError.value = ''
+  aiSheetProgress.value = `并行分析 ${list.length} 个冲突格…`
+  const baseFile = curGroup.value.base_file || ''
+  const items = list.map(d => ({
+    ri: d.ri, ci: d.ci,
+    col_name: d.header || curSheet.value.headers[d.ci] || '',
+    row_key: d.key,
+    base_value: d.cell.versions?.[baseFile] ?? d.cell.value,
+    versions: d.cell.versions || {},
+  }))
+  try {
+    const res = await fetch('/api/agent/suggest-merge-batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_stem: activeTable.value, sheet: activeSheet.value,
+        version_meta: curGroup.value?.version_meta || {},
+        base_file: baseFile,
+        items,
+      })
+    })
+    if (!res.ok) { aiSheetError.value = '批量请求失败：' + await res.text(); return }
+    const data = await res.json()
+    const results = data.results || {}
+    let hit = 0
+    for (const d of list) {
+      const k = `${d.ri}-${d.ci}`
+      const r = results[k]
+      if (r && r.suggested_version) { aiCache[k] = r; hit++ }
+    }
+    aiSheetProgress.value = `已建议 ${hit}/${list.length} 格（🎯 标在建议侧，点击格子看详情或采纳）`
+  } catch (e) { aiSheetError.value = '批量请求失败：' + (e.message || e) }
+  finally { aiSheetBusy.value = false }
+}
+function adoptAiSuggestion() {
+  if (!aiSuggestion.value || !aiSuggestion.value.suggested_version) return
+  if (!modalCell.value) return
+  const ver = aiSuggestion.value.suggested_version
+  chooseVersionForCell(modalCell.value.ci, ver)
+  aiSuggestion.value = null
+}
+
+// table 模式：在表格单元格上直接接受 AI 建议
+function adoptAiForCell(ri, ci) {
+  const ck = `${ri}-${ci}`
+  const sug = aiCache[ck]
+  if (!sug || !sug.suggested_version) return
+  const cell = curSheet.value?.rows[ri]?.cells[ci]
+  if (!cell || !cell.conflict) return
+  pushSnapshot([{ ri, ci }])
+  resolveCell(cell, sug.suggestion, sug.suggested_version)
+  recomputeRowFormula(curSheet.value.rows[ri])
+}
+
+// table 模式：接受当前行所有格子的 AI 建议
+function adoptAiForRow(ri) {
+  const row = curSheet.value?.rows[ri]
+  if (!row) return
+  const entries = []
+  row.cells.forEach((cell, ci) => {
+    const ck = `${ri}-${ci}`
+    const sug = aiCache[ck]
+    if (cell.conflict && sug && sug.suggested_version) {
+      entries.push({ ri, ci })
+      resolveCell(cell, sug.suggestion, sug.suggested_version)
+    }
+  })
+  if (entries.length) {
+    pushSnapshot(entries)
+    recomputeRowFormula(row)
+  }
+}
+
+// #38: 一键采纳当前 Sheet 所有高置信 AI 建议（confidence >= 阈值）
+// 阈值默认 0.8：rule-fallback 最高 0.75 自动排除（等效 strategy != manual 的列），
+// 仅高置信 LLM 建议被采纳；低置信/无建议格保留给人工。整批单步撤销。
+// 需先点"🎯 全 Sheet AI 建议"生成 aiCache，否则无建议可采纳。
+async function batchAdoptHighConfidence() {
+  const sheet = curSheet.value
+  const gk = activeTable.value, sk = activeSheet.value
+  if (!sheet) return
+  const thr = Number(batchAdoptThreshold.value) || 0.8
+  const adopt = [], noSug = [], lowConf = []
+  sheet.rows.forEach((row, ri) => {
+    if (row.row_type !== 'matched') return
+    row.cells.forEach((cell, ci) => {
+      if (!cell.conflict) return
+      const sug = aiCache[`${ri}-${ci}`]
+      if (!sug || !sug.suggested_version) { noSug.push(1); return }
+      const conf = Number(sug.confidence) || 0
+      if (conf < thr) { lowConf.push(1); return }
+      adopt.push({ ri, ci, sug })
+    })
+  })
+  if (!adopt.length) {
+    batchAdoptMsg.value = `无可采纳建议：${noSug.length} 格无 AI 建议${
+      lowConf.length ? `，${lowConf.length} 格置信度<${thr}` : ''}（先点"🎯 全 Sheet AI 建议"生成）`
+    return
+  }
+  batchAdoptBusy.value = true
+  try {
+    // 先快照后改值（与 adoptAiForRow 相反——此处保证撤销可恢复冲突态）
+    pushSnapshot(adopt.map(({ ri, ci }) => ({ ri, ci })))
+    const touchedRows = new Set()
+    for (const { ri, ci, sug } of adopt) {
+      resolveCell(sheet.rows[ri].cells[ci], sug.suggestion, sug.suggested_version)
+      touchedRows.add(ri)
+    }
+    for (const ri of touchedRows) recomputeRowFormula(sheet.rows[ri])
+    recomputeLiveCounts(gk, sk)
+    batchAdoptMsg.value = `已采纳 ${adopt.length} 格（置信度≥${thr}），跳过 ${noSug.length + lowConf.length} 格（无建议/低置信）`
+  } catch (e) {
+    batchAdoptMsg.value = '批量采纳失败：' + (e.message || e)
+  } finally {
+    batchAdoptBusy.value = false
+  }
+}
+
+// ── 单元格冲突弹窗：横向表格（各版本为列） ──
+const modalRow = computed(() => modalCell.value && curSheet.value ? curSheet.value.rows[modalCell.value.ri] : null)
+const modalConflictCells = computed(() => {
+  if (!modalRow.value || !modalCell.value) return []
+  return modalRow.value.cells.map((c, ci) => ({ c, ci })).filter(x => x.c.conflict || x.c.resolved)
+})
+function vmVal(ci, fn) { return modalRow.value?.cells?.[ci]?.versions?.[fn] }
+function vmIsDiff(ci, fn) {
+  const base = curGroup.value?.base_file
+  return str(vmVal(ci, fn)) !== str(vmVal(ci, base))
+}
+// 判断某版本列是否为当前格已选中的版本（用于 modal 高亮已选列）
+function isChosenVersion(ci, fn) {
+  const cell = modalRow.value?.cells?.[ci]
+  return !!cell?.resolved && !!cell.resolvedBy && cell.resolvedBy === fn
+}
+function vmCellHtml(ci, fn) {
+  const base = curGroup.value?.base_file
+  const cell = modalRow.value?.cells?.[ci]
+  // 已选中的公式版本：展示公式文本 + 计算值（=公式=值）
+  if (cell?.resolved && cell?.resolvedBy === fn && cell?.formula_text && String(cell.formula_text).startsWith('=')) {
+    return escapeHtml(cell.formula_text) + '<span class="formula-eq">=</span><span class="formula-value">' + escapeHtml(String(cell.value ?? '')) + '</span>'
+  }
+  if (fn === base) return escapeHtml(vmVal(ci, fn))
+  return renderDiffFor(vmVal(ci, fn), vmVal(ci, base))
+}
+
+// ── 引用完整性（悬空外键） ──
+// ref_integrity.dangling: [{ri, ci, col_header, value, reason}]
+const danglingByCell = computed(() => {
+  const m = {}
+  for (const d of (curSheet.value?.ref_integrity?.dangling || [])) {
+    m[`${d.ri}:${d.ci}`] = d
+  }
+  return m
+})
+function cellDangling(ri, ci) { return danglingByCell.value[`${ri}:${ci}`] }
+// 当前 sheet 悬空外键数（供横幅展示）
+const curSheetDanglingCount = computed(() => (curSheet.value?.ref_integrity?.dangling || []).length)
+// 当前 sheet 重编号数（id_resolution.stats.ids_remapped）
+const curSheetRemappedCount = computed(() => curSheet.value?.id_resolution?.stats?.ids_remapped || 0)
+
+// ── 整表改用版本 X（带预览，作用范围：当前 Sheet 全部冲突） ──
+function showAcceptAllPreview(fname) {
+  if (!curSheet.value) return
+  const base = curGroup.value?.base_file
+  const headers = curSheet.value.headers
+  const items = []
+  curSheet.value.rows.forEach((row, ri) => {
+    row.cells.forEach((cell, ci) => {
+      if (cell.conflict) {
+        items.push({
+          ri, ci, key: row.key, header: headers[ci] || '', col_letter: cell.col_letter,
+          base: base ? cell.versions[base] : null, target: cell.versions[fname],
+          conflict: cell.conflict, changed: cell.changed,
+        })
+      }
+    })
+  })
+  if (!items.length) { error.value = '当前 Sheet 没有冲突可接纳'; return }
+  previewVersion.value = fname; previewData.value = items; previewFilter.value = 'all'; error.value = ''
+}
+const previewFiltered = computed(() => {
+  if (!previewData.value) return []
+  if (previewFilter.value === 'conflict') return previewData.value.filter(i => i.conflict)
+  if (previewFilter.value === 'changed') return previewData.value.filter(i => i.changed)
+  return previewData.value
+})
+const previewStats = computed(() => {
+  if (!previewData.value) return { all: 0, conflict: 0, changed: 0 }
+  const c = previewData.value.filter(i => i.conflict).length
+  return { all: previewData.value.length, conflict: c, changed: previewData.value.length - c }
+})
+function confirmAcceptAll() {
+  if (!previewVersion.value || !curSheet.value) return
+  const entries = []
+  curSheet.value.rows.forEach((row, ri) => row.cells.forEach((cell, ci) => { if (cell.conflict) entries.push({ ri, ci }) }))
+  pushSnapshot(entries)
+  const fname = previewVersion.value
+  const touchedRows = []
+  curSheet.value.rows.forEach(row => {
+    let touched = false
+    row.cells.forEach(cell => { if (cell.conflict) { resolveCell(cell, cell.versions[fname] ?? cell.value, fname); touched = true } })
+    if (touched) touchedRows.push(row)
+  })
+  touchedRows.forEach(row => recomputeRowFormula(row))
+  previewVersion.value = null; previewData.value = null
+}
+function cancelAcceptAll() { previewVersion.value = null; previewData.value = null }
+
+// ── 行版本预览：选中1或多行，先看各版本在冲突列的具体内容，再选版本整行应用 ──
+function openRowPreview(ris) { if (!curSheet.value || !ris.length) return; rowPreviewRis.value = ris.slice() }
+function closeRowPreview() { rowPreviewRis.value = [] }
+function diffCellsOf(row) {
+  if (!row) return []
+  return row.cells.map((c, ci) => ({ c, ci })).filter(x => x.c.conflict)
+}
+function applyRowPreviewVersion(fname) {
+  if (!curSheet.value || !rowPreviewRis.value.length) return
+  const entries = []
+  for (const ri of rowPreviewRis.value) {
+    const row = curSheet.value.rows[ri]
+    if (!row) continue
+    row.cells.forEach((cell, ci) => { if (cell.conflict) entries.push({ ri, ci }) })
+  }
+  pushSnapshot(entries)
+  for (const ri of rowPreviewRis.value) {
+    const row = curSheet.value.rows[ri]
+    if (!row) continue
+    row.cells.forEach(cell => { if (cell.conflict) resolveCell(cell, cell.versions[fname] ?? cell.value, fname) })
+    recomputeRowFormula(row)
+  }
+  closeRowPreview(); clearSelection()
+}
+function chooseRowVersionForCell(ri, ci, fname) {
+  if (!curSheet.value) return
+  const row = curSheet.value.rows[ri]
+  const cell = row?.cells[ci]
+  if (!cell) return
+  pushSnapshot([{ ri, ci }])
+  resolveCell(cell, cell.versions[fname] ?? cell.value, fname)
+  recomputeRowFormula(row)
+}
+function chooseRowVersionForRow(ri, fname) {
+  if (!curSheet.value) return
+  const row = curSheet.value.rows[ri]
+  if (!row) return
+  const entries = []
+  row.cells.forEach((cell, ci) => { if (cell.conflict) entries.push({ ri, ci }) })
+  pushSnapshot(entries)
+  row.cells.forEach(cell => { if (cell.conflict) resolveCell(cell, cell.versions[fname] ?? cell.value, fname) })
+  recomputeRowFormula(row)
+}
+
+function scrollToRow(ri) {
+  const el = document.getElementById('bm-row-' + ri)
+  if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+function jumpToResolved(ri, ci) { scrollToRow(ri); nextTick(() => reopenConflict(ri, ci)) }
+
+// ── 并排两表（split）辅助 ──
+// 两侧衍生文件名（files 去掉 base_file，顺序稳定）
+const sideFiles = computed(() => {
+  const fs = curGroup.value?.files || []
+  const base = curGroup.value?.base_file
+  return fs.filter(f => f !== base)
+})
+// 某侧在某行的存在态：matched | inserted | deleted | absent（无 presence 字段时按 versions 兜底）
+function sideRowStatus(row, fn) {
+  const base = curGroup.value?.base_file
+  const pres = row?.presence
+  const hasBase = pres ? !!pres[base] : !(row.cells.some(c => (c.versions?.[base] ?? null) !== null))
+  // 兜底：versions[base] 全非 None 视为 base 有行
+  const hasSide = pres ? !!pres[fn] : row.cells.some(c => (c.versions?.[fn] ?? null) !== null)
+  if (hasBase && hasSide) return 'matched'
+  if (!hasBase && hasSide) return 'inserted'
+  if (hasBase && !hasSide) return 'deleted'
+  return 'absent'
+}
+// split 模式：取某侧在某格的渲染值（行态非 matched 时该侧无值 → 空串）
+function sideCellVal(cell, fn, rowStatus) {
+  if (rowStatus === 'inserted' || rowStatus === 'matched') return cell.versions?.[fn]
+  return null  // deleted/absent：该侧无行，渲染空白
+}
+// 切到 split 视图 → 自动定位首个冲突行居中（split 模式不弹 modal）
+watch(viewMode, (v) => {
+  if (v !== 'split') return
+  nextTick(() => {
+    const first = diffList.value.find(d => d.cell.conflict)
+    if (first) conflictIdx.value = diffList.value.indexOf(first)
+    const el = first ? document.getElementById('bm-row-' + first.ri) : null
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (first && scrollLeft.value && scrollRight.value) {
+      scrollRight.value.scrollTop = scrollLeft.value.scrollTop
+    }
+  })
+})
+
+// ── 并排两表：滚动同步 + 行高对齐 ──
+const scrollLeft = ref(null)
+const scrollRight = ref(null)
+const splitWrap = ref(null)
+let splitSyncing = false
+function onSplitScroll(side, e) {
+  if (splitSyncing) return
+  splitSyncing = true
+  const src = e.target
+  const dst = side === 'left' ? scrollRight.value : scrollLeft.value
+  if (dst) {
+    dst.scrollTop = src.scrollTop
+    dst.scrollLeft = src.scrollLeft
+  }
+  nextTick(() => { splitSyncing = false })
+}
+// 同步左右表各行高度（内容长度不同导致行高不一致时拉平）
+function syncSplitRowHeights() {
+  if (viewMode.value !== 'split' || !scrollLeft.value || !scrollRight.value) return
+  const lRows = scrollLeft.value.querySelectorAll('tbody tr')
+  const rRows = scrollRight.value.querySelectorAll('tbody tr')
+  const n = Math.min(lRows.length, rRows.length)
+  if (!n) return
+  // 行数过多时跳过逐行同步（N 次 getBoundingClientRect 触发大量 reflow，切表卡顿主因），
+  // 由 CSS min-height 保证可读性；常见冲突行数（<300）仍精确对齐
+  if (n > 300) return
+  // 先读全部高度再统一写，读写分离减少 reflow
+  const heights = new Array(n)
+  for (let i = 0; i < n; i++) {
+    heights[i] = Math.max(lRows[i].getBoundingClientRect().height, rRows[i].getBoundingClientRect().height)
+  }
+  for (let i = 0; i < n; i++) {
+    lRows[i].style.height = rRows[i].style.height = heights[i] + 'px'
+  }
+}
+// split 模式渲染后/数据变化后同步行高（rAF 节流，合并同帧多次触发，如连续切表）
+let _syncRaf = 0
+watch([viewMode, () => visibleRows.value, () => curSheet.value], () => {
+  if (_syncRaf) return
+  _syncRaf = requestAnimationFrame(() => { _syncRaf = 0; syncSplitRowHeights() })
+})
+
+function tablesPayload() {
+  if (!compareResp.value) return []
+  // 跳过结构增删的只读展示分组（files<=1 无比对数据，不参与写回）
+  return Object.entries(compareResp.value.groups)
+    .filter(([, g]) => (g.files || []).length > 1)
+    .map(([gn, g]) => ({
+      group_name: gn,
+      sheets: Object.values(g.sheets).map(s => ({
+        name: s.name, headers: s.headers,
+        // 大表性能：只传有差异的行（冲突/已解决/变更/新增/删除/漏行）。
+        // 后端 apply 对 matched 无变化行只做跳过，10w 行全传会让上传膨胀到 ~46MB
+        rows: s.rows.filter(row =>
+          row.row_type === 'inserted' || row.row_type === 'deleted' || row.row_type === 'missing_row' ||
+          row.cells.some(c => c.conflict || c.resolved || c.changed)),
+      })),
+    }))
+}
+
+// 应用合并：先弹「冲突解决/变更汇总」确认 modal → 确认后弹 commit/落点 modal
+const showApplyModeModal = ref(false)
+const showSummaryModal = ref(false)
+
+function runApply() {
+  if (unresolvedCount.value > 0) return
+  showSummaryModal.value = true
+}
+function confirmSummaryThenApply() {
+  showSummaryModal.value = false
+  showApplyModeModal.value = true
+}
+
+async function doApply(applyMode) {
+  showApplyModeModal.value = false
+  applying.value = true; error.value = ''; msg.value = ''; newVersionDir.value = ''
+  try {
+    const isBranch = mode.value === 'branch'
+    const branchBody = { direction: direction.value, source_branch: sourceBranch.value, target_branch: targetBranch.value,
+          tables: tablesPayload(), apply_mode: applyMode, commit_name: commitName.value.trim() }
+    const sr = revNum(sourceRev.value), tr = revNum(targetRev.value), br = revNum(baseRev.value)
+    if (sr != null) branchBody.source_rev = sr
+    if (tr != null) branchBody.target_rev = tr
+    if (br != null) branchBody.base_rev = br
+    const subdirBody = { source_dir: sourceDir.value, target_dir: targetDir.value,
+          tables: tablesPayload(), apply_mode: applyMode, commit_name: commitName.value.trim() }
+    if (sr != null) subdirBody.source_rev = sr
+    if (br != null) subdirBody.base_rev = br
+    const body = isBranch ? branchBody : subdirBody
+    const res = await fetch(`${isBranch ? API_BRANCH : API_SUBDIR}/apply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const r = await res.json()
+    const tag = `[${applyMode === 'overwrite' ? '覆盖' : '新版本'}] `
+    const lines = r.results.map(x => `✓ ${tag}${x.group} → ${x.output}${x.cache_message ? '；' + x.cache_message : ''}`)
+    newVersionDir.value = r.new_version_dir || ''
+    if (newVersionDir.value) lines.unshift(`🎉 已在 To 分支生成新版本目录：${newVersionDir.value}`)
+    if (r.ref_warning) lines.push('⚠ ' + r.ref_warning)
+    msg.value = lines.join('\n')
+    applyDone.value = true
+    await Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()])   // 刷新下拉与提交历史
+  } catch (e) { error.value = '应用失败：' + (e.message || e) } finally { applying.value = false }
+}
+
+async function loadBranchDirs() {
+  try {
+    const res = await fetch(`${API_BRANCH}/dirs`)
+    if (!res.ok) throw new Error(await res.text())
+    branchDirs.value = (await res.json()).dirs || []
+  } catch (e) { error.value = '加载分支列表失败：' + (e.message || e) }
+}
+
+// 选完 From/To 后自动确认三方版本并填充 rev 下拉/输入框
+const versionInfo = ref(null)   // {source_rev, target_rev, base_rev, base_source, ...}
+const previewLoading = ref(false)  // preview-base 加载中（后端 svn log ~2.5s，避免界面观感卡顿）
+let previewReqId = 0   // 竞态保护：快速切换 From/To 时丢弃过期响应，防止旧请求覆盖最新 versionInfo
+async function previewBase() {
+  const isBranch = mode.value === 'branch'
+  const src = isBranch ? sourceBranch.value : sourceDir.value
+  const tgt = isBranch ? targetBranch.value : targetDir.value
+  if (!src || !tgt) { previewReqId++; versionInfo.value = null; return }
+  const myId = ++previewReqId
+  previewLoading.value = true
+  try {
+    const body = { source_branch: src, target_branch: tgt }
+    const br = revNum(baseRev.value)
+    if (br != null) body.base_rev = br
+    // 目录合并复用 branch 的 preview-base（LCA 逻辑相同）
+    const res = await fetch(`${API_BRANCH}/preview-base`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (myId !== previewReqId) return   // 过期请求，丢弃：后返回的旧请求不覆盖最新 versionInfo
+    if (!res.ok) throw new Error(await res.text())
+    const info = await res.json()
+    if (myId !== previewReqId) return
+    versionInfo.value = info
+    // base_source 的历史加载与 rev 填充并行
+    const baseHistP = info.base_source ? loadHistory(info.base_source) : Promise.resolve()
+    // 自动填充 rev 输入框（仅当用户未手动指定时）
+    if (!sourceRev.value && info.source_rev) sourceRev.value = info.source_rev
+    if (!targetRev.value && info.target_rev) targetRev.value = info.target_rev
+    if (!baseRev.value && info.base_rev) baseRev.value = info.base_rev
+    await baseHistP
+  } catch (e) { /* 预览失败不阻断，静默 */ }
+  finally { if (myId === previewReqId) previewLoading.value = false }
+}
+// 用户手动改 Base rev → 仅重算 base（不清 source/target，保留用户选定的 base_rev）
+function onBaseRevChange() { previewBase() }
+
+// 加载某路径的历史版本列表，供 From/To/Base rev 下拉选择
+const revHistory = ref({})   // {path: [{rev, source, copyfrom, note}, ...]}
+async function loadHistory(path) {
+  if (!path || revHistory.value[path]) return revHistory.value[path]
+  try {
+    const res = await fetch(`${API_BRANCH}/log?path=${encodeURIComponent(path)}`)
+    if (!res.ok) throw new Error(await res.text())
+    const data = await res.json()
+    revHistory.value[path] = data.entries || []
+    return data.entries || []
+  } catch (e) {
+    revHistory.value[path] = []
+    return []
+  }
+}
+function revOptions(path) {
+  return revHistory.value[path] || []
+}
+// 某路径的 rev 下拉选项：历史 + preview-base 返回的当前 rev（分支 fork rev 在该路径
+// 上可能无对应 log 条目，补一项保证 select 能回显）
+function revOptionsWith(path, currentRev) {
+  const opts = [...(revHistory.value[path] || [])]
+  if (currentRev && !opts.find(e => e.rev === currentRev)) {
+    opts.unshift({ rev: currentRev, source: path })
+  }
+  return opts
+}
+const fromRevOptions = computed(() =>
+  revOptionsWith(mode.value === 'branch' ? sourceBranch.value : sourceDir.value,
+                 versionInfo.value?.source_rev))
+const toRevOptions = computed(() =>
+  revOptionsWith(mode.value === 'branch' ? targetBranch.value : targetDir.value,
+                 versionInfo.value?.target_rev))
+// Base rev 下拉选项：base_source 的历史 + preview-base 返回的 base_rev
+const baseRevOptions = computed(() => {
+  const src = versionInfo.value?.base_source || ''
+  return revOptionsWith(src, versionInfo.value?.base_rev)
+})
+
+async function loadSubdirDirs() {
+  try {
+    const res = await fetch(`${API_SUBDIR}/dirs`)
+    if (!res.ok) throw new Error(await res.text())
+    subdirDirs.value = (await res.json()).dirs || []
+  } catch (e) { error.value = '加载目录列表失败：' + (e.message || e) }
+}
+
+async function loadCommits() {
+  try {
+    const res = await fetch('/api/merge/commits')
+    if (!res.ok) throw new Error(await res.text())
+    commits.value = (await res.json()).commits || []
+  } catch (e) { /* 历史加载失败不阻断主流程 */ }
+}
+
+async function startCompare() {
+  if (!canStart.value) return
+  loading.value = true; error.value = ''; msg.value = ''; newVersionDir.value = ''; compareResp.value = null
+  history.value = []; historyIdx.value = -1; selectedRows.value = new Set(); conflictIdx.value = -1
+  modalCell.value = null; previewVersion.value = null; previewData.value = null; rowPreviewRis.value = []
+  rowSearchKey.value = ''; showAllResolvedConfirm.value = false; showSummaryModal.value = false; showApplyModeModal.value = false
+  try {
+    const isBranch = mode.value === 'branch'
+    // 若 rev 未填，先自动确认并填充（与选分支时逻辑一致，防止用户直接点按钮未触发 watch）
+    const needAutoFill = !sourceRev.value || (isBranch && !targetRev.value) || !baseRev.value
+    if (needAutoFill) await previewBase()
+
+    const branchBody = { direction: direction.value, source_branch: sourceBranch.value, target_branch: targetBranch.value }
+    const sr = revNum(sourceRev.value), tr = revNum(targetRev.value), br = revNum(baseRev.value)
+    if (sr != null) branchBody.source_rev = sr
+    if (tr != null) branchBody.target_rev = tr
+    if (br != null) branchBody.base_rev = br
+    const subdirBody = { source_dir: sourceDir.value, target_dir: targetDir.value }
+    if (sr != null) subdirBody.source_rev = sr
+    if (br != null) subdirBody.base_rev = br
+    const body = isBranch ? branchBody : subdirBody
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 300_000) // 5 分钟超时
+    let res
+    try {
+      res = await fetch(`${isBranch ? API_BRANCH : API_SUBDIR}/compare`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        signal: ctrl.signal,
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!res.ok) throw new Error(await res.text())
+    let resp
+    try {
+      resp = await res.json()
+    } catch (e) {
+      throw new Error('响应解析失败（数据可能不完整）：' + (e.message || e))
+    }
+    compareResp.value = resp
+    // 清 AI 建议缓存（新 compare 数据，旧缓存失效）
+    Object.keys(aiCache).forEach(k => delete aiCache[k])
+    // 建立稀疏索引（冲突格/差异行候选 + 增量计数），后续解决/切表 O(冲突数) 而非 O(总行数)
+    buildSparseIndex(compareResp.value)
+    // 记录初始冲突数快照（区分「已解决」vs「本就无冲突」，供表/Sheet 着色使用）
+    const ic = {}
+    for (const [gk, g] of Object.entries(resp.groups)) {
+      const sheets = {}
+      let total = 0
+      for (const sk of Object.keys(g.sheets)) {
+        const n = sheetCounts(gk, sk).conflicts
+        sheets[sk] = n; total += n
+      }
+      ic[gk] = { total, sheets }
+    }
+    initialConflicts.value = ic
+    // 过滤后的可见表标签（tableTabs 已滤掉无冲突/无修改的表）
+    const visibleTabs = Object.entries(resp.groups).filter(([name, g]) => {
+      let conflicts = 0, changed = 0, inserted = 0, deleted = 0
+      for (const sk of Object.keys(g.sheets)) {
+        const c = sheetCounts(name, sk)
+        conflicts += c.conflicts; changed += c.changed; inserted += c.inserted; deleted += c.deleted
+      }
+      const hadConflict = (ic[name]?.total || 0) > 0
+      const st = g.structural_status || 'common'
+      const structOnly = st !== 'common' && st !== 'both_added' && (g.files || []).length <= 1
+      return conflicts > 0 || changed > 0 || inserted > 0 || deleted > 0 || hadConflict || structOnly
+    }).map(([k]) => k)
+    if (visibleTabs.length) {
+      // 优先跳到有冲突的表，让用户第一时间看到需要处理的内容
+      const firstConflictGk = visibleTabs.find(k => ic[k].total > 0) || visibleTabs[0]
+      activeTable.value = firstConflictGk
+      const sheets = resp.groups[firstConflictGk].sheets
+      const sk = Object.keys(sheets)
+      const firstConflictSk = sk.find(k => ic[firstConflictGk].sheets[k] > 0) || sk[0] || ''
+      activeSheet.value = firstConflictSk
+      filterType.value = 'diff'
+    }
+  } catch (e) { error.value = '比对失败：' + (e.message || e) } finally { loading.value = false }
+}
+
+loading.value = true
+Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => { loading.value = false })
+</script>
+
+<template>
+<div class="bm-view">
+  <div class="bm-header">
+    <h2 class="bm-title">合并引导</h2>
+    <button class="btn-history" @click="showHistory = true" title="查看合并提交历史">🕘 提交历史</button>
+  </div>
+
+  <!-- 步骤指示器：1 选方式 → 2 比对 → 3 解决冲突 → 4 应用（done=完成✓ / active=当前 / todo=未到） -->
+  <div class="bm-stepper">
+    <template v-for="(s, i) in steps" :key="s.n">
+      <div class="step-item" :class="'step-' + s.status" :title="{ done: s.label + '（已完成）', active: s.label + '（当前步骤）', todo: s.label + '（未开始，请先完成前序步骤）' }[s.status]">
+        <span class="step-dot">{{ s.status === 'done' ? '✓' : s.n }}</span>
+        <span class="step-label">{{ s.label }}</span>
+      </div>
+      <span v-if="i < steps.length - 1" class="step-conn" :class="{ 'conn-done': steps[i + 1].status !== 'todo' }">→</span>
+    </template>
+  </div>
+
+  <!-- 步骤1：选合并方式 → 选源/目标 → 比对 -->
+  <div class="bm-card">
+    <div class="bm-step"><span class="step-num">1</span> 选择合并方式并比对</div>
+    <div class="bm-row mode-row">
+      <button class="mode-btn" :class="{ active: mode === 'branch' }" @click="mode = 'branch'">
+        🔀 分支合并<span class="mode-desc">跨分支 absorb / 合回 trunk</span>
+      </button>
+      <button class="mode-btn" :class="{ active: mode === 'subdir' }" @click="mode = 'subdir'">
+        📁 目录合并<span class="mode-desc">To 目录内的私有子目录合回</span>
+      </button>
+    </div>
+
+    <!-- 分支合并表单 -->
+    <div class="bm-row" v-if="mode === 'branch'">
+      <label class="bm-field">
+        <span class="bm-label">方向</span>
+        <select v-model="direction">
+          <option value="absorb">absorb（From 合入 To）</option>
+          <option value="merge_back">merge_back（合回 trunk）</option>
+        </select>
+      </label>
+      <label class="bm-field">
+        <span class="bm-label">From 分支</span>
+        <select v-model="sourceBranch" :disabled="loading">
+          <option value="">-- 选择 --</option>
+          <option v-for="o in branchOptions" :key="o.name" :value="o.name">{{ o.label }}</option>
+        </select>
+      </label>
+      <label class="bm-field">
+        <span class="bm-label">To 分支</span>
+        <!-- merge_back：目标自动取最新 trunk，无需手选；absorb：手选目标分支 -->
+        <select v-if="direction === 'absorb'" v-model="targetBranch" :disabled="loading">
+          <option value="">-- 选择 --</option>
+          <option v-for="o in branchOptions" :key="o.name" :value="o.name">{{ o.label }}</option>
+        </select>
+        <span v-else class="bm-auto-target" :title="'merge_back 自动选择最新 trunk 作为 To 分支'">
+          {{ targetBranch || '（选 From 分支后自动填充）' }}<span class="ver-tag">auto</span>
+        </span>
+      </label>
+      <label class="bm-field bm-field-rev" title="From 分支的历史版本（自动填充）。真实 SVN 工作副本时从 svn log 获取，demo 快照沿 copyfrom 链">
+        <span class="bm-label">From 版本</span>
+        <select v-model="sourceRev" :disabled="loading || !sourceBranch">
+          <option value="">自动</option>
+          <option v-for="e in fromRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source !== sourceBranch ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <label class="bm-field bm-field-rev" title="To 分支的历史版本（自动填充）。真实 SVN 工作副本时从 svn log 获取，demo 快照沿 copyfrom 链">
+        <span class="bm-label">To 版本</span>
+        <select v-model="targetRev" :disabled="loading || !targetBranch">
+          <option value="">自动</option>
+          <option v-for="e in toRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source !== targetBranch ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <label class="bm-field bm-field-rev" title="共同祖先 Base 版本（自动 LCA 填充），可手动选择或输入">
+        <span class="bm-label">Base 版本</span>
+        <select v-model="baseRev" :disabled="loading" @change="onBaseRevChange">
+          <option value="">{{ previewLoading ? '加载中...' : '自动' }}</option>
+          <option v-for="e in baseRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <span v-if="previewLoading" class="ver-tag" title="正在查询 SVN 版本信息（svn log），约 2-3 秒">⏳</span>
+      <button class="bm-go" :disabled="!canStart || loading" @click="startCompare">
+        {{ loading ? '比对中...' : '开始比对' }}
+      </button>
+    </div>
+
+    <!-- 目录合并表单：先选 From 子目录，再选其归属的 To 目标目录 -->
+    <div class="bm-row" v-else>
+      <label class="bm-field">
+        <span class="bm-label">From 子目录</span>
+        <select v-model="sourceDir" :disabled="loading || !targetDir">
+          <option value="">-- 选择 From 子目录 --</option>
+          <option v-for="o in sourceOptions" :key="o.name" :value="o.name">{{ o.label }}</option>
+        </select>
+      </label>
+      <label class="bm-field">
+        <span class="bm-label">To 目录</span>
+        <select v-model="targetDir" :disabled="loading">
+          <option value="">-- 选择 To 目录 --</option>
+          <option v-for="d in targetOptions" :key="d.name" :value="d.name">{{ dirLabel(d) }}</option>
+        </select>
+      </label>
+      <label class="bm-field bm-field-rev" title="子目录的历史版本（自动填充）。真实 SVN 工作副本时从 svn log 获取，demo 快照沿 copyfrom 链">
+        <span class="bm-label">From 版本</span>
+        <select v-model="sourceRev" :disabled="loading || !sourceDir">
+          <option value="">自动</option>
+          <option v-for="e in fromRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source !== sourceDir ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <label class="bm-field bm-field-rev" title="目标目录的历史版本（自动填充）。与子目录同属 trunk 版本链，统一版本体系">
+        <span class="bm-label">To 版本</span>
+        <select v-model="targetRev" :disabled="loading || !targetDir">
+          <option value="">自动</option>
+          <option v-for="e in toRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source !== targetDir ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <label class="bm-field bm-field-rev" title="子目录创建时期双方共同 base 的版本（自动反查子目录继承时间点填充），可手动选择">
+        <span class="bm-label">Base 版本</span>
+        <select v-model="baseRev" :disabled="loading" @change="onBaseRevChange">
+          <option value="">{{ previewLoading ? '加载中...' : '自动' }}</option>
+          <option v-for="e in baseRevOptions" :key="e.rev" :value="e.rev">{{ e.rev }} {{ e.source ? '(' + e.source + ')' : '' }}</option>
+        </select>
+      </label>
+      <span v-if="previewLoading" class="ver-tag" title="正在查询 SVN 版本信息（svn log），约 2-3 秒">⏳</span>
+      <button class="bm-go" :disabled="!canStart || loading" @click="startCompare">
+        {{ loading ? '比对中...' : '开始比对' }}
+      </button>
+    </div>
+    <div v-if="error" class="bm-err">{{ error }}</div>
+    <div v-if="msg" class="bm-msg"><pre>{{ msg }}</pre></div>
+  </div>
+
+  <!-- 步骤2：选表/sheet，解决冲突（表/sheet 的结构增删标注直接显示在对应 Tab / 下拉项上） -->
+  <div class="bm-card bm-card-wide" v-if="compareResp">
+    <div class="bm-step"><span class="step-num">2</span> 解决冲突并应用</div>
+    <!-- 表标签：冲突=红，已解决=绿，仅增删改=黄，无变化=灰；结构增删附加来源徽标 -->
+    <!-- #39: 按冲突数排序开关；#33: no_change 表显"无差异"徽标 -->
+    <div class="bm-tabs">
+      <span class="bm-tabs-label">表格</span>
+      <button class="bm-ttab-sort" :class="{ active: sortByConflict }"
+        @click="sortByConflict = !sortByConflict"
+        :title="sortByConflict ? '当前按冲突数降序，点击恢复原序' : '按冲突数降序排列（先啃高密度表）'">
+        {{ sortByConflict ? '↓冲突' : '↕排序' }}
+      </button>
+      <button v-for="t in tableTabs" :key="t.name"
+        class="bm-ttab" :class="{ active: t.name === activeTable,
+          'bm-ttab-conflict': t.conflicts > 0,
+          'bm-ttab-resolved': t.conflicts === 0 && t.hadConflict,
+          'bm-ttab-changed': t.conflicts === 0 && !t.hadConflict && (t.changed || t.inserted || t.deleted) > 0,
+          'bm-ttab-struct': !!t.structStatus && t.structStatus !== 'no_change' }"
+        :title="t.structStatus === 'no_change' ? 'SVN 未改动，已跳过比对（无差异）' : (t.structDetail || (t.conflicts ? '存在 ' + t.conflicts + ' 处未决冲突，点击处理' : t.hadConflict ? '冲突已全部解决' : (t.changed || t.inserted || t.deleted) ? '有修改/新增/删除（无冲突）' : '与基准一致，无变化'))"
+        @click="switchTable(t.name)">
+        <span class="bm-ttab-name">{{ t.name }}</span>
+        <span v-if="t.structStatus === 'no_change'" class="bm-ok bm-pill" title="SVN 未改动">无差异</span>
+        <span v-else-if="t.structStatus" class="struct-tag bm-pill" :class="'orig-' + t.structOrigin">{{ structOriginLabel(t.structOrigin) }}{{ structBadge(t.structStatus) }}</span>
+        <span v-if="t.conflicts" class="bm-badge bm-pill">{{ t.conflicts }}</span>
+        <span v-else-if="t.hadConflict" class="bm-ok bm-pill">✓ 已解决</span>
+        <span v-else-if="t.changed||t.inserted||t.deleted" class="bm-dot bm-dot-y"></span>
+        <span v-else-if="!t.structOnly && t.structStatus !== 'no_change'" class="bm-ok bm-pill">✓</span>
+      </button>
+    </div>
+
+    <!-- 工具栏第一行：Sheet 下拉（冲突优先排序）+ 行筛选 + 冲突导航 + 撤销恢复 -->
+    <div class="bm-toolbar bm-toolbar-row1">
+      <label class="bm-field bm-field-inline">
+        <span class="bm-label">Sheet</span>
+        <select v-model="activeSheet" @change="switchSheet(activeSheet)">
+          <option v-for="s in sheetOptions" :key="s.name" :value="s.name">
+            {{ s.structStatus ? (structOriginLabel(s.structOrigin) + structBadge(s.structStatus) + ' ') : (s.conflicts ? '🔴 ' : s.hadConflict ? '🟢 ' : (s.changed||s.inserted||s.deleted) ? '🟡 ' : '✓ ') }}{{ s.name }}{{ s.structStatus ? ' (' + s.structDetail + ')' : (s.conflicts ? ` (冲突${s.conflicts})` : s.hadConflict ? ' (已解决)' : (s.changed||s.inserted||s.deleted) ? ` (改${s.changed}/增${s.inserted}/删${s.deleted})` : ' (无变化)') }}
+          </option>
+        </select>
+      </label>
+      <div class="bm-viewmode" v-if="curSheet">
+        <button class="vm-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'" title="全表单元格模式：所有行展开，冲突/修改/新增/删除逐格显示">📊 全表单元格</button>
+        <button class="vm-btn" :class="{ active: viewMode === 'split' }" @click="viewMode = 'split'" title="并排两表：左 A↔trunk 右 B↔trunk，行按 PK 对齐，只显有变化行">🔀 并排两表</button>
+      </div>
+      <div class="bm-filter">
+        <label :class="{active: filterType==='diff'}" title="显示所有有变化的行：冲突/修改/新增/删除 的并集（默认）"><input type="radio" value="diff" v-model="filterType" /> 有变化</label>
+        <label :class="{active: filterType==='conflict'}" title="只显示存在冲突单元格的行（需人工处理）"><input type="radio" value="conflict" v-model="filterType" /> <span class="fr-dot" style="background:var(--danger)"></span>冲突</label>
+        <label :class="{active: filterType==='changed'}" title="只显示与基准有差异但无冲突的行（自动采纳或已确认）"><input type="radio" value="changed" v-model="filterType" /> <span class="fr-dot" style="background:var(--warning)"></span>修改</label>
+        <label :class="{active: filterType==='inserted'}" title="只显示新增行（基准不存在，派生新增）"><input type="radio" value="inserted" v-model="filterType" /> <span class="fr-dot" style="background:var(--success)"></span>新增</label>
+        <label :class="{active: filterType==='deleted'}" title="只显示删除行（基准有，派生全删）"><input type="radio" value="deleted" v-model="filterType" /> <span class="fr-dot" style="background:var(--diff-del)"></span>删除</label>
+      </div>
+      <button :disabled="!diffList.length" @click="goConflict(-1)" title="上一个冲突（冲突弹窗内也可 Space 跳过）">◀</button>
+      <span v-if="diffList.length" class="bm-conf-count">{{ conflictIdx >= 0 ? conflictIdx + 1 : 0 }}/{{ diffList.length }}</span>
+      <button :disabled="!diffList.length" @click="goConflict(1)" title="下一个冲突（快捷键 Alt+→ 跳下一冲突 Sheet）">▶</button>
+      <button :disabled="historyIdx <= 0" @click="undo" title="撤销上一次冲突解决（Ctrl+Z）">⏪ 撤销</button>
+      <button :disabled="historyIdx >= history.length - 1" @click="redo" title="恢复已撤销的冲突解决（Ctrl+Y）">⏩ 恢复</button>
+    </div>
+
+    <!-- 工具栏第二行：行筛选 + 冲突/已解决面板 + 整表改用版本 -->
+    <div class="bm-toolbar bm-toolbar-row2">
+      <span class="row-search-wrap">
+        <input class="row-search-input" v-model="rowSearchKey" placeholder="筛选行（Key 或单元格内容）" title="按主键或任意单元格内容模糊筛选当前 Sheet 的行" />
+        <span v-if="rowSearchKey.trim()" class="row-search-count">{{ rowSearchStats.hits }}/{{ rowSearchStats.total }} 行</span>
+      </span>
+      <button class="btn-panel" :class="{ active: showConflictPanel }" @click="showConflictPanel = !showConflictPanel" :disabled="!diffList.length" title="展开当前 Sheet 的冲突列表，点击项跳转">📋 冲突列表({{ diffList.length }})</button>
+      <button class="btn-panel" :class="{ active: showAuditPanel }" @click="showAuditPanel = !showAuditPanel" :disabled="!resolvedCount" title="查看本 Sheet 已解决冲突，点击「跳转」回到该位置撤销重选">✓ 已解决({{ resolvedCount }})</button>
+      <span style="flex:1"></span>
+      <span class="accept-ver-label" title="将当前 Sheet 全部冲突单元格一次性替换为指定版本内容">整表改用：</span>
+      <button v-for="fn in (curGroup?.files || [])" :key="fn" class="btn-accept-ver" :class="{ 'is-base': fn === curGroup?.base_file }"
+              :disabled="!diffList.length" @click="showAcceptAllPreview(fn)" :title="'预览 ' + versionLabel(fn) + ' 在冲突处的具体内容，确认后整表应用'">
+        {{ versionLabel(fn) }}<span v-if="fn === curGroup?.base_file" class="ver-tag">基准</span><span v-else-if="versionOriginLabel(fn)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(fn)">{{ versionOriginLabel(fn) }}</span>
+      </button>
+    </div>
+
+    <!-- 结构增删只读 sheet 说明横幅（From/To 新增，仅展示内容不参与合并） -->
+    <div v-if="isStructSheet" class="bm-struct-banner">
+      <span class="struct-tag bm-pill" :class="'orig-' + (curSheet?.origin || '')">{{ structOriginLabel(curSheet?.origin) }}{{ structBadge(curSheet?.structural_status) }}</span>
+      <span>此 Sheet 仅存在于 {{ structOriginLabel(curSheet?.origin) }}，为只读展示，不参与本次合并写回</span>
+    </div>
+
+    <!-- 编号冲突重映射 / 悬空外键 提示横幅（compare 阶段产出） -->
+    <div v-if="curSheet && (curSheetRemappedCount || curSheetDanglingCount)" class="bm-ref-banner">
+      <span v-if="curSheetRemappedCount" class="ref-pill ref-remap" :title="'多分支同主键 inserted 行已按先到先得自动重编号，原编号见各行「重编号」徽标'">🔢 自动重编号 {{ curSheetRemappedCount }} 行</span>
+      <span v-if="curSheetDanglingCount" class="ref-pill ref-dangling" :title="'合并后外键目标不存在，请在冲突弹窗内留意 ⚠ 标记'">⚠ 悬空外键 {{ curSheetDanglingCount }} 处</span>
+    </div>
+
+    <!-- 多选行工具栏 -->
+    <div v-if="selectedRows.size > 0" class="batch-bar">
+      <span>已选 <b>{{ selectedRows.size }}</b> 行</span>
+      <button class="btn-batch" @click="openRowPreview([...selectedRows])" title="预览选中行在各版本的内容，并选择版本整行应用">👁 预览并选版本</button>
+      <button class="btn-clear-sel" @click="clearSelection">取消</button>
+    </div>
+
+    <!-- 全表模式 AI 建议工具栏 -->
+    <div v-if="viewMode === 'table' && curSheet" class="split-toolbar">
+      <button class="btn-ai-sheet" @click="requestSheetAiBatch" :disabled="aiSheetBusy || !curSheet" :title="'并行调用 AI 为当前 Sheet 所有未解决冲突格生成建议，结果用 🎯 标在建议侧'">
+        {{ aiSheetBusy ? '全 Sheet AI 分析中…' : '🎯 全 Sheet AI 建议' }}
+      </button>
+      <!-- #38: 一键采纳高置信建议——阈值默认 0.8（rule-fallback 最高 0.75 自动排除 manual 列） -->
+      <span class="bm-sep">|</span>
+      <label class="bm-field-inline" title="自动采纳 AI 置信度 ≥ 该阈值的冲突格；低于阈值或无建议的格保留给人工">
+        置信度≥<input type="number" v-model.number="batchAdoptThreshold" min="0" max="1" step="0.05" style="width:4.5em" />
+      </label>
+      <button class="btn-batch-adopt" @click="batchAdoptHighConfidence" :disabled="batchAdoptBusy || !curSheet"
+        title="自动采纳当前 Sheet 所有 AI 置信度≥阈值的冲突格（整批单步撤销）；需先点上方生成建议">
+        {{ batchAdoptBusy ? '采纳中…' : '⚡ 批量采纳高置信' }}
+      </button>
+      <span v-if="batchAdoptMsg" class="ai-sheet-progress">{{ batchAdoptMsg }}</span>
+      <span v-if="aiSheetProgress" class="ai-sheet-progress">{{ aiSheetProgress }}</span>
+      <span v-if="aiSheetError" class="ai-sheet-error">{{ aiSheetError }}</span>
+    </div>
+
+
+    <!-- 表格 -->
+    <div class="bm-table-wrap" v-if="curSheet">
+      <table class="bm-table" v-if="viewMode === 'table'">
+        <thead>
+          <tr>
+            <th class="bm-key sel-col"><input type="checkbox" @change="toggleAllRows" title="全选/取消全选当前 Sheet 全部行（用于批量预览选版本）" /></th>
+            <th class="bm-key">主键</th>
+            <th class="bm-key row-act-col">操作</th>
+            <th v-for="(h, i) in curSheet.headers" :key="i">{{ h || colLetter(i) }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in visibleRows" :key="item.ri" :id="'bm-row-' + item.ri" :class="['rt-' + structRowType(item.row), { 'row-sel': selectedRows.has(item.ri), 'rt-changed': !isStructSheet && item.row.row_type === 'matched' && item.row.cells.some(c => c.changed) }]">
+            <td class="bm-key sel-col"><input type="checkbox" :checked="selectedRows.has(item.ri)" @change="toggleRow(item.ri)" /></td>
+            <td class="bm-key">
+              <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
+              <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
+              <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+            </td>
+            <td class="bm-key row-act-col">
+              <button class="row-act-btn" @click.stop="openRowPreview([item.ri])" :disabled="!diffCellsOf(item.row).length" title="预览各版本在本行冲突列的具体内容，并选择版本整行应用">👁</button>
+              <button v-if="item.row.cells.some((c, ci) => c.conflict && aiCache[`${item.ri}-${ci}`]?.suggested_version)" class="row-act-btn row-act-ai" @click.stop="adoptAiForRow(item.ri)" title="接受当前行所有格的 AI 建议">🤖</button>
+            </td>
+            <td v-for="(cell, ci) in item.row.cells" :key="ci"
+              :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict }"
+              @click="cellClick(cell, item.ri, ci)">
+              <template v-if="cell.resolved">
+                <span class="resolved-tag" @click.stop="reopenConflict(item.ri, ci)" :title="'已选 '+resolvedLabel(cell)+'，点击撤销'">✓ {{ resolvedLabel(cell) }}</span>
+                <template v-if="cell.formula_text && cell.formula_resolved && String(cell.formula_text).startsWith('=')">
+                  <span class="formula-text" v-html="highlightSearchHit(cell.formula_text, 60, rowSearchKey)"></span><span class="formula-eq">=</span><span class="formula-value" v-html="highlightSearchHit(String(cell.value ?? ''), 40, rowSearchKey)"></span>
+                </template>
+                <template v-else>
+                  <span class="cell-old" v-html="highlightSearchHit(String(baseValOf(cell) ?? ''), 30, rowSearchKey)"></span><span class="cell-arrow">→</span><span class="cell-new" v-html="highlightSearchHit(String(cell.value ?? ''), 30, rowSearchKey)"></span>
+                </template>
+              </template>
+              <template v-else-if="cell.conflict">
+                <span class="conflict-badge">冲突</span>
+                <span class="cell-conflict-versions">
+                  <template v-for="fn in curGroup.files" :key="fn">
+                    <span class="cv-ver" :class="{ 'cv-base': fn === curGroup.base_file, 'cv-src': versionOrigin(fn) === 'source', 'cv-tgt': versionOrigin(fn) === 'target' }">
+                      <span class="cv-ver-label">{{ fn === curGroup.base_file ? '基准' : versionLabel(fn) }}</span>
+                      <span class="cv-val" v-html="highlightSearchHit(String(cell.versions?.[fn] ?? '∅'), 24, rowSearchKey)"></span>
+                    </span><span v-if="fn !== curGroup.files[curGroup.files.length - 1]" class="cv-sep">│</span>
+                  </template>
+                </span>
+                <template v-if="aiCache[`${item.ri}-${ci}`]?.suggested_version">
+                  <span class="ai-mark" :title="'AI建议采纳 ' + versionLabel(aiCache[`${item.ri}-${ci}`].suggested_version) + (aiCache[`${item.ri}-${ci}`].reasoning ? '：' + aiCache[`${item.ri}-${ci}`].reasoning : '')">🎯 {{ versionLabel(aiCache[`${item.ri}-${ci}`].suggested_version) }}</span>
+                  <button class="ai-adopt-btn" @click.stop="adoptAiForCell(item.ri, ci)">采用</button>
+                </template>
+              </template>
+              <template v-else-if="cell.changed && item.row.row_type === 'matched'">
+                <span class="cell-old" v-html="highlightSearchHit(String(baseValOf(cell) ?? ''), 30, rowSearchKey)"></span><span class="cell-arrow">→</span><span class="cell-new" v-html="highlightSearchHit(String(cell.value ?? ''), 30, rowSearchKey)"></span>
+              </template>
+              <template v-else>
+                <span v-html="highlightSearchHit(cell.value, 60, rowSearchKey)"></span>
+              </template>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- 并排两表（split）：左 = 侧A↔trunk，右 = 侧B↔trunk，两完整 table 行按 PK 对齐 -->
+      <div v-if="viewMode === 'split' && sideFiles.length >= 2" class="split-toolbar">
+        <button class="btn-ai-sheet" @click="requestSheetAiBatch" :disabled="aiSheetBusy || !curSheet" :title="'并行调用 AI 为当前 Sheet 所有未解决冲突格生成建议，结果用 🎯 标在建议侧'">
+          {{ aiSheetBusy ? '全 Sheet AI 分析中…' : '🎯 全 Sheet AI 建议' }}
+        </button>
+        <span v-if="aiSheetProgress" class="ai-sheet-progress">{{ aiSheetProgress }}</span>
+        <span v-if="aiSheetError" class="ai-sheet-error">{{ aiSheetError }}</span>
+      </div>
+      <div class="split-wrap" v-if="viewMode === 'split' && sideFiles.length >= 2" ref="splitWrap">
+        <div class="split-col">
+          <div class="split-col-title">{{ versionLabel(sideFiles[0]) }} ↔ {{ versionLabel(curGroup.base_file) }}<b class="ver-tag">基准</b></div>
+          <div class="sp-scroll" ref="scrollLeft" @scroll="onSplitScroll('left', $event)">
+            <table class="bm-table sp-table">
+              <thead>
+                <tr>
+                  <th class="bm-key">主键</th>
+                  <th v-for="(h, i) in curSheet.headers" :key="i">{{ h || colLetter(i) }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in visibleRows" :key="item.ri" :id="'bm-row-' + item.ri" :class="['rt-' + structRowType(item.row), 'sp-st-' + sideRowStatus(item.row, sideFiles[0]), { 'sp-row-conflict': item.row.cells.some(c => c.conflict), 'sp-row-resolved': item.row.cells.some(c => c.resolved) }]">
+                  <td class="bm-key">
+                    <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
+                    <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
+                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+                  </td>
+                  <td v-for="(cell, ci) in item.row.cells" :key="ci"
+                      :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict, 'sp-cell-conflict': cell.conflict, 'sp-cell-resolved': cell.resolved, 'sp-cell-adopted': cell.resolved && cell.resolvedBy === sideFiles[0], 'sp-cell-clickable': cell.conflict || cell.resolved, 'sp-cell-ai-suggest': cell.conflict && sideFiles[0] !== curGroup?.base_file && aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[0] }"
+                      :title="cell.conflict ? '点击采纳 ' + versionLabel(sideFiles[0]) + ' 的值解决冲突；点 🎯 看 AI 建议' + (aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[0] ? '（AI 建议本侧' + (aiCache[`${item.ri}-${ci}`]?.reasoning ? '：' + aiCache[`${item.ri}-${ci}`].reasoning : '') + '）' : '') : (cell.resolved ? (cell.resolvedBy === sideFiles[0] ? '已采纳本侧，点击切到对侧' : '本侧未采纳，点击重新采纳') : '')"
+                      @click="cell.conflict ? resolveCellSplit(cell, sideFiles[0], item.ri, ci) : (cell.resolved ? switchResolveSide(cell, item.ri, ci) : null)">
+                    <div class="sp-cell-inner">
+                      <span v-html="splitCellHtml(cell, sideFiles[0], sideRowStatus(item.row, sideFiles[0]))"></span>
+                      <button v-if="cell.conflict" class="sp-ai-btn" @click.stop="openCellModal(cell, item.ri, ci)" title="AI 建议">🎯</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!visibleRows.length"><td :colspan="curSheet.headers.length + 1" class="sp-empty">当前筛选下无变化行</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="split-col">
+          <div class="split-col-title">{{ versionLabel(sideFiles[1]) }} ↔ {{ versionLabel(curGroup.base_file) }}<b class="ver-tag">基准</b></div>
+          <div class="sp-scroll" ref="scrollRight" @scroll="onSplitScroll('right', $event)">
+            <table class="bm-table sp-table">
+              <thead>
+                <tr>
+                  <th class="bm-key">主键</th>
+                  <th v-for="(h, i) in curSheet.headers" :key="i">{{ h || colLetter(i) }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in visibleRows" :key="item.ri" :id="'bm-row-r-' + item.ri" :class="['rt-' + structRowType(item.row), 'sp-st-' + sideRowStatus(item.row, sideFiles[1]), { 'sp-row-conflict': item.row.cells.some(c => c.conflict), 'sp-row-resolved': item.row.cells.some(c => c.resolved) }]">
+                  <td class="bm-key">
+                    <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
+                    <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
+                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+                  </td>
+                  <td v-for="(cell, ci) in item.row.cells" :key="ci"
+                      :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict, 'sp-cell-conflict': cell.conflict, 'sp-cell-resolved': cell.resolved, 'sp-cell-adopted': cell.resolved && cell.resolvedBy === sideFiles[1], 'sp-cell-clickable': cell.conflict || cell.resolved, 'sp-cell-ai-suggest': cell.conflict && sideFiles[1] !== curGroup?.base_file && aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[1] }"
+                      :title="cell.conflict ? '点击采纳 ' + versionLabel(sideFiles[1]) + ' 的值解决冲突；点 🎯 看 AI 建议' + (aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[1] ? '（AI 建议本侧' + (aiCache[`${item.ri}-${ci}`]?.reasoning ? '：' + aiCache[`${item.ri}-${ci}`].reasoning : '') + '）' : '') : (cell.resolved ? (cell.resolvedBy === sideFiles[1] ? '已采纳本侧，点击切到对侧' : '本侧未采纳，点击重新采纳') : '')"
+                      @click="cell.conflict ? resolveCellSplit(cell, sideFiles[1], item.ri, ci) : (cell.resolved ? switchResolveSide(cell, item.ri, ci) : null)">
+                    <div class="sp-cell-inner">
+                      <span v-html="splitCellHtml(cell, sideFiles[1], sideRowStatus(item.row, sideFiles[1]))"></span>
+                      <button v-if="cell.conflict" class="sp-ai-btn" @click.stop="openCellModal(cell, item.ri, ci)" title="AI 建议">🎯</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!visibleRows.length"><td :colspan="curSheet.headers.length + 1" class="sp-empty">当前筛选下无变化行</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 冲突全部解决提示（流程终点，移到底部不打断表格视线） -->
+    <div v-if="(allDone && diffList.length && !isStructSheet) || (curTableConflicts === 0 && tableTabs.find(t=>t.name===activeTable)?.hadConflict)" class="done-bar done-bar-combined">
+      <template v-if="curTableConflicts === 0 && tableTabs.find(t=>t.name===activeTable)?.hadConflict">
+        ✅ 当前表格「{{ activeTable }}」的冲突已全部处理完毕
+      </template>
+      <template v-else>
+        ✅ 当前 Sheet 的冲突已全部处理完毕
+      </template>
+      <button v-if="nextConflictSheet" class="btn-jump-next" @click="switchSheet(nextConflictSheet)" title="跳转到本分组下一个仍有未解决冲突的 Sheet">下一冲突 Sheet →<span class="kbd">Alt+→</span></button>
+      <button v-if="nextConflictTable" class="btn-jump-next" @click="switchTable(nextConflictTable)" title="跳转到下一个仍有未解决冲突的表格">下一冲突表格 →<span class="kbd">Ctrl+Alt+→</span></button>
+      <span v-if="!nextConflictSheet && !nextConflictTable" class="done-text">处理完毕</span>
+    </div>
+
+    <!-- 底部应用区：全局未决计数 + 应用合并（流程终点） -->
+    <div class="bm-apply-bar" v-if="compareResp">
+      <span class="bm-global-stat" title="全部表格尚未解决的冲突总数；为 0 才能应用合并">全局未决冲突 <b :class="{ hot: unresolvedCount }">{{ unresolvedCount }}</b></span>
+      <span style="flex:1"></span>
+      <button class="bm-apply" :disabled="unresolvedCount > 0 || applying" @click="runApply"
+        :title="unresolvedCount ? '请先解决全部冲突（全局未决冲突需为 0）' : '将全部表格的合并结果写回目标'">
+        🚀 {{ applying ? '应用中...' : '应用合并' }}
+      </button>
+    </div>
+
+    <!-- 冲突列表面板 -->
+    <div v-if="showConflictPanel && diffList.length" class="side-panel">
+      <div class="sp-header">冲突列表 ({{ diffList.length }})<button class="sp-close" @click="showConflictPanel = false">✕</button></div>
+      <div class="sp-list">
+        <div v-for="(d, i) in diffList" :key="i" class="sp-item" :class="{ active: i === conflictIdx, 'is-conflict': d.cell.conflict, 'is-resolved': d.cell.resolved }" @click="conflictIdx = i; modalCell = d; scrollToRow(d.ri)">
+          <span class="sp-key">{{ d.key }}</span>
+          <span class="sp-col">{{ d.header || colLetter(d.ci) }}</span>
+          <template v-if="d.cell.resolved">
+            <span class="sp-val" :title="cellDisplayText(d.cell)">{{ truncated(String(cellDisplayText(d.cell)), 40) }}</span>
+            <span class="sp-tag tag-resolved">✓ {{ resolvedLabel(d.cell) }}</span>
+          </template>
+          <span v-else class="sp-tag tag-conflict">冲突</span>
+        </div>
+      </div>
+    </div>
+    <!-- 已解决审计面板 -->
+    <div v-if="showAuditPanel" class="side-panel">
+      <div class="sp-header">已解决冲突 ({{ resolvedList.length }})<button class="sp-close" @click="showAuditPanel = false">✕</button></div>
+      <div class="sp-body">
+        <div v-if="auditStats.length" class="audit-list">
+          <div v-for="s in auditStats" :key="s.source" class="audit-item">
+            <span class="audit-source">{{ versionLabel(s.source) }}<span v-if="versionOriginLabel(s.source)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(s.source)">{{ versionOriginLabel(s.source) }}</span></span>
+            <span class="audit-count">{{ s.count }} 处</span>
+          </div>
+        </div>
+        <div v-if="resolvedList.length" class="resolved-list">
+          <div v-for="(r, i) in resolvedList" :key="i" class="resolved-item">
+            <span class="ri-key">{{ r.key }}</span>
+            <span class="ri-col">{{ r.header }}</span>
+            <span class="ri-ver">✓ {{ versionLabel(r.source) }}<span v-if="versionOriginLabel(r.source)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(r.source)">{{ versionOriginLabel(r.source) }}</span></span>
+            <button class="ri-jump" @click="jumpToResolved(r.ri, r.ci)">跳转</button>
+          </div>
+        </div>
+        <p v-else class="audit-empty">暂无已解决冲突</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 冲突解决大弹窗：横向表格（各版本为列），含 AI 建议 + 跳过至下一个冲突 -->
+  <div v-if="modalCell" class="modal-bg" @click="closeModal">
+    <div class="modal cell-modal" @click.stop>
+      <h3>{{ modalCell.header || (colLetter(modalCell.ci) + ' 列') }} — Key: {{ modalCell.key }}
+        <span v-if="modalCell.cell.resolved" class="modal-type-badge mod-resolved">✓ 已选 {{ resolvedLabel(modalCell.cell) }}（点击版本可切换）</span>
+        <span v-else class="modal-type-badge mod-conflict">🔴 冲突（需人工选择）</span>
+      </h3>
+      <div class="vm-table-wrap">
+        <table class="vm-table">
+          <thead>
+            <tr>
+              <th class="vm-col-col">列</th>
+              <th v-for="fn in curGroup.files" :key="fn" class="vm-ver-th" :class="{ 'vm-base-col': fn === curGroup?.base_file }">
+                <div class="vm-ver-name">{{ versionLabel(fn) }}<b v-if="fn === curGroup?.base_file" class="ver-tag">基准</b><b v-else-if="versionOriginLabel(fn)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(fn)">{{ versionOriginLabel(fn) }}</b></div>
+                <div v-if="versionMeta(fn)" class="vm-ver-meta">
+                  <span v-if="versionMeta(fn).author">{{ versionMeta(fn).author }}</span>
+                  <span v-if="versionMeta(fn).date" :title="versionMeta(fn).date">{{ fmtRevDate(versionMeta(fn).date) }}</span>
+                </div>
+                <button v-if="fn !== curGroup?.base_file" class="vm-choose-btn" @click="chooseVersionForRow(fn)" title="将该版本应用到本行所有冲突列">整行用此版本</button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="{ c, ci } in modalConflictCells" :key="ci" :class="{ 'vm-row-current': ci === modalCell.ci }">
+              <td class="vm-col-col">{{ curSheet.headers[ci] || colLetter(ci) }}
+                <span v-if="ci === modalCell.ci" class="vm-cur-tag">当前</span>
+                <span v-if="cellDangling(modalCell.ri, ci)" class="cell-dangling" :title="(cellDangling(modalCell.ri, ci) || {}).reason">⚠悬空</span>
+              </td>
+              <td v-for="fn in curGroup.files" :key="fn"
+                :class="{ 'vm-diff-cell': vmIsDiff(ci, fn), 'vm-base-cell': fn === curGroup?.base_file, 'vm-cell-current': ci === modalCell.ci, 'vm-cell-clickable': fn !== curGroup?.base_file, 'vm-cell-chosen': isChosenVersion(ci, fn), 'vm-cell-ai-suggest': fn !== curGroup?.base_file && aiCache[`${modalCell.ri}-${ci}`]?.suggested_version === fn }"
+                :title="fn !== curGroup?.base_file ? (aiCache[`${modalCell.ri}-${ci}`]?.suggested_version === fn ? '🎯 AI 建议此版本' + (aiCache[`${modalCell.ri}-${ci}`]?.reasoning ? '：' + aiCache[`${modalCell.ri}-${ci}`].reasoning : '') + '；点击采用' : '点击采用此版本的值（仅当前单元格）') : ''"
+                @click="fn !== curGroup?.base_file ? chooseVersionForCell(ci, fn) : null">
+                <span v-html="vmCellHtml(ci, fn)"></span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="vm-hint">仅展示该行存在冲突的列。<span class="vm-cur-tag">当前</span> 标记正在处理的单元格。① 点击列首「整行用此版本」— 本行所有冲突列采用该版本；② 点击某版本单元格的值 — 仅当前单元格采用该版本。基准列为旧值，其余列相对基准做字符级 diff（红删绿增）。</p>
+      <!-- AI 冲突建议 -->
+      <div v-if="aiSuggestion || aiSuggestBusy || aiSuggestError" class="ai-panel">
+        <div v-if="aiSuggestBusy" class="ai-loading">AI 分析中…</div>
+        <div v-else-if="aiSuggestError" class="ai-error">{{ aiSuggestError }}</div>
+        <div v-else-if="aiSuggestion" class="ai-result ai-result-highlight">
+          <div class="ai-head">
+            <span class="ai-badge">🎯 AI 建议</span>
+            <span class="ai-ver">采用版本：{{ versionLabel(aiSuggestion.suggested_version) }}<span v-if="versionOriginLabel(aiSuggestion.suggested_version)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(aiSuggestion.suggested_version)">{{ versionOriginLabel(aiSuggestion.suggested_version) }}</span></span>
+            <span class="ai-conf">置信度 {{ (aiSuggestion.confidence * 100).toFixed(0) }}%</span>
+          </div>
+          <p class="ai-reason">{{ aiSuggestion.reasoning }}</p>
+          <div class="ai-actions">
+            <button class="btn-ai-adopt" @click="adoptAiSuggestion">✅ 接受 AI 建议</button>
+            <span class="ai-tip">采纳后自动跳到下一个冲突</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <span class="kbd-hint">数字键选版本 · Space 跳过 · Esc 关闭</span>
+        <button class="btn-ai-row" @click="requestRowAiBatch" :disabled="aiRowBatchBusy || aiSuggestBusy" :title="'并行调用 AI 为本行所有冲突列生成建议，结果用 💡 标在建议版本列上'">
+          {{ aiRowBatchBusy ? '全行分析中…' : '💡 全行 AI 建议' }}
+        </button>
+        <span v-if="aiRowBatchError" class="ai-row-error">{{ aiRowBatchError }}</span>
+        <span v-else-if="aiRowBatchDone" class="ai-row-done">✓ 本行冲突已标注 AI 建议（💡 列）</span>
+        <button class="btn-ai" @click="requestAiSuggest" :disabled="aiSuggestBusy" title="调用接口综合分析列类型/值特征/上下文给出建议版本，可一键采纳">💡 AI 建议</button>
+        <button class="btn-skip" @click="advanceModal" title="跳过当前冲突，处理下一个">跳过 →</button>
+        <button class="btn-close-modal" @click="closeModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 整表改用版本 X 预览弹窗 -->
+  <div v-if="previewVersion" class="modal-bg" @click="cancelAcceptAll">
+    <div class="modal preview-modal" @click.stop>
+      <h3>预览整表改用版本：{{ versionLabel(previewVersion) }}<span v-if="versionOriginLabel(previewVersion)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(previewVersion)">{{ versionOriginLabel(previewVersion) }}</span></h3>
+      <p class="preview-desc">将以下 <b>{{ previewStats.all }}</b> 处冲突的内容替换为该版本的值。基准为 <b>{{ curGroup?.base_file }}</b></p>
+      <div class="preview-filter">
+        <button :class="{ active: previewFilter === 'all' }" @click="previewFilter = 'all'">全部 ({{ previewStats.all }})</button>
+        <button :class="{ active: previewFilter === 'conflict' }" @click="previewFilter = 'conflict'">仅冲突 ({{ previewStats.conflict }})</button>
+        <button :class="{ active: previewFilter === 'changed' }" @click="previewFilter = 'changed'">仅变更 ({{ previewStats.changed }})</button>
+      </div>
+      <div class="preview-list">
+        <div v-for="(it, i) in previewFiltered" :key="i" class="preview-row" :class="{ 'is-conflict': it.conflict, 'is-changed': it.changed }">
+          <div class="pr-loc">
+            <span class="pr-key">{{ it.key }}</span>
+            <span class="pr-col">{{ it.header || (it.col_letter + ' 列') }}</span>
+            <span class="pr-tag" :class="it.conflict ? 'tag-conflict' : 'tag-changed'">{{ it.conflict ? '冲突' : '变更' }}</span>
+          </div>
+          <div class="pr-vals">
+            <div class="pr-val pr-base"><span class="pr-vlabel">基准</span><code>{{ truncated(it.base, 60) }}</code></div>
+            <div class="pr-val pr-target"><span class="pr-vlabel">本版本</span><code>{{ truncated(it.target, 60) }}</code></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-close-modal" @click="cancelAcceptAll">取消</button>
+        <button class="btn-confirm-accept" @click="confirmAcceptAll">✓ 确认全部接纳</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 行版本预览弹窗 -->
+  <div v-if="rowPreviewRis.length" class="modal-bg" @click="closeRowPreview">
+    <div class="modal preview-modal" @click.stop>
+      <h3>预览 {{ rowPreviewRis.length }} 行内容并选择版本</h3>
+      <p class="preview-desc">下表为每个选中行列出其冲突列及各版本取值。① 点击列首「整行用此版本」— 该行所有冲突列采用此版本；② 点击某版本单元格的值 — 仅该单元格采用此版本。底部按钮可将同一版本应用到全部选中行。</p>
+      <div class="row-preview-list">
+        <div v-for="ri in rowPreviewRis" :key="ri" class="rp-row-block">
+          <div class="rp-row-title">Key: {{ curSheet.rows[ri]?.key }}<span class="rp-conf-count">冲突列 {{ diffCellsOf(curSheet.rows[ri]).length }}</span></div>
+          <table class="rp-table" v-if="diffCellsOf(curSheet.rows[ri]).length">
+            <thead><tr>
+              <th>列</th>
+              <th v-for="fn in curGroup.files" :key="fn" :class="{ 'rp-base-col': fn === curGroup.base_file }">
+                {{ versionLabel(fn) }}<span v-if="fn === curGroup.base_file" class="ver-tag">基准</span><span v-else-if="versionOriginLabel(fn)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(fn)">{{ versionOriginLabel(fn) }}</span>
+                <button v-if="fn !== curGroup.base_file" class="vm-choose-btn rp-choose-btn" @click="chooseRowVersionForRow(ri, fn)">整行</button>
+              </th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="{ c, ci } in diffCellsOf(curSheet.rows[ri])" :key="ci">
+                <td class="rp-colname">{{ curSheet.headers[ci] || colLetter(ci) }}<span class="vm-conf-tag">冲突</span></td>
+                <td v-for="fn in curGroup.files" :key="fn"
+                    :class="{ 'rp-diff-val': str(c.versions[fn]) !== str(c.versions[curGroup.base_file]), 'rp-base-cell': fn === curGroup.base_file, 'rp-cell-clickable': fn !== curGroup.base_file }"
+                    :title="fn !== curGroup.base_file ? '点击采用此版本的值（仅本单元格）' : ''"
+                    @click="fn !== curGroup.base_file ? chooseRowVersionForCell(ri, ci, fn) : null"
+                    v-html="fn === curGroup.base_file ? escapeHtml(c.versions[fn]) : renderDiffFor(c.versions[fn], c.versions[curGroup.base_file])"></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="rp-nodiff">该行无冲突</div>
+        </div>
+      </div>
+      <div class="rp-apply-btns">
+        <span class="rp-apply-label">应用版本：</span>
+        <button v-for="fn in curGroup.files" :key="fn" class="btn-accept-ver" :class="{ 'is-base': fn === curGroup.base_file }" @click="applyRowPreviewVersion(fn)">
+          {{ versionLabel(fn) }}<span v-if="fn === curGroup.base_file" class="ver-tag">基准</span><span v-else-if="versionOriginLabel(fn)" class="ver-origin bm-pill" :class="'orig-' + versionOrigin(fn)">{{ versionOriginLabel(fn) }}</span>
+        </button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-close-modal" @click="closeRowPreview">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用合并前：冲突解决/变更汇总确认 -->
+  <div v-if="showSummaryModal" class="modal-bg" @click="showSummaryModal = false">
+    <div class="modal summary-modal" @click.stop>
+      <h3>📋 本次合并变更汇总
+        <span class="summary-count">共 {{ applySummary.length }} 处</span>
+      </h3>
+      <p class="preview-desc">下表为本次合并将写回的全部「冲突解决 + 变更」明细（基于 base 的旧→新对比）。确认无误后进入 commit 命名与落点选择。</p>
+      <div class="summary-table-wrap">
+        <table class="summary-table">
+          <thead>
+            <tr>
+              <th>表格</th><th>Sheet</th><th>主键</th><th>列</th><th>类型</th><th>旧值</th><th>新值</th><th>来源</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(it, i) in applySummary" :key="i" :class="{
+              'sum-row-resolved': it.type === '冲突解决',
+              'sum-row-changed': it.type === '变更',
+              'sum-row-inserted': it.type === '新增',
+              'sum-row-deleted': it.type === '删除'
+            }">
+              <td>{{ it.table }}</td>
+              <td>{{ it.sheet }}</td>
+              <td class="sum-key">{{ truncated(it.key, 30) }}</td>
+              <td>{{ it.header }}</td>
+              <td><span class="sum-type" :class="{
+                'tag-resolved': it.type === '冲突解决',
+                'tag-changed': it.type === '变更',
+                'tag-inserted': it.type === '新增',
+                'tag-deleted': it.type === '删除'
+              }">{{ it.type }}</span></td>
+              <td class="sum-old">{{ truncated(it.old, 50) }}</td>
+              <td class="sum-new">{{ truncated(it.new, 50) }}<span v-if="it.formulaVal" class="sum-formula"> = {{ truncated(it.formulaVal, 30) }}</span></td>
+              <td>{{ it.source ? resolvedLabel({ resolvedBy: it.source }) : '' }}</td>
+            </tr>
+            <tr v-if="!applySummary.length"><td colspan="8" class="audit-empty">无冲突解决或变更</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-close-modal" @click="showSummaryModal = false">返回修改</button>
+        <button class="btn-confirm-accept" @click="confirmSummaryThenApply">确认，下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全部冲突已解决 → 询问是否立即应用合并 -->
+  <div v-if="showAllResolvedConfirm" class="modal-bg" @click="showAllResolvedConfirm = false">
+    <div class="modal confirm-modal" @click.stop>
+      <h3>🎉 全部表格的冲突已解决</h3>
+      <p class="preview-desc">本次合并涉及的所有表格冲突均已处理完毕，是否立即应用合并？</p>
+      <div class="modal-actions">
+        <button class="btn-close-modal" @click="showAllResolvedConfirm = false">稍后再说</button>
+        <button class="btn-confirm-accept" :disabled="applying" @click="showAllResolvedConfirm = false; runApply()">🚀 立即应用合并</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用合并：填写 commit 名称 + 选择落点方式（覆盖 To 最新 / 产生新版本） -->
+  <div v-if="showApplyModeModal" class="modal-bg" @click="showApplyModeModal = false">
+    <div class="modal confirm-modal" @click.stop>
+      <h3>确认应用合并</h3>
+      <label class="bm-field" style="margin-bottom:12px">
+        <span class="bm-label">commit 名称（可选，如 bug fix）</span>
+        <input class="commit-input" v-model="commitName" placeholder="为本次合并修改起个名称…" @keyup.enter="doApply('new_version')" />
+      </label>
+      <p class="preview-desc">合并结果写回{{ mode === 'subdir' ? 'To 目录' : 'To 分支' }}的方式：</p>
+      <div class="modal-actions" style="flex-direction:column;gap:10px;align-items:stretch">
+        <button class="btn-confirm-accept btn-apply-mode" :disabled="applying" @click="doApply('overwrite')"
+          :title="'覆盖' + (mode === 'subdir' ? 'To 目录' : 'To 分支') + '最新表格（同名，内容为合并结果）'">
+          📝 覆盖版本<span class="apply-mode-desc">覆盖{{ mode === 'subdir' ? 'To 目录' : 'To 分支' }}最新表格</span>
+        </button>
+        <button class="btn-confirm-accept btn-apply-mode" :disabled="applying" @click="doApply('new_version')"
+          :title="mode === 'subdir' ? 'To 目录生成新表格，迭代次数 +1（如 a_s2 → a_s3）' : (direction === 'absorb' ? 'To 分支生成新版本目录（如 B_r2 → B_r3）' : 'trunk 生成新版本表格，迭代次数 +1')">
+          🆕 产生新版本<span class="apply-mode-desc">生成新版本，迭代次数 +1</span>
+        </button>
+        <button class="btn-close-modal" @click="showApplyModeModal = false">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提交历史大弹窗：时间、模式、涉及目录、表、产出、commit 名称 -->
+  <div v-if="showHistory" class="modal-bg" @click="showHistory = false">
+    <div class="modal history-modal" @click.stop>
+      <div class="hm-header">
+        <h3>🕘 提交历史</h3>
+        <button class="sp-close" @click="showHistory = false">✕</button>
+      </div>
+      <div class="hm-body">
+        <table class="commit-table" v-if="commits.length">
+          <thead>
+            <tr><th>时间</th><th>模式</th><th>源 → 目标</th><th>表</th><th>产出</th><th>commit 名称</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(c, i) in commits" :key="i">
+              <td class="ct-time">{{ c.time }}</td>
+              <td>{{ c.mode_label }}</td>
+              <td class="ct-dir">{{ c.source }} → {{ c.target }}<span v-if="c.version_dir" class="ver-tag">{{ c.version_dir }}</span></td>
+              <td>{{ c.group }}</td>
+              <td>{{ c.output }}</td>
+              <td class="ct-name">{{ c.commit_name || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="hm-empty">暂无合并提交记录</div>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+
+<style scoped>
+.bm-view { padding: 16px 20px; height: 100%; overflow: auto; }
+.bm-title { margin: 0 0 16px; font-size: 1.2rem; color: var(--text-primary); }
+.bm-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.bm-header .bm-title { margin: 0; }
+.btn-history { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; font-size: 0.86rem; }
+.btn-history:hover { border-color: var(--accent); color: var(--accent); }
+.modal.history-modal { width: 96vw; max-width: 96vw; min-width: 0; max-height: 88vh; display: flex; flex-direction: column; }
+.hm-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.hm-header h3 { margin: 0; }
+.hm-body { overflow: auto; flex: 1; }
+.hm-empty { padding: 32px; text-align: center; color: var(--text-secondary); }
+.bm-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+.bm-card-wide { display: flex; flex-direction: column; }
+.bm-ttab-struct { border-style: dashed; }
+.struct-tag, .ver-origin { color: #fff; }
+.orig-source { background: #2e7d32; }
+.orig-target { background: #1565c0; }
+.orig-both { background: #6a1b9a; }
+.mode-row { margin-bottom: 12px; }
+.mode-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 0.92rem; }
+.mode-btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.mode-desc { font-size: 0.72rem; color: var(--text-secondary); }
+.commit-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem; width: 100%; box-sizing: border-box; }
+.commit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.commit-table th { text-align: left; padding: 6px 10px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.commit-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.ct-time { white-space: nowrap; color: var(--text-secondary); }
+.ct-dir { color: var(--text-secondary); }
+.ct-name { font-weight: 600; }
+.bm-step { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--accent); margin-bottom: 12px; }
+.step-num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 0.78rem; }
+.bm-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.bm-field { display: flex; flex-direction: column; gap: 4px; }
+.bm-field-inline { flex-direction: row; align-items: center; gap: 6px; }
+.bm-label { font-size: 0.78rem; color: var(--text-secondary); }
+.bm-field select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem; min-width: 180px; }
+.bm-field-rev { max-width: 120px; }
+.bm-field-rev input,
+.bm-field-rev select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); font-size: 0.86rem; width: 100%; min-width: auto; }
+.bm-ver-info { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg-soft, #f6f8fa); border: 1px dashed var(--border); border-radius: 6px; font-size: 0.84rem; flex-wrap: wrap; }
+.bm-ver-info.bm-ver-inline { margin-top: 0; margin-left: 8px; padding: 5px 10px; gap: 8px; align-self: center; }
+.bm-ver-item { display: flex; flex-direction: column; gap: 1px; }
+.bm-ver-key { font-size: 0.68rem; color: var(--text-secondary); line-height: 1; }
+.bm-ver-val { font-weight: 600; color: var(--accent); line-height: 1.2; }
+.bm-ver-base .bm-ver-val { color: var(--success); }
+.bm-ver-arrow { color: var(--text-secondary); font-size: 0.9rem; }
+.bm-ver-sep { color: var(--border); }
+.bm-ver-src { font-size: 0.7rem; color: var(--text-secondary); }
+.bm-go { padding: 7px 18px; border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-size: 0.9rem; }
+.bm-go:hover { background: var(--accent-hover); }
+.bm-go:disabled { opacity: 0.5; cursor: not-allowed; }
+.bm-err { color: var(--danger); background: var(--danger-soft); padding: 8px 12px; border-radius: 6px; margin-top: 10px; font-size: 0.88rem; white-space: pre-wrap; }
+.bm-msg { color: var(--success); background: var(--success-soft); padding: 8px 12px; border-radius: 6px; margin-top: 10px; font-size: 0.86rem; }
+.bm-msg pre { margin: 0; white-space: pre-wrap; font-family: inherit; }
+.bm-tabs { display: flex; gap: 8px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; margin-bottom: 10px; }
+.bm-tabs-label { font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-right: 4px; }
+.bm-ttab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; font-size: 0.85rem; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+.bm-ttab:hover { border-color: var(--accent); }
+.bm-ttab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.bm-ttab-conflict { border-color: var(--danger); }
+.bm-ttab-conflict.active { border-color: var(--danger); box-shadow: 0 0 0 2px rgba(192,57,43,0.25); }
+.bm-ttab-resolved { border-color: var(--success); }
+.bm-ttab-resolved.active { box-shadow: 0 0 0 2px rgba(46,204,113,0.25); }
+.bm-ttab-changed { border-color: var(--warning); }
+.bm-badge { background: var(--danger); color: #fff; }
+.bm-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.bm-dot-y { background: var(--warning); }
+.bm-ok { background: var(--success-soft); color: var(--success); }
+.bm-pill { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; line-height: 1.4; white-space: nowrap; }
+.ver-origin { margin-left: 5px; vertical-align: middle; }
+.bm-stat { margin-left: auto; font-size: 0.85rem; color: var(--text-secondary); }
+.bm-stat b { color: var(--text-primary); }
+.bm-stat b.hot { color: var(--danger); }
+.bm-toolbar { display: flex; gap: 10px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
+.bm-toolbar > button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; }
+.bm-toolbar > button:disabled { opacity: 0.35; cursor: not-allowed; }
+.bm-conf-count { font-size: 0.8rem; color: var(--text-secondary); }
+.bm-filter { display: flex; gap: 4px; align-items: center; }
+.bm-filter label { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem; cursor: pointer; color: var(--text-secondary); }
+.bm-filter label.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.fr-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+/* 应用合并：独立高亮操作栏，与整表改用分行，突出显示避免被工具栏淹没 */
+.bm-action-bar { display: flex; gap: 10px; align-items: center; padding: 10px 14px; margin: 6px 0 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
+.bm-global-stat { font-size: 0.85rem; color: var(--text-secondary); }
+.bm-global-stat b { color: var(--text-primary); }
+.bm-global-stat b.hot { color: var(--danger); }
+.bm-apply { padding: 10px 26px; border: none; border-radius: 8px; background: var(--success); color: #fff; cursor: pointer; font-size: 1rem; font-weight: 700; box-shadow: 0 2px 8px rgba(46,204,113,0.4); }
+.bm-apply:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.bm-apply:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+
+/* ── 步骤指示器（1 选方式 → 2 比对 → 3 解决冲突 → 4 应用） ── */
+.bm-stepper { display: flex; align-items: center; gap: 6px; padding: 10px 14px; margin-bottom: 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; }
+.step-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; }
+.step-dot { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 0.78rem; font-weight: 700; }
+.step-label { font-size: 0.85rem; font-weight: 600; }
+.step-todo { color: var(--text-muted); }
+.step-todo .step-dot { background: var(--bg-hover); color: var(--text-muted); }
+.step-active { color: var(--accent); background: var(--accent-soft); }
+.step-active .step-dot { background: var(--accent); color: #fff; }
+.step-done { color: var(--success); }
+.step-done .step-dot { background: var(--success); color: #fff; }
+.step-conn { color: var(--text-muted); font-weight: 700; }
+.step-conn.conn-done { color: var(--success); }
+
+/* ── 底部应用区（流程终点：全局未决 + 应用合并） ── */
+.bm-apply-bar { display: flex; align-items: center; gap: 14px; padding: 12px 14px; margin-top: 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; }
+.bm-table-wrap { overflow: auto; max-height: calc(100vh - 480px); border: 1px solid var(--border); border-radius: 6px; }
+.bm-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+.bm-table th, .bm-table td { border: 1px solid var(--border-soft); padding: 4px 8px; text-align: left; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.bm-table th { background: var(--bg-stripe); color: var(--text-secondary); position: sticky; top: 0; z-index: 1; }
+.bm-key { background: var(--bg-stripe); font-weight: 600; color: var(--text-primary); position: sticky; left: 0; z-index: 1; }
+.sel-col { width: 30px; text-align: center; }
+.row-act-col { width: 40px; text-align: center; }
+.rt-inserted { background: rgba(46, 204, 113, 0.30) !important; box-shadow: inset 4px 0 0 var(--success); }
+.rt-deleted { background: rgba(231, 76, 60, 0.22) !important; box-shadow: inset 4px 0 0 var(--danger); }
+.rt-changed { background: rgba(241, 196, 15, 0.30) !important; box-shadow: inset 4px 0 0 var(--warning); }
+.row-type-tag { display: inline-block; width: 16px; margin-right: 4px; text-align: center; font-weight: 700; border-radius: 3px; }
+.tag-inserted { color: var(--success); }
+.tag-deleted { color: var(--danger); }
+.tag-matched { color: var(--warning); }
+.tag-missing_row { color: var(--accent); }
+.row-sel { background: var(--accent-soft); }
+.cell-conflict { background: rgba(192, 57, 43, 0.35) !important; box-shadow: inset 0 0 0 2px var(--danger); cursor: pointer; }
+.cell-resolved { background: var(--success-soft); }
+.cell-changed { background: rgba(241, 196, 15, 0.28) !important; box-shadow: inset 0 0 0 2px var(--warning); }
+.cell-old { color: var(--text-muted); text-decoration: line-through; font-size: 0.82em; }
+.cell-arrow { color: var(--warning); margin: 0 3px; font-size: 0.82em; }
+.cell-new { color: var(--text-primary); font-weight: 600; }
+.resolved-tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--success); color: #fff; font-size: 0.72rem; cursor: pointer; }
+.formula-text { color: var(--accent); font-family: monospace; }
+.formula-eq { color: var(--text-muted); margin: 0 2px; font-family: monospace; }
+.formula-value { color: var(--text-primary); font-family: monospace; font-weight: 600; }
+mark.search-hit { background: var(--warning); color: #fff; padding: 0 1px; border-radius: 2px; }
+.conflict-badge { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--danger); color: #fff; font-size: 0.72rem; }
+.cell-conflict-versions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; font-size: 0.78rem; }
+.cv-ver { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 3px; }
+.cv-ver-label { font-size: 0.65rem; opacity: 0.7; font-weight: 500; }
+.cv-val { font-weight: 600; }
+.cv-base .cv-ver-label { color: var(--text-muted); }
+.cv-base .cv-val { color: var(--text-muted); text-decoration: line-through; font-weight: 400; }
+.cv-src { background: rgba(52, 152, 219, 0.12); }
+.cv-src .cv-ver-label { color: #2980b9; }
+.cv-src .cv-val { color: #2980b9; }
+.cv-tgt { background: rgba(155, 89, 182, 0.12); }
+.cv-tgt .cv-ver-label { color: #8e44ad; }
+.cv-tgt .cv-val { color: #8e44ad; }
+.cv-sep { color: var(--text-muted); opacity: 0.4; }
+.row-act-btn { padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; font-size: 0.7rem; }
+.row-act-btn:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.row-act-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.row-act-ai { margin-left: 4px; border-color: #f39c12 !important; color: #f39c12 !important; }
+.row-act-ai:hover:not(:disabled) { background: #f39c12 !important; color: #fff !important; border-color: #f39c12 !important; }
+.ai-mark { display: inline-block; margin: 0 2px 0 8px; padding: 0 5px; border-radius: 3px; background: rgba(243, 156, 18, 0.15); color: #e67e22; font-size: 0.7rem; font-weight: 600; white-space: nowrap; cursor: default; }
+.ai-adopt-btn { display: inline-block; margin-left: 4px; padding: 0 6px; border: 1px solid #27ae60; border-radius: 3px; background: rgba(39, 174, 96, 0.1); color: #27ae60; cursor: pointer; font-size: 0.7rem; }
+.ai-adopt-btn:hover { background: #27ae60; color: #fff; }
+.ver-tag { margin-left: 4px; padding: 0 4px; border-radius: 3px; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 400; }
+.bm-auto-target { padding: 6px 10px; border: 1px dashed var(--accent); border-radius: 6px; color: var(--accent); font-size: 0.88rem; background: var(--accent-soft); }
+.done-bar { padding: 8px 14px; background: var(--success-soft); color: var(--success); text-align: center; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 10px; flex-wrap: wrap; }
+.done-bar-table { background: var(--accent-soft); color: var(--accent); }
+.btn-jump-next { padding: 4px 12px; border: none; border-radius: 4px; background: var(--success); color: #fff; cursor: pointer; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
+.done-bar-table .btn-jump-next { background: var(--accent); }
+.kbd { padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,0.35); font-size: 0.72rem; font-family: monospace; }
+
+/* ── 多选行批量条 ── */
+.batch-bar { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--warning-soft); font-size: 0.82rem; border-radius: 6px; color: var(--text-primary); margin-bottom: 10px; }
+.btn-batch { padding: 4px 12px; border: none; border-radius: 4px; background: var(--danger); color: #fff; cursor: pointer; }
+.btn-clear-sel { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; }
+.confirm-modal { min-width: 420px; max-width: 520px; text-align: center; }
+.confirm-modal h3 { margin-top: 0; }
+
+
+.row-search-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.row-search-input { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 0.8rem; width: 160px; background: var(--bg-card); color: var(--text-primary); }
+.row-search-input:focus { border-color: var(--accent); }
+.row-search-count { font-size: 0.75rem; color: var(--warning); white-space: nowrap; }
+
+/* ── 冲突列表/审计侧面板 ── */
+.btn-panel { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; }
+.btn-panel.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.btn-panel:disabled { opacity: 0.35; cursor: not-allowed; }
+.accept-ver-label { font-size: 0.78rem; color: var(--text-muted); }
+.btn-accept-ver { padding: 3px 10px; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent-soft); color: var(--accent); cursor: pointer; font-size: 0.78rem; }
+.btn-accept-ver:hover:not(:disabled) { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
+.btn-accept-ver.is-base { border-color: var(--success); color: var(--success); background: var(--success-soft); }
+.btn-accept-ver:disabled { opacity: 0.35; cursor: not-allowed; }
+.side-panel { position: fixed; right: 24px; top: 140px; bottom: 24px; width: 320px; max-height: none; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(44,62,80,0.18); z-index: 40; display: flex; flex-direction: column; }
+.sp-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg-hover); border-radius: 8px 8px 0 0; font-weight: 600; font-size: 0.82rem; color: var(--text-primary); }
+.sp-close { border: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 0.9rem; }
+.sp-close:hover { color: var(--danger); }
+.sp-list { overflow-y: auto; flex: 1; }
+.sp-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; font-size: 0.78rem; border-bottom: 1px solid var(--bg-base); }
+.sp-item:hover { background: var(--accent-soft); }
+.sp-item.active { background: var(--warning-soft); border-left: 3px solid var(--warning); }
+.sp-item.is-conflict { border-left: 3px solid var(--danger); }
+.sp-item.is-resolved { border-left: 3px solid var(--success); opacity: 0.92; }
+.sp-val { color: var(--text-secondary); font-size: 0.72rem; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-tag.tag-resolved { background: var(--success); color: #fff; }
+.sp-key { font-weight: 600; color: var(--text-primary); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-col { color: var(--accent); font-size: 0.74rem; }
+.sp-tag { margin-left: auto; padding: 0 6px; border-radius: 3px; font-size: 0.68rem; }
+.sp-body { padding: 12px; overflow-y: auto; }
+.audit-list { display: flex; flex-direction: column; gap: 4px; }
+.audit-item { display: flex; justify-content: space-between; padding: 5px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.78rem; gap: 8px; }
+.audit-source { color: var(--text-primary); word-break: break-all; }
+.audit-count { color: var(--success); font-weight: 600; white-space: nowrap; }
+.audit-empty { color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 16px 0; }
+.resolved-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.resolved-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.78rem; }
+.ri-key { font-weight: 600; color: var(--text-primary); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ri-col { color: var(--accent); font-weight: 600; }
+.ri-ver { color: var(--success); font-weight: 600; margin-left: auto; }
+.ri-jump { padding: 2px 10px; border: none; border-radius: 4px; background: var(--danger); color: #fff; cursor: pointer; font-size: 0.72rem; font-weight: 600; }
+
+/* ── 弹窗基础 + 大号冲突弹窗 ── */
+.modal-bg { position: fixed; inset: 0; background: rgba(44, 62, 80, 0.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; min-width: 400px; max-width: 600px; max-height: 80vh; overflow: auto; color: var(--text-primary); box-shadow: 0 8px 32px rgba(44,62,80,0.2); }
+.modal h3 { color: var(--danger); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.modal-type-badge { font-size: 0.75rem; font-weight: 600; padding: 2px 10px; border-radius: 4px; }
+.mod-conflict { background: var(--danger-soft); color: var(--danger); }
+.mod-resolved { background: var(--success-soft); color: var(--success); }
+.modal-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+.kbd-hint { font-size: 0.72rem; color: var(--text-muted); margin-right: auto; }
+.btn-skip { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; }
+.btn-close-modal { padding: 6px 14px; border: none; border-radius: 6px; background: var(--bg-hover); color: var(--text-secondary); cursor: pointer; }
+.btn-confirm-accept { padding: 6px 16px; border: none; border-radius: 6px; background: var(--success); color: #fff; cursor: pointer; font-weight: 600; }
+.btn-apply-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 16px; }
+.apply-mode-desc { font-size: 0.72rem; font-weight: 400; opacity: 0.85; }
+.btn-ai { padding: 6px 14px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-soft); color: var(--accent); cursor: pointer; font-weight: 600; }
+.btn-ai:disabled { opacity: 0.55; cursor: wait; }
+.ai-panel { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--accent-soft); padding: 10px 12px; }
+.ai-loading { color: var(--accent); font-size: 0.82rem; }
+.ai-error { color: var(--danger); font-size: 0.82rem; }
+.ai-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-badge { background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.74rem; font-weight: 600; }
+.ai-ver { color: var(--accent); font-weight: 600; font-size: 0.82rem; }
+.ai-conf { color: var(--text-muted); font-size: 0.74rem; margin-left: auto; }
+.ai-reason { margin: 6px 0 8px; color: var(--accent); font-size: 0.8rem; line-height: 1.5; }
+.ai-actions { display: flex; align-items: center; gap: 10px; }
+.btn-ai-adopt { padding: 5px 14px; border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; font-size: 0.82rem; }
+.btn-ai-adopt:hover { background: var(--accent-hover); }
+.ai-tip { color: var(--text-muted); font-size: 0.72rem; }
+
+.cell-modal { min-width: 720px; max-width: min(94vw, 1180px); max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.cell-modal .vm-table-wrap { flex: 1 1 auto; min-height: 0; }
+.vm-table-wrap { max-height: 72vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.vm-table { border-collapse: collapse; font-size: 0.82rem; width: 100%; background: var(--bg-card); table-layout: auto; }
+.vm-table th, .vm-table td { border: 1px solid var(--border-soft); padding: 7px 10px; text-align: left; vertical-align: top; word-break: break-word; white-space: pre-wrap; }
+.vm-col-col { background: var(--bg-base) !important; color: var(--text-secondary); font-weight: 600; white-space: nowrap; position: sticky; left: 0; z-index: 2; }
+.vm-ver-th { background: var(--bg-hover); text-align: center; min-width: 130px; }
+.vm-ver-name { font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.vm-ver-meta { display: flex; flex-direction: column; gap: 1px; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; line-height: 1.3; }
+.vm-base-col { background: transparent !important; }
+.vm-base-col .vm-ver-name { color: var(--text-secondary); }
+.vm-choose-btn { padding: 3px 8px; border: none; border-radius: 4px; background: var(--danger); color: #fff; cursor: pointer; font-size: 0.72rem; font-weight: 600; }
+.vm-choose-btn:hover { background: var(--danger); }
+.vm-row-current { background: rgba(241, 196, 15, 0.22); box-shadow: inset 4px 0 0 var(--warning); }
+.vm-row-current .vm-col-col { background: var(--warning-soft) !important; color: var(--warning); font-weight: 700; }
+.vm-cur-tag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 3px; font-size: 0.64rem; font-weight: 700; background: var(--warning); color: #fff; vertical-align: middle; }
+.vm-cell-current { box-shadow: inset 0 0 0 2px var(--warning); }
+.vm-cell-clickable { cursor: pointer; }
+.vm-cell-clickable:hover { background: rgba(46, 204, 113, 0.18) !important; box-shadow: inset 0 0 0 2px var(--success); }
+.vm-cell-chosen { box-shadow: inset 0 0 0 2px var(--success); background: var(--success-soft) !important; }
+.vm-conf-tag { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 3px; font-size: 0.62rem; font-weight: 700; background: var(--danger-soft); color: var(--danger); }
+.vm-diff-cell { background: rgba(184, 134, 11, 0.12); }
+.vm-base-cell { background: transparent; color: inherit; }
+.vm-hint { font-size: 0.74rem; color: var(--text-muted); margin-top: 8px; line-height: 1.5; flex-shrink: 0; }
+.vm-table :deep(.diff-del) { color: var(--danger); text-decoration: line-through; background: rgba(231,76,60,0.14); }
+.vm-table :deep(.diff-add) { color: var(--success); background: rgba(46,204,113,0.16); font-weight: 600; }
+
+.bm-struct-banner { display: flex; gap: 10px; align-items: center; padding: 6px 10px; margin: 6px 0; background: rgba(46,204,113,0.12); border: 1px solid var(--success); border-radius: 6px; font-size: 0.82rem; color: var(--text-secondary); }
+.bm-struct-banner .struct-tag { color: #fff; }
+
+/* ── 编号冲突重映射 / 悬空外键 ── */
+.pill-remap { margin-left: 6px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+.bm-ref-banner { display: flex; gap: 8px; flex-wrap: wrap; padding: 6px 10px; margin: 6px 0; background: var(--bg-hover); border: 1px solid var(--border-soft); border-radius: 6px; }
+.ref-pill { padding: 2px 10px; border-radius: 10px; font-size: 0.74rem; font-weight: 600; }
+.ref-remap { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+.ref-dangling { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+.cell-dangling { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 0.62rem; font-weight: 700; background: var(--danger-soft); color: var(--danger); }
+
+/* ── 整表改用/行预览弹窗 ── */
+.preview-modal { min-width: 640px; max-width: 880px; }
+.summary-modal { min-width: 760px; max-width: 1100px; }
+.summary-count { margin-left: 10px; padding: 0 8px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); font-size: 0.82rem; font-weight: 400; }
+.summary-table-wrap { max-height: 56vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); margin-bottom: 12px; }
+.summary-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.summary-table th { position: sticky; top: 0; background: var(--bg-hover); padding: 6px 8px; text-align: left; font-weight: 600; color: var(--text-primary); border-bottom: 1px solid var(--border); white-space: nowrap; z-index: 1; }
+.summary-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; word-break: break-all; }
+.sum-row-resolved { background: rgba(46, 204, 113, 0.05); }
+.sum-row-changed { background: rgba(241, 196, 15, 0.05); }
+.sum-row-inserted { background: rgba(46, 204, 113, 0.05); }
+.sum-row-deleted { background: rgba(231, 76, 60, 0.05); }
+.sum-key { font-weight: 600; color: var(--text-primary); }
+.sum-type { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 0.68rem; color: #fff; }
+.sum-type.tag-resolved { background: var(--success); }
+.sum-type.tag-changed { background: var(--warning); }
+.sum-type.tag-inserted { background: var(--success); }
+.sum-type.tag-deleted { background: var(--danger); }
+.sum-old { color: var(--text-muted); text-decoration: line-through; }
+.sum-new { color: var(--text-primary); font-weight: 600; }
+.sum-formula { color: var(--text-muted); font-weight: 400; font-family: monospace; }
+.preview-desc { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 10px; }
+.preview-filter { display: flex; gap: 6px; margin-bottom: 10px; }
+.preview-filter button { padding: 3px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; font-size: 0.78rem; }
+.preview-filter button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.preview-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); }
+.preview-row { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+.preview-row:last-child { border-bottom: none; }
+.preview-row.is-conflict { background: rgba(231, 76, 60, 0.06); }
+.preview-row.is-changed { background: rgba(243, 156, 18, 0.05); }
+.pr-loc { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pr-key { font-weight: 600; color: var(--text-primary); font-size: 0.82rem; }
+.pr-col { color: var(--accent); font-size: 0.78rem; font-weight: 600; }
+.pr-tag { padding: 1px 8px; border-radius: 3px; font-size: 0.7rem; }
+.pr-tag.tag-conflict { background: var(--danger); color: #fff; }
+.pr-tag.tag-changed { background: var(--warning); color: #fff; }
+.pr-vals { display: flex; gap: 12px; }
+.pr-val { flex: 1; padding: 4px 8px; border-radius: 4px; font-size: 0.78rem; }
+.pr-base { background: rgba(22, 160, 133, 0.08); border: 1px solid var(--success-soft); }
+.pr-target { background: var(--accent-soft); border: 1px solid var(--border); }
+.pr-vlabel { display: inline-block; min-width: 40px; color: var(--text-muted); font-size: 0.72rem; }
+.pr-val code { color: var(--text-primary); word-break: break-all; }
+.row-preview-list { max-height: 50vh; overflow-y: auto; margin-bottom: 10px; }
+.rp-row-block { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); }
+.rp-row-block:last-child { border-bottom: none; }
+.rp-row-title { font-weight: 600; margin-bottom: 6px; color: var(--text-primary); font-size: 0.85rem; }
+.rp-conf-count { margin-left: 8px; font-size: 0.72rem; color: var(--danger); background: var(--danger-soft); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.rp-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.rp-table th, .rp-table td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.rp-table th { background: var(--bg-hover); }
+.rp-base-col { background: transparent !important; color: inherit; }
+.rp-base-cell { color: inherit; }
+.rp-colname { font-weight: 600; color: var(--text-primary); background: var(--bg-base); }
+.rp-choose-btn { margin-left: 4px; padding: 1px 6px; font-size: 0.66rem; }
+.rp-cell-clickable { cursor: pointer; }
+.rp-cell-clickable:hover { background: rgba(46, 204, 113, 0.20) !important; box-shadow: inset 0 0 0 2px var(--success); }
+.rp-diff-val { background: rgba(243, 156, 18, 0.14); font-weight: 600; }
+.rp-nodiff { color: var(--text-muted); font-size: 0.8rem; padding: 6px 0; }
+.rp-apply-btns { display: flex; align-items: center; gap: 6px; margin: 12px 0; flex-wrap: wrap; }
+.rp-apply-label { font-size: 0.8rem; color: var(--text-muted); }
+.rp-table :deep(.diff-del) { color: var(--danger); text-decoration: line-through; background: rgba(231,76,60,0.14); }
+.rp-table :deep(.diff-add) { color: var(--success); background: rgba(46,204,113,0.16); font-weight: 600; }
+
+/* ── 展示模式切换按钮 ── */
+.bm-viewmode { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft, rgba(0,0,0,0.04)); border-radius: 6px; }
+.vm-btn { padding: 4px 10px; border: 1px solid transparent; background: transparent; color: var(--text-secondary); border-radius: 4px; cursor: pointer; font-size: 0.8rem; white-space: nowrap; }
+.vm-btn:hover { color: var(--text-primary); }
+.vm-btn.active { background: var(--bg-card, #fff); color: var(--text-primary); border-color: var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-weight: 600; }
+
+/* ── 并排两表（split）布局 ── */
+.split-wrap { display: flex; gap: 8px; max-height: calc(100vh - 480px); overflow: hidden; }
+.split-col { flex: 1; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.split-col-title { padding: 6px 10px; background: var(--bg-soft, rgba(0,0,0,0.04)); border-bottom: 1px solid var(--border); font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
+.split-col-title .ver-tag { margin-left: 4px; padding: 0 5px; border-radius: 3px; font-size: 0.62rem; font-weight: 700; background: var(--success-soft); color: var(--success); }
+.sp-scroll { flex: 1; overflow-y: auto; }
+.sp-table { table-layout: auto; }
+.sp-table .bm-key { width: 90px; min-width: 90px; }
+/* split 模式：冲突格撑开列宽显示全文（取消截断/省略，换行展示） */
+.sp-table td.sp-cell-conflict,
+.sp-table td.cell-conflict,
+.sp-table td.cell-resolved {
+  white-space: normal !important;
+  word-break: break-all !important;
+  max-width: none !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.sp-table td:not(.bm-key):not(.cell-conflict):not(.cell-resolved):not(.sp-cell-conflict) {
+  max-width: 200px;
+}
+.sp-cell-clickable { cursor: pointer; }
+.sp-cell-clickable:hover { background: rgba(46, 204, 113, 0.18) !important; box-shadow: inset 0 0 0 2px var(--success); }
+.sp-cell-ai-suggest { box-shadow: inset 0 0 0 2px #f39c12 !important; background: rgba(243, 156, 18, 0.12) !important; }
+.sp-cell-ai-suggest:hover { background: rgba(243, 156, 18, 0.22) !important; }
+.sp-cell-inner { position: relative; }
+.sp-ai-btn {
+  position: absolute; top: 1px; right: 1px;
+  border: none; background: rgba(255,255,255,0.85); border-radius: 50%;
+  width: 16px; height: 16px; line-height: 14px; font-size: 10px; padding: 0;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.sp-cell-clickable:hover .sp-ai-btn { opacity: 1; }
+.sp-ai-btn:hover { background: var(--success); color: #fff; }
+.sp-ai-mark {
+  position: absolute; bottom: 1px; left: 1px;
+  font-size: 12px; color: #f39c12; text-shadow: 0 0 2px #fff;
+  pointer-events: none; line-height: 1;
+}
+.split-toolbar { display: flex; align-items: center; gap: 10px; padding: 4px 8px; margin-bottom: 4px; }
+.btn-ai-batch {
+  background: #f39c12; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 12px; cursor: pointer; font-size: 13px;
+}
+.btn-ai-batch:hover:not(:disabled) { background: #e67e22; }
+.btn-ai-batch:disabled { opacity: 0.6; cursor: not-allowed; }
+.ai-batch-progress { font-size: 12px; color: #f39c12; }
+.ai-batch-error { font-size: 12px; color: var(--danger); }
+.btn-ai-row {
+  background: #f39c12; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 12px; cursor: pointer; font-size: 13px;
+}
+.btn-ai-row:hover:not(:disabled) { background: #e67e22; }
+.btn-ai-row:disabled { opacity: 0.6; cursor: not-allowed; }
+.ai-row-error { font-size: 12px; color: var(--danger); }
+.ai-row-done { font-size: 12px; color: var(--success); }
+.vm-cell-ai-suggest { border-left: 4px solid #27ae60 !important; background: linear-gradient(90deg, rgba(39,174,96,0.15) 0%, rgba(39,174,96,0.04) 100%) !important; }
+.ai-result-highlight { border: 2px solid #27ae60; background: rgba(39, 174, 96, 0.08); }
+.btn-ai-adopt { background: #27ae60 !important; color: #fff !important; font-weight: bold; padding: 6px 16px !important; }
+.btn-ai-sheet {
+  background: #27ae60; color: #fff; border: none; border-radius: 4px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: bold;
+}
+.btn-ai-sheet:hover:not(:disabled) { background: #219150; }
+.btn-ai-sheet:disabled { opacity: 0.6; cursor: not-allowed; }
+/* #38 批量采纳按钮；#39 排序按钮 */
+.btn-batch-adopt {
+  background: #f39c12; color: #fff; border: none; border-radius: 4px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: bold;
+}
+.btn-batch-adopt:hover:not(:disabled) { background: #d68910; }
+.btn-batch-adopt:disabled { opacity: 0.6; cursor: not-allowed; }
+.bm-sep { color: #bbb; margin: 0 4px; }
+.bm-ttab-sort {
+  background: #f0f0f0; color: #666; border: 1px solid #ccc; border-radius: 4px;
+  padding: 2px 8px; cursor: pointer; font-size: 12px; margin-right: 4px;
+}
+.bm-ttab-sort:hover { background: #e0e0e0; }
+.bm-ttab-sort.active { background: #e67e22; color: #fff; border-color: #d35400; }
+.ai-sheet-progress { font-size: 12px; color: #27ae60; }
+.ai-sheet-error { font-size: 12px; color: var(--danger); }
+.sp-cell-ai-suggest { border-left: 4px solid #27ae60 !important; background: linear-gradient(90deg, rgba(39,174,96,0.15) 0%, rgba(39,174,96,0.04) 100%) !important; }
+.sp-cell-ai-suggest:hover { background: linear-gradient(90deg, rgba(39,174,96,0.22) 0%, rgba(39,174,96,0.08) 100%) !important; }
+/* split 已解决格：采纳侧高亮，非采纳侧划横线 */
+.sp-table :deep(.sp-adopted) { color: var(--success); font-weight: 600; background: rgba(46,204,113,0.10); padding: 0 2px; border-radius: 2px; }
+.sp-table :deep(.sp-struck) { color: var(--text-muted); text-decoration: line-through; opacity: 0.7; }
+/* split 已解决行态：采纳侧格显绿边，非采纳侧格显灰边 */
+.sp-table td.sp-cell-resolved { background: rgba(46,204,113,0.06); }
+/* split 已解决格：采纳侧加彩色实线框凸显 */
+.sp-table td.sp-cell-adopted { box-shadow: inset 0 0 0 2px var(--success); background: rgba(46,204,113,0.12); }
+/* 行态高亮（左右各自） */
+.sp-st-inserted { background: rgba(46, 204, 113, 0.10); }
+.sp-st-deleted { background: rgba(231, 76, 60, 0.08); }
+.sp-st-absent { background: rgba(0,0,0,0.02); opacity: 0.55; }
+/* 整行冲突聚焦：左右两表同行同时加左边框 */
+.sp-row-conflict { box-shadow: inset 2px 0 0 var(--danger); }
+.sp-row-resolved { box-shadow: inset 2px 0 0 var(--success); }
+.sp-empty { padding: 24px; text-align: center; color: var(--text-muted); font-size: 0.86rem; }
+/* split 内 diff span 配色（复用全表风格） */
+.sp-table :deep(.diff-del) { color: var(--danger); text-decoration: line-through; background: rgba(231,76,60,0.14); }
+.sp-table :deep(.diff-add) { color: var(--success); background: rgba(46,204,113,0.16); font-weight: 600; }
+</style>
+

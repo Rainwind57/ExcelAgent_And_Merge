@@ -1,0 +1,147 @@
+"""三阶段多生产者综合合回验证（add-cross-producer-consolidation）。
+
+devbranch1 + devbranch2 各自 stage1 产出中间版本 → stage2 跨生产者综合成单一
+综合版本 → stage3 三方合回 trunk，产 item_1.xlsx（trunk head 推进）。
+
+验证：
+  - stage2 综合比对含两生产者中间版本（base=fork 快照）
+  - stage3 三方合回 base=fork、versions 含 trunk head
+  - 合回产出 item_1.xlsx，trunk head 推进
+
+用法: python -X utf8 -m server.tests.verify_multi_producer_seq
+前置: 先跑 merge/scripts/build_merge_materials.py 生成干净样本。
+"""
+from __future__ import annotations
+
+import asyncio
+import copy
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from engine.models import MergeRequest, SheetMergeData
+from routers.merge_stages import (
+    Stage1CompareRequest, Stage2CrossCompareRequest, Stage3CompareRequest,
+    stage1_compare, stage1_consolidate, stage2_compare, stage2_consolidate,
+    stage3_compare, stage3_apply,
+    TRUNK_DIR, DEVBRANCH_DIR, STAGE1_MANIFEST, STAGE2_MANIFEST,
+    _intermediate_name, _consolidated_name,
+)
+
+GROUP = "item"
+BRANCH1 = "devbranch1"
+BRANCH2 = "devbranch2"
+_passed = 0
+_failed = 0
+
+
+def _check(name, ok, detail=""):
+    global _passed, _failed
+    _passed += 1 if ok else 0
+    _failed += 0 if ok else 1
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}")
+
+
+def _group_to_sheets(group, resolve=True):
+    sheets = []
+    for s in group.sheets.values():
+        rows = copy.deepcopy(s.rows)
+        for row in rows:
+            for cell in row.cells:
+                if getattr(cell, "conflict", False) and resolve:
+                    cell.conflict = False
+        sheets.append(SheetMergeData(name=s.name, headers=s.headers, rows=rows))
+    return sheets
+
+
+def _clean():
+    for f in [
+        DEVBRANCH_DIR / _intermediate_name(GROUP, BRANCH1),
+        DEVBRANCH_DIR / _intermediate_name(GROUP, BRANCH2),
+        DEVBRANCH_DIR / _consolidated_name(GROUP),
+    ]:
+        if f.is_file():
+            f.unlink()
+    for m in [STAGE1_MANIFEST, STAGE2_MANIFEST]:
+        if m.is_file():
+            m.unlink()
+    pat = re.compile(rf"^{re.escape(GROUP)}_\d+\.xlsx$")
+    if TRUNK_DIR.is_dir():
+        for fp in TRUNK_DIR.iterdir():
+            if fp.is_file() and pat.match(fp.name):
+                fp.unlink()
+
+
+async def _run():
+    _clean()
+    inter1 = _intermediate_name(GROUP, BRANCH1)
+    inter2 = _intermediate_name(GROUP, BRANCH2)
+    cons = _consolidated_name(GROUP)
+
+    # 两生产者 stage1 产出中间版本
+    print("\n--- 阶段1：两生产者各自合并 ---")
+    r1 = await stage1_compare(Stage1CompareRequest(branch=BRANCH1, group_name=GROUP))
+    await stage1_consolidate(MergeRequest(
+        branch=BRANCH1, group_name=GROUP, sheets=_group_to_sheets(r1.groups[GROUP]),
+    ))
+    _check("devbranch1 中间版本产出", (DEVBRANCH_DIR / inter1).is_file(), inter1)
+
+    r2 = await stage1_compare(Stage1CompareRequest(branch=BRANCH2, group_name=GROUP))
+    await stage1_consolidate(MergeRequest(
+        branch=BRANCH2, group_name=GROUP, sheets=_group_to_sheets(r2.groups[GROUP]),
+    ))
+    _check("devbranch2 中间版本产出", (DEVBRANCH_DIR / inter2).is_file(), inter2)
+
+    # stage2 跨生产者综合
+    print("\n--- 阶段2：跨生产者综合 ---")
+    rc = await stage2_compare(Stage2CrossCompareRequest(group_name=GROUP))
+    _check("conflict_origin=cross_producer", rc.conflict_origin == "cross_producer", rc.conflict_origin)
+    gc = rc.groups[GROUP]
+    files_in = set(gc.files)
+    _check("综合比对含两生产者中间版本", inter1 in files_in and inter2 in files_in,
+           ",".join(sorted(files_in)))
+    _check("综合 base=fork 快照(devbranch1_item.xlsx)", gc.base_file == f"{BRANCH1}_{GROUP}.xlsx", gc.base_file)
+
+    resc = await stage2_consolidate(MergeRequest(
+        group_name=GROUP, branch="", sheets=_group_to_sheets(gc),
+    ))
+    _check("综合版本产出", resc.get("ok") is True and (DEVBRANCH_DIR / cons).is_file(), cons)
+
+    # stage3 三方合回 → 产 item_1.xlsx（trunk head 推进）
+    print("\n--- 阶段3：三方合回 trunk ---")
+    r3 = await stage3_compare(Stage3CompareRequest(group_name=GROUP))
+    _check("conflict_origin=merge_back", r3.conflict_origin == "merge_back", r3.conflict_origin)
+    g3 = r3.groups[GROUP]
+    _check("阶段3 base=fork 快照", g3.base_file == f"{BRANCH1}_{GROUP}.xlsx", g3.base_file)
+    # 三方 versions 含 trunk head（ours）
+    found_trunk = any(
+        c.versions and "item.xlsx" in c.versions
+        for s in g3.sheets.values() for row in s.rows for c in row.cells
+    )
+    _check("versions 含 trunk head(item.xlsx)", found_trunk)
+
+    res3 = await stage3_apply(MergeRequest(
+        group_name=GROUP, branch="", sheets=_group_to_sheets(g3),
+    ))
+    _check("合回产出 item_1.xlsx", res3.get("output") == "item_1.xlsx", res3.get("output", ""))
+    _check("trunk head = item_1.xlsx 存在", (TRUNK_DIR / "item_1.xlsx").is_file())
+
+    # 清理产物
+    _clean()
+
+
+def main():
+    print("=" * 60)
+    print("三阶段多生产者综合合回验证（add-cross-producer-consolidation）")
+    print("=" * 60)
+    asyncio.run(_run())
+    print("\n" + "=" * 60)
+    print(f"结果: {_passed} 通过, {_failed} 失败")
+    print("=" * 60)
+    sys.exit(1 if _failed else 0)
+
+
+if __name__ == "__main__":
+    main()

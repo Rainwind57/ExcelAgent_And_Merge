@@ -1,0 +1,477 @@
+"""公式语义原语层（L2）：AI 理解公式语义的工具原语。
+
+三层架构中的 L2：
+  L1 机械层  — formula_ref_shifter + CLI delete/insert/delete_col 内置（标准位移，无需理解）
+  L2 语义原语层 — 本模块。纯原语，不做业务判断，判断权在 AI（L3）
+  L3 agent 层 — AI 居中：读 L2 语义 → 推理目标公式 → 调 L2 执行
+
+四个原语：
+  interpret_formula(path, sheet, cell) → FormulaSemantics
+      解析单格公式语义：函数类型、引用范围、是否跨表、是否覆盖数据区、位置特征。纯读。
+  scan_sheet_formulas(path, sheet) → list[FormulaSemantics]
+      扫描全 sheet 所有公式单元格的语义。纯读。
+  preview_formula_impact(path, sheet, op) → ImpactReport
+      dry-run 模拟增删改，返回每格机械位移结果 + 语义缺口标注。纯读，不落盘。
+  rewrite_formula(cli, path, sheet, cell, new_formula) → CLICallResult
+      按 AI 决策写入目标公式 + 缓存校验。复用 CLI._save_with_cache_check。
+
+设计原则（与 formula_ref_shifter 一致）：
+  - token 级解析，非正则，字符串字面量里的 "A1" 不被误伤
+  - 复用 formula_ref_shifter 的 _parse_ref / shift_formula，不重复造轮子
+  - 泛化：纯按 sheet 名 + token 工作，不依赖任何具体表名
+  - 语义缺口是「事实标注」非「业务判断」：只说"范围末行 14 < 新数据末行 17"，
+    不说"应改为 SUM(F3:F17)"。改什么是 AI 的判断权。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+from openpyxl.formula.tokenizer import Tokenizer
+from openpyxl.utils import column_index_from_string, coordinate_to_tuple
+
+from .formula_ref_shifter import _parse_ref, _has_dynamic_func, shift_formula
+
+logger = __import__("logging").getLogger(__name__)
+
+# 聚合函数：对一组值求汇总（SUM/AVERAGE/MAX/MIN/COUNT...）
+_AGG_FUNCS = {
+    "SUM", "AVERAGE", "MAX", "MIN", "COUNT", "COUNTA", "COUNTIF",
+    "SUMIF", "SUMPRODUCT", "PRODUCT", "MEDIAN", "LARGE", "SMALL",
+}
+# 查表函数：按键查值（VLOOKUP/HLOOKUP/INDEX/MATCH...）
+_LOOKUP_FUNCS = {"VLOOKUP", "HLOOKUP", "LOOKUP", "INDEX", "MATCH"}
+
+
+@dataclass
+class FormulaRef:
+    """公式内单个引用的解析结果。"""
+    raw: str                              # 原始 token，如 "F3:F14" / "Ref!A:C" / "C5"
+    sheet: Optional[str] = None           # 跨表目标 sheet，None=当前 sheet 无前缀
+    is_range: bool = False                # 是否范围引用（含冒号）
+    cols: Optional[tuple[int, int]] = None  # 列范围(1-based, 有序)，整行引用 1:2 时为 None
+    rows: Optional[tuple[int, int]] = None  # 行范围(1-based, 有序)，整列引用 A:C 时为 None
+
+
+@dataclass
+class FormulaSemantics:
+    """单格公式语义解读。
+
+    字段都是「事实」描述，供 AI 推理。AI 据此判断公式意图（汇总/查表/行内计算），
+    并在增删行后决定是否需要 rewrite_formula 扩展/收缩范围。
+    """
+    cell: str = ""                  # 单元格坐标，如 "F14"
+    sheet: str = ""                 # 所在 sheet
+    formula: str = ""               # 原始公式文本
+    funcs: list[str] = field(default_factory=list)   # 顶层函数名，如 ["SUM"]
+    refs: list[FormulaRef] = field(default_factory=list)  # 所有单元格引用
+    is_cross_sheet: bool = False    # 是否含跨表引用
+    is_aggregate: bool = False      # 是否聚合函数（汇总特征）
+    is_lookup: bool = False         # 是否查表函数
+    has_dynamic_func: bool = False  # 含 OFFSET/INDIRECT（机械位移会跳过，需人工）
+    covers_data_area: bool = False  # 引用是否覆盖数据区
+    is_last_row: bool = False       # 公式所在行是否为末数据行（典型汇总位置）
+    notes: str = ""                 # 人类可读语义备注
+
+
+@dataclass
+class CellImpact:
+    """单格公式的 dry-run 影响结果。"""
+    cell: str = ""
+    sheet: str = ""
+    formula_before: str = ""        # 操作前公式文本
+    formula_after: str = ""         # 机械位移后公式文本（append 操作 = before）
+    changed: bool = False           # 机械位移是否改写
+    has_ref_error: bool = False     # 是否产生 #REF!
+    skipped_dynamic: bool = False   # 是否因动态函数跳过
+    semantic_gap: str = ""          # 语义缺口标注（事实），空=无缺口
+
+
+@dataclass
+class ImpactReport:
+    """preview_formula_impact 返回的整表影响报告。"""
+    op: dict = field(default_factory=dict)            # 操作描述
+    impacts: list[CellImpact] = field(default_factory=list)
+    semantic_gaps: list[str] = field(default_factory=list)  # 有缺口的单元格摘要
+    needs_agent_decision: bool = False                # 是否需要 AI 决策重写
+
+
+# ------------------------------------------------------------------
+# 引用解析辅助
+# ------------------------------------------------------------------
+def _ref_to_cols_rows(ref: dict) -> FormulaRef:
+    """把 _parse_ref 结果转成 FormulaRef（带列/行数值范围）。"""
+    s1, s2 = ref["seg1"], ref["seg2"]
+    sheet = ref["sheet"]
+    is_range = ref["is_range"]
+
+    def _seg_col_row(seg):
+        if seg is None:
+            return None, None
+        col = column_index_from_string(seg["col"]) if seg["col"] else None
+        row = seg["row"]
+        return col, row
+
+    c1, r1 = _seg_col_row(s1)
+    if is_range:
+        c2, r2 = _seg_col_row(s2)
+        cols = _order_pair(c1, c2)
+        rows = _order_pair(r1, r2)
+    else:
+        cols = (c1, c1) if c1 is not None else None
+        rows = (r1, r1) if r1 is not None else None
+    return FormulaRef(raw="", sheet=sheet, is_range=is_range, cols=cols, rows=rows)
+
+
+def _order_pair(a, b):
+    """把两个可能为 None 的值排序成 (min,max)，全 None 返回 None。"""
+    if a is None and b is None:
+        return None
+    if a is None:
+        return (b, b)
+    if b is None:
+        return (a, a)
+    return (min(a, b), max(a, b))
+
+
+def _extract_funcs(formula: str) -> list[str]:
+    """提取公式顶层函数名（大写）。"""
+    funcs: list[str] = []
+    try:
+        for t in Tokenizer(formula).items:
+            if t.type == "FUNC" and t.subtype == "OPEN":
+                name = t.value.rstrip("(").upper()
+                if name:
+                    funcs.append(name)
+    except Exception:
+        pass
+    return funcs
+
+
+def _extract_refs(formula: str) -> list[FormulaRef]:
+    """提取公式内所有 RANGE 引用 token，解析成 FormulaRef。"""
+    out: list[FormulaRef] = []
+    try:
+        for t in Tokenizer(formula).items:
+            if t.type == "OPERAND" and t.subtype == "RANGE":
+                ref = _parse_ref(t.value)
+                if ref is None:
+                    continue
+                fr = _ref_to_cols_rows(ref)
+                fr.raw = t.value
+                out.append(fr)
+    except Exception:
+        pass
+    return out
+
+
+# ------------------------------------------------------------------
+# 原语 1：interpret_formula
+# ------------------------------------------------------------------
+def interpret_formula(
+    path: Path, sheet: str, cell: str,
+    data_start_row: int = 5,
+) -> FormulaSemantics:
+    """解析单格公式语义。纯读。
+
+    Args:
+        path: xlsx 路径
+        sheet: sheet 名
+        cell: 单元格坐标，如 "F14"
+        data_start_row: 数据起始行（用于判定 covers_data_area / is_last_row）
+
+    Returns:
+        FormulaSemantics。非公式单元格返回空语义（formula=""）。
+    """
+    import openpyxl
+    path = Path(path)
+    sem = FormulaSemantics(cell=cell, sheet=sheet)
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False)
+        ws = wb[sheet]
+        row, col = coordinate_to_tuple(cell)
+        val = ws.cell(row, col).value
+        wb.close()
+    except Exception as e:
+        sem.notes = f"读取失败: {e}"
+        return sem
+
+    if not (isinstance(val, str) and val.startswith("=")):
+        sem.notes = "非公式单元格"
+        return sem
+
+    sem.formula = val
+    sem.funcs = _extract_funcs(val)
+    sem.refs = _extract_refs(val)
+    sem.is_cross_sheet = any(r.sheet is not None for r in sem.refs)
+    func_set = set(sem.funcs)
+    sem.is_aggregate = bool(func_set & _AGG_FUNCS)
+    sem.is_lookup = bool(func_set & _LOOKUP_FUNCS)
+    sem.has_dynamic_func = _has_dynamic_func(val)
+
+    last_data_row = _last_data_row(path, sheet, data_start_row)
+    sem.is_last_row = (row == last_data_row)
+
+    # 引用是否覆盖数据区：任一引用的行范围与 [data_start_row, last_data_row] 相交
+    for r in sem.refs:
+        if r.rows is None:
+            # 整列引用 A:C 覆盖所有行 → 视为覆盖数据区
+            if r.cols is not None:
+                sem.covers_data_area = True
+            continue
+        rlo, rhi = r.rows
+        if rlo <= last_data_row and rhi >= data_start_row:
+            sem.covers_data_area = True
+            break
+
+    sem.notes = _build_notes(sem, data_start_row, last_data_row)
+    return sem
+
+
+def _build_notes(sem: FormulaSemantics, data_start_row: int, last_data_row: int) -> str:
+    """生成人类可读语义备注。"""
+    if not sem.formula:
+        return sem.notes
+    parts: list[str] = []
+    if sem.is_aggregate:
+        parts.append("聚合汇总")
+    if sem.is_lookup:
+        parts.append("查表")
+    if sem.is_cross_sheet:
+        targets = sorted({r.sheet for r in sem.refs if r.sheet})
+        parts.append(f"跨表引用[{','.join(targets)}]")
+    if sem.has_dynamic_func:
+        parts.append("含动态函数(机械位移跳过)")
+    if sem.covers_data_area:
+        parts.append("覆盖数据区")
+    if sem.is_last_row:
+        parts.append("位于数据末行(典型汇总位置)")
+    # 引用范围摘要
+    ranges = []
+    for r in sem.refs:
+        if r.rows and r.cols:
+            from openpyxl.utils import get_column_letter
+            c1, c2 = r.cols
+            r1, r2 = r.rows
+            prefix = f"{r.sheet}!" if r.sheet else ""
+            if r.is_range:
+                ranges.append(f"{prefix}{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}")
+            else:
+                ranges.append(f"{prefix}{get_column_letter(c1)}{r1}")
+        elif r.cols:
+            from openpyxl.utils import get_column_letter
+            c1, c2 = r.cols
+            prefix = f"{r.sheet}!" if r.sheet else ""
+            ranges.append(f"{prefix}{get_column_letter(c1)}:{get_column_letter(c2)}" if c1 != c2
+                          else f"{prefix}{get_column_letter(c1)}:{get_column_letter(c1)}")
+    if ranges:
+        parts.append("引用=" + ",".join(ranges[:4]))
+    return "；".join(parts) if parts else "行内计算"
+
+
+# ------------------------------------------------------------------
+# 原语 2：scan_sheet_formulas
+# ------------------------------------------------------------------
+def scan_sheet_formulas(
+    path: Path, sheet: str, data_start_row: int = 5,
+) -> list[FormulaSemantics]:
+    """扫描全 sheet 所有公式单元格的语义。纯读。
+
+    AI 拿全貌：哪些是汇总、哪些是查表、哪些是行内计算。
+    """
+    import openpyxl
+    path = Path(path)
+    out: list[FormulaSemantics] = []
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False)
+        ws = wb[sheet]
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and v.startswith("="):
+                    out.append(interpret_formula(path, sheet, c.coordinate, data_start_row))
+        wb.close()
+    except Exception as e:
+        logger.warning("[FormulaSemantics] scan 失败 %s!%s: %s", path.name, sheet, e)
+    return out
+
+
+# ------------------------------------------------------------------
+# 原语 3：preview_formula_impact
+# ------------------------------------------------------------------
+def preview_formula_impact(
+    path: Path, sheet: str, op: dict, data_start_row: int = 5,
+) -> ImpactReport:
+    """dry-run 模拟增删改，返回每格机械位移结果 + 语义缺口标注。纯读，不落盘。
+
+    Args:
+        op: 操作描述，kind 之一：
+            {"kind": "append_rows", "count": 3}
+            {"kind": "insert_row", "row": 5}
+            {"kind": "delete_row", "row": 5}
+            {"kind": "delete_col", "col": 3}   col 可为列号(int)或列字母(str)
+
+    Returns:
+        ImpactReport。机械位移用 shift_formula dry-run；语义缺口为事实标注。
+    """
+    import openpyxl
+    path = Path(path)
+    report = ImpactReport(op=op)
+    kind = op.get("kind", "")
+    last_data_row = _last_data_row(path, sheet, data_start_row)
+
+    # 计算机械位移参数
+    axis, idx, amount = _op_to_shift(op, kind)
+    # append_rows 无机械位移
+    has_mechanical = kind in ("insert_row", "delete_row", "delete_col")
+    # append 新增行范围
+    append_new_rows: tuple[int, int] | None = None
+    if kind == "append_rows":
+        cnt = int(op.get("count", 1))
+        append_new_rows = (last_data_row + 1, last_data_row + cnt)
+
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False)
+    except Exception as e:
+        logger.warning("[FormulaSemantics] preview 加载失败 %s: %s", path.name, e)
+        return report
+
+    try:
+        for ws in wb.worksheets:
+            cur_sheet = ws.title
+            for row in ws.iter_rows():
+                for c in row:
+                    v = c.value
+                    if not (isinstance(v, str) and v.startswith("=")):
+                        continue
+                    impact = CellImpact(
+                        cell=c.coordinate, sheet=cur_sheet,
+                        formula_before=v, formula_after=v,
+                    )
+                    # 机械位移 dry-run
+                    if has_mechanical and axis is not None:
+                        new_v, has_err, dynamic = shift_formula(
+                            v, axis, idx, amount,
+                            target_sheet=sheet, current_sheet=cur_sheet)
+                        impact.skipped_dynamic = dynamic
+                        if not dynamic:
+                            impact.formula_after = new_v
+                            impact.changed = (new_v != v)
+                            impact.has_ref_error = has_err
+                    # 语义缺口（仅对目标 sheet 内的公式标注 append 缺口）
+                    if append_new_rows is not None and cur_sheet == sheet:
+                        gap = _append_gap(v, append_new_rows, data_start_row, last_data_row)
+                        if gap:
+                            impact.semantic_gap = gap
+                    if impact.semantic_gap or impact.has_ref_error or impact.changed or impact.skipped_dynamic:
+                        report.impacts.append(impact)
+                        if impact.semantic_gap:
+                            report.semantic_gaps.append(
+                                f"{cur_sheet}!{c.coordinate}({v}): {impact.semantic_gap}")
+                            report.needs_agent_decision = True
+        wb.close()
+    except Exception as e:
+        logger.warning("[FormulaSemantics] preview 遍历失败 %s: %s", path.name, e)
+
+    return report
+
+
+def _op_to_shift(op: dict, kind: str):
+    """把操作描述转成 shift_formula 的 (axis, idx, amount)。无机械位移返回 (None,None,0)。"""
+    if kind == "insert_row":
+        return "row", int(op.get("row", 0)), 1
+    if kind == "delete_row":
+        return "row", int(op.get("row", 0)), -1
+    if kind == "delete_col":
+        col = op.get("col")
+        if isinstance(col, str):
+            col = column_index_from_string(str(col))
+        return "col", int(col or 0), -1
+    return None, None, 0
+
+
+def _append_gap(formula: str, new_rows: tuple[int, int],
+                data_start_row: int, last_data_row: int) -> str:
+    """append_rows 场景的语义缺口标注（事实）。
+
+    判定：公式是聚合函数，且有行范围引用的末行(rhi) < 新增行起始(new_lo)，
+    即新增数据行完全在范围之外 → 标注缺口。
+    只陈述事实（范围未含新行），不决定是否扩展（判断权在 AI）。
+    """
+    funcs = _extract_funcs(formula)
+    if not (set(funcs) & _AGG_FUNCS):
+        return ""
+    refs = _extract_refs(formula)
+    new_lo, new_hi = new_rows
+    for r in refs:
+        if r.rows is None:
+            continue
+        rlo, rhi = r.rows
+        # 仅跨行范围（rhi>rlo）才可能是"汇总多行"语义；单行范围(=SUM(B3:E3))是行内计算，
+        # 新增行不属于它，不应标缺口。新增行完全在范围之外 → 未纳入。
+        if rhi > rlo and rhi < new_lo and rlo <= last_data_row:
+            from openpyxl.utils import get_column_letter
+            c1, c2 = r.cols if r.cols else (None, None)
+            col_str = ""
+            if c1 and c2:
+                col_str = f"{get_column_letter(c1)}{rlo}:{get_column_letter(c2)}{rhi}"
+            return (f"聚合范围{col_str}末行{rhi}，"
+                    f"新增数据行{new_lo}-{new_hi}未纳入范围")
+    return ""
+
+
+# ------------------------------------------------------------------
+# 原语 4：rewrite_formula（薄包装，需 CLI 提供落盘+缓存校验）
+# ------------------------------------------------------------------
+def rewrite_formula(cli, path: Path, sheet: str, cell: str,
+                    new_formula: str) -> "Any":
+    """按 AI 决策的目标公式写入 + 缓存校验。
+
+    复用 CLI._save_with_cache_check，与 write_cell 对称。
+    不做语义校验——AI 决定写什么就写什么（判断权在 AI）。
+
+    Args:
+        cli: CodeMakerCLI 实例（需有 _load/_save_with_cache_check）
+        path: xlsx 路径
+        sheet: sheet 名
+        cell: 单元格坐标，如 "F14"
+        new_formula: 目标公式文本（以 = 开头）
+
+    Returns:
+        CLICallResult。
+    """
+    from .cli_interface import CLICallResult
+    try:
+        wb = cli._load(path)
+        ws = wb[sheet]
+        row, col = coordinate_to_tuple(cell)
+        ws.cell(row, col, new_formula)
+        cache_info = cli._save_with_cache_check(wb, path)
+        return CLICallResult(
+            ok=True, data={"cell": cell, "sheet": sheet, "formula": new_formula},
+            needs_manual_fix=cache_info["needs_manual_fix"],
+            cache_message=cache_info["cache_message"],
+        )
+    except Exception as e:
+        return CLICallResult(ok=False, error=str(e), stderr=str(e))
+
+
+# ------------------------------------------------------------------
+# 辅助：末数据行
+# ------------------------------------------------------------------
+def _last_data_row(path: Path, sheet: str, data_start_row: int) -> int:
+    """读取 sheet 的最后一个有数据的行号。"""
+    import openpyxl
+    last = data_start_row - 1
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
+        ws = wb[sheet]
+        for r in range(data_start_row, (ws.max_row or data_start_row) + 1):
+            if any(ws.cell(r, c).value is not None
+                   for c in range(1, (ws.max_column or 1) + 1)):
+                last = r
+        wb.close()
+    except Exception:
+        pass
+    return last

@@ -1,0 +1,48 @@
+"""校验路由：ID 编号段校验 + 跨表查重 + _capped 格式校验。"""
+from pathlib import Path
+from typing import List
+
+from fastapi import APIRouter
+from pydantic import BaseModel
+
+from config import RESOURCES_DIR
+from engine.id_scope import get_id_scope_validator
+from engine.patch_validator import validate_capped_workbook
+
+router = APIRouter(prefix="/api/validate", tags=["validate"])
+
+
+@router.get("/id-scope")
+async def validate_id_scope():
+    """全目录 ID 校验：扫所有表 ID 列做跨表查重 + id_mgr 段校验。
+
+    返回：
+      - cross_table_conflicts: 跨表冲突列表（同编号出现在多个 .xlsx）
+      - segment_violations: 越界模块列表（已用段超预留段）
+      - scanned_tables: 扫描表数
+      - id_mgr_loaded: id_mgr.xlsx 是否加载成功
+    """
+    v = get_id_scope_validator()
+    report = v.validate_all(RESOURCES_DIR)
+    return report.to_dict()
+
+
+class CappedValidateRequest(BaseModel):
+    """_capped.xlsx 格式校验请求（方法 C）。"""
+    path: str                    # _capped.xlsx 路径（相对 RESOURCES_DIR 或绝对）
+    trunk_sheets: List[str] = [] # trunk 主表 sheet 名集合（规则③校验，空则跳过）
+
+
+@router.post("/capped")
+async def validate_capped(req: CappedValidateRequest):
+    """_capped.xlsx 格式 5 坑校验（ca-overview §3.3）。
+
+    返回 violations 清单（全 hold 级），ok=True 表示合规。
+    """
+    p = Path(req.path)
+    if not p.is_absolute():
+        p = RESOURCES_DIR / p
+    if not p.exists():
+        return {"ok": False, "error": f"文件不存在：{req.path}", "violations": []}
+    violations = validate_capped_workbook(p, req.trunk_sheets)
+    return {"ok": len(violations) == 0, "violations": [v.to_dict() for v in violations]}

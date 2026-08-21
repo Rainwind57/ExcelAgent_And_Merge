@@ -1,0 +1,30 @@
+"""基于 openpyxl 的 Excel 操作实现。
+
+继承 StubCodeMakerCLI（openpyxl 实现），所有基础读写复用父类（快速可靠）。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .cli_interface import (
+    CodeMakerCLI, CLICallResult, SearchResult, StubCodeMakerCLI,
+)
+
+
+class RealCodeMakerCLI(StubCodeMakerCLI):
+    """基于 openpyxl 的 Excel 操作实现。
+
+    继承 StubCodeMakerCLI 的所有 openpyxl 实现（read_sheet、write_cell 等）。
+    """
+
+    name = "real"
+
+    def __init__(self, workspace: Path, header_row: int = 1, data_start_row: int = 5,
+                 model: str | None = None, timeout: int | None = None):
+        super().__init__(workspace, header_row, data_start_row)
+
+    # 以下方法直接复用父类 openpyxl 实现（无需 LLM）
+    # read_header, list_tables, get_sheets, read_sheet, write_cell,
+    # read_cell, append_row, delete_row, locate_row, search_rows

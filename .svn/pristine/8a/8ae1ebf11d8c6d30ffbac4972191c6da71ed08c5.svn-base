@@ -1,0 +1,66 @@
+"""LangGraph 运行时配置。
+
+可通过 graph.invoke(input, config={"configurable": {...}}) 覆盖默认值；
+亦兼容 langgraph-cli / LangGraph Platform 读取（langgraph.json 入口）。
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+def _default_resources_dir() -> str:
+    """默认资源目录：项目根 / resources（与 server/config.RESOURCES_DIR 一致）。"""
+    return str(Path(__file__).resolve().parent.parent.parent / "resources")
+
+
+class Configuration(BaseModel):
+    """主智能体配置。"""
+
+    codemaker_server_url: str = Field(
+        default_factory=lambda: os.environ.get(
+            "CODEMAKER_SERVER_URL", "http://127.0.0.1:8666"))
+    codemaker_username: str = Field(
+        default_factory=lambda: os.environ.get("CODEMAKER_USERNAME", ""))
+    codemaker_password: str = Field(
+        default_factory=lambda: os.environ.get("CODEMAKER_PASSWORD", ""))
+    model_name: str = Field(
+        default_factory=lambda: os.environ.get("CODEMAKER_MODEL", "codemaker"))
+    directory: str = Field(default_factory=_default_resources_dir)
+
+    # verify-repair 迭代环（capability: verify-repair-loop）
+    enable_verify_repair_loop: bool = Field(
+        default_factory=lambda: os.environ.get("ENABLE_VERIFY_REPAIR_LOOP", "1") != "0")
+    # skill tools 恢复路径（capability: skill-executor-tools）
+    enable_skill_tools_recovery: bool = Field(
+        default_factory=lambda: os.environ.get("ENABLE_SKILL_TOOLS_RECOVERY", "1") != "0")
+    # verify→repair 迭代环最大轮数（含首次执行共 max_rounds+1 次尝试）
+    verify_repair_max_rounds: int = Field(
+        default_factory=lambda: int(os.environ.get("VERIFY_REPAIR_MAX_ROUNDS", "3")))
+    # 单次 repair Level 2 的 skill tool 调用上限
+    skill_tool_call_limit: int = Field(
+        default_factory=lambda: int(os.environ.get("SKILL_TOOL_CALL_LIMIT", "4")))
+
+
+def get_config(config: Any | None = None) -> Configuration:
+    """从 langgraph config['configurable'] 合并环境默认值。
+
+    config 可为 langgraph 标准的 {"configurable": {...}}，也可直接是扁平 dict。
+    """
+    base = Configuration()
+    if not config:
+        return base
+    configurable = (
+        config.get("configurable", config) if isinstance(config, dict) else {}
+    )
+    if not isinstance(configurable, dict):
+        return base
+    data = base.model_dump()
+    for k, v in configurable.items():
+        if k in data and v is not None:
+            data[k] = v
+    return Configuration(**data)

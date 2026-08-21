@@ -1,0 +1,5 @@
+{
+  "copyfrom_path": "trunk_r2",
+  "copyfrom_rev": "r2",
+  "note": "trunk r3 前进版本（含嵌套 config/skill.xlsx，merge_back 默认 To 目标）"
+}

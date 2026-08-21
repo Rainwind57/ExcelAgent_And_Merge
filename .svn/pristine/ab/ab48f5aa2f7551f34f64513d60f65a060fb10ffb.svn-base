@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+openpyxl==3.1.5
+python-multipart==0.0.9
+pyyaml>=6.0
+jieba>=0.42.1
+watchdog>=4.0.0
+langchain>=0.3.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+# 大数据表 apply XML 快路径（fast_apply）：lxml 序列化 25MB sheet XML ~0.3s vs 标准库 3.4s；缺失时自动回退标准库
+lxml>=5.0

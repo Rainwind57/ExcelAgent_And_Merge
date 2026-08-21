@@ -1,0 +1,2528 @@
+[
+  {
+    "input": "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，选项为'好的，我要锻造'和'离开'",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1015,
+          "entity_name": "铁匠老张",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "欢迎来到铁匠铺，我可以帮你锻造装备。",
+          "options[0]": "<option_1_id>",
+          "options[1]": "<option_2_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": "<option_1_id>",
+          "option_text": "好的，我要锻造",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": "<option_2_id>",
+          "option_text": "离开",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "铁匠老张",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              60,
+              0,
+              30
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "把entity_prefab中prefab_id为8004的NPC名字从'青龙'改成'青龙堂主'",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "modify",
+        "row_key": {
+          "prefab_id": 8004
+        },
+        "row_content": {
+          "entity_name": "青龙堂主"
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除prefab_id为8005的NPC白虎的所有相关配置，包括entity_prefab表和spawn_world_entity表中的记录",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "delete",
+        "row_key": {
+          "prefab_id": 8005
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "delete",
+        "row_key": {
+          "entity_prefab_id": 8005
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个传送NPC叫'传送使者'，model_id为1016，放在space_id 10008坐标(10,0,10)，玩家点击后传送到space_id 10001",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1016,
+          "entity_name": "传送使者",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3003,
+          "effect.data.3003.to_space_id": 10001
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "传送使者",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              10,
+              0,
+              10
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改interaction_id为10001的触发半径从5改为8",
+    "expected_answer": [
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "modify",
+        "row_key": {
+          "interaction_id": 10001
+        },
+        "row_content": {
+          "trigger_radius": 8
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个擂台NPC叫'擂台挑战者'，model_id为1012，放在space_id 10008坐标(30,0,40)，玩家点击后进入战斗，战斗ID为102",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1012,
+          "entity_name": "擂台挑战者",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3001,
+          "effect.data.3001.combat_id": 102
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "擂台挑战者",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              30,
+              0,
+              40
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改conv_id为1的对话内容为'你好，旅行者，欢迎来到我们的村庄。'",
+    "expected_answer": [
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "modify",
+        "row_key": {
+          "conv_id": 1
+        },
+        "row_content": {
+          "prompt_text": "你好，旅行者，欢迎来到我们的村庄。"
+        }
+      }
+    ]
+  },
+  {
+    "input": "给conv_id为4的帮派青龙堂总管对话新增一个选项，选项内容为'我想了解帮派贡献'，点击后跳转到新对话，新对话内容为'帮派贡献可以通过完成帮派任务和捐献资源来获得。'",
+    "expected_answer": [
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "modify",
+        "row_key": {
+          "conv_id": 4
+        },
+        "row_content": {
+          "options[1]": "<new_option_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": "<new_option_id>",
+          "option_text": "我想了解帮派贡献",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "帮派贡献可以通过完成帮派任务和捐献资源来获得。"
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除option_id为3的对话选项（离开选项）",
+    "expected_answer": [
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "delete",
+        "row_key": {
+          "option_id": 3
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个奖励NPC叫'奖励使者'，model_id为1018，放在space_id 10008坐标(20,0,20)，玩家点击后获得reward_id为10006的奖励",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1018,
+          "entity_name": "奖励使者",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3002,
+          "effect.data.3002.reward_id": 10006
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "奖励使者",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              20,
+              0,
+              20
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改prefab_id为5023的NPC移动速度从6改为8",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "modify",
+        "row_key": {
+          "prefab_id": 5023
+        },
+        "row_content": {
+          "move_speed": 8
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个传送NPC叫'坐标传送人'，model_id为1016，放在space_id 10001坐标(0,0,0)，玩家点击后传送到space_id 10008的坐标(100,0,200)，朝向0度",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1016,
+          "entity_name": "坐标传送人",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3005,
+          "effect.data.3005.to_space_id": 10008,
+          "effect.data.3005.to_pos": [
+            100,
+            0,
+            200
+          ],
+          "effect.data.3005.to_dir": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10001,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "坐标传送人",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一件武器叫'玄铁剑'，品质1，图标路径为'Icon_weapon_xuantiejian'，装备部位1（武器），装备类型1，可用门派1和2，基础物攻属性WorldAttackCon范围60-80，随机词条池1001，分解获得item_id为10017数量1，基础评分100",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_15xxx>",
+          "name": "玄铁剑",
+          "quality": 1,
+          "item_type": 5,
+          "icon": "Icon_weapon_xuantiejian",
+          "max_stack": 1,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_15xxx>",
+          "equip_slot": 1,
+          "equip_type": 1,
+          "equip_sch_list": [
+            1,
+            2
+          ],
+          "equip_base_attrs[0]": [
+            "WorldAttackCon",
+            60,
+            80
+          ],
+          "rand_ga_pool": 1001,
+          "salvage_item_id": 10017,
+          "salvage_item_num": 1,
+          "base_score": 100
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改item_id为15001的精钢剑，物攻基础属性从50-70改为55-75",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 15001
+        },
+        "row_content": {
+          "equip_base_attrs[0]": [
+            "WorldAttackCon",
+            55,
+            75
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个药品叫'回血丹'，品质1，图标'Icon_potion_huixuedan'，最大堆叠99，可丢弃，使用效果id为10001，回复血量300点，效果描述为'回复300血量'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_12xxx>",
+          "name": "回血丹",
+          "quality": 1,
+          "item_type": 3,
+          "icon": "Icon_potion_huixuedan",
+          "max_stack": 99,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Potion",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_12xxx>",
+          "desc": "回复300血量",
+          "usage_effect.id": 10001,
+          "usage_effect.args.hp": 300
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一颗1级宝石叫'1级翡翠石'，品质1，图标'Icon_gem_feicui'，宝石类型2，增加属性WorldMagicDefCon值10，分解获得item_id 10006数量1",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_13xxx>",
+          "name": "1级翡翠石",
+          "quality": 1,
+          "item_type": 4,
+          "icon": "Icon_gem_feicui",
+          "max_stack": 99
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Gem",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_13xxx>",
+          "gem_type": 2,
+          "gem_level": 1,
+          "salvage_item_id": 10006,
+          "salvage_item_num": 1,
+          "attributes[0][0]": "WorldMagicDefCon",
+          "attributes[0][1]": 10
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个礼包叫'新手大礼包'，品质2，图标'Icon_chest_xinshou'，最大堆叠1，打开后获得reward_id 10001的奖励",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_11xxx>",
+          "name": "新手大礼包",
+          "quality": 2,
+          "item_type": 2,
+          "icon": "Icon_chest_xinshou",
+          "max_stack": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Chest",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_11xxx>",
+          "chest_reward_id": 10001
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改item_id为10001的描述为'这是一件珍贵的测试道具'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 10001
+        },
+        "row_content": {
+          "desc": "这是一件珍贵的测试道具"
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除item_id为15001的精钢剑，同时删除ItemBase表和Equipment表中的记录",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "delete",
+        "row_key": {
+          "item_id": 15001
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "delete",
+        "row_key": {
+          "item_id": 15001
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个法宝叫'替身草人'，品质3，图标'Icon_fabao_tishen'，法宝类型5，法宝技能编号4001，附加属性池200001，阴阳权重0.3，阳属性描述'法宝状态下，额外对敌方人物的攻击增加10%的物伤减免与法伤减免'，阴属性描述'法宝状态下，额外对敌方非人物单位的攻击增加10%的物伤减免与法伤减免'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_28xxx>",
+          "name": "替身草人",
+          "quality": 3,
+          "item_type": 6,
+          "icon": "Icon_fabao_tishen"
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id_28xxx>",
+          "fabao_type": 5,
+          "fabao_spell_id": 4001,
+          "attr_mod_id": 200001,
+          "yinyang_rate": 0.3,
+          "yang_desc": "法宝状态下，额外对敌方人物的攻击增加10%的物伤减免与法伤减免",
+          "yin_desc": "法宝状态下，额外对敌方非人物单位的攻击增加10%的物伤减免与法伤减免"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改item_id为15001的精钢剑，可用门派列表从[1,2]改为[1,2,3]",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 15001
+        },
+        "row_content": {
+          "equip_sch_list": [
+            1,
+            2,
+            3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个装备随机词条池，pool_id为1002，包含两条：第一条属性修改StamCon范围1-10权重20，第二条属性修改ManaCon范围1-10权重20，能力类型均为1",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "GameplayAbilityChoicePool",
+        "operation": "add",
+        "row_content": {
+          "entry_id": "<new_id_1>",
+          "pool_id": 1002,
+          "rand_weight": 20,
+          "ability_type": 1,
+          "attr_mod": [
+            "StamCon",
+            1,
+            10
+          ]
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "GameplayAbilityChoicePool",
+        "operation": "add",
+        "row_content": {
+          "entry_id": "<new_id_2>",
+          "pool_id": 1002,
+          "rand_weight": 20,
+          "ability_type": 1,
+          "attr_mod": [
+            "ManaCon",
+            1,
+            10
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个法术叫'烈火术'，对单个敌人造成火焰伤害，法术类型为attack，目标类型为single_enemy，元素为fire",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "common_spell",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_id>",
+          "name": "烈火术"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_id>",
+          "spell_type": "attack",
+          "spell_element": "fire"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改spell_id为100002的三味真火伤害倍率从1.5改为2.0",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "modify",
+        "row_key": {
+          "id": 100002
+        },
+        "row_content": {
+          "damage_base_rate": 2.0
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增技能组group_id 300，包含技能1001、1002、1003",
+    "expected_answer": [
+      {
+        "table": "combat\\spell_group.xlsx",
+        "sheet": "SpellGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 300,
+          "spell_ids": [
+            1001,
+            1002,
+            1003
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个PVE战斗NPC叫'灵脉守卫'，model_id为1012，技能列表为1001,1002,1003，AI为hello_world，等级公式10，气血斜率0，气血基础10，物攻斜率0，物攻基础10",
+    "expected_answer": [
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "row_content": {
+          "npc_id": "<new_id_3xxx>",
+          "name": "灵脉守卫",
+          "model_id": 1012,
+          "spell_ids": [
+            1001,
+            1002,
+            1003
+          ],
+          "combat_ai_name": "hello_world",
+          "level_formula": 10,
+          "attribute_base_slopes.HPMaxCon[1]": 0,
+          "attribute_base_slopes.HPMaxCon[0]": 10,
+          "attribute_base_slopes.WorldAttackCon[1]": 0,
+          "attribute_base_slopes.WorldAttackCon[0]": 10
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改npc_id为3000的灵脉怪物战斗AI从hello_world改为aggressive_ai",
+    "expected_answer": [
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "modify",
+        "row_key": {
+          "npc_id": 3000
+        },
+        "row_content": {
+          "combat_ai_name": "aggressive_ai"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一场战斗combat_id为25001001，参战NPC为npc_id 3000和3001",
+    "expected_answer": [
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "row_content": {
+          "combat_id": 25001001,
+          "npc_ids": [
+            3000,
+            3001
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改npc_id为3001的普通怪物气血斜率从0改为0.5",
+    "expected_answer": [
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "modify",
+        "row_key": {
+          "npc_id": 3001
+        },
+        "row_content": {
+          "attribute_base_slopes.HPMaxCon[1]": 0.5
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个buff特效，vfx_key为'FireBurst'，名称'火焰爆炸'，graph路径为'Graph/Effect/Appearance/FireBurst.graph'",
+    "expected_answer": [
+      {
+        "table": "sequence\\effect\\effect_actor.xlsx",
+        "sheet": "effect_actor_data",
+        "operation": "add",
+        "row_content": {
+          "effect_actor_key": "FireBurst",
+          "effect_actor_name": "火焰爆炸",
+          "appearance_graph": "Graph/Effect/Appearance/FireBurst.graph"
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除spell_id为100007的法术蛮牛狂击",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "delete",
+        "row_key": {
+          "id": 100007
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改npc_id为3002的香火灵技能列表，从[1001,1002,1003]改为[1001,1002,1003,1004]",
+    "expected_answer": [
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "modify",
+        "row_key": {
+          "npc_id": 3002
+        },
+        "row_content": {
+          "spell_ids": [
+            1001,
+            1002,
+            1003,
+            1004
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个神通叫'三味真火'，图标'icon_spell_037'，描述'对3个敌人造成200点火焰伤害'，关联技能spell_id 100002，技能等级1",
+    "expected_answer": [
+      {
+        "table": "ability.xlsx",
+        "sheet": "Ability",
+        "operation": "add",
+        "row_content": {
+          "ability_id": "<new_id>",
+          "name": "三味真火",
+          "desc": "对3个敌人造成200点火焰伤害",
+          "icon": "icon_spell_037",
+          "spell_id": 100002,
+          "spell_level": 1
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改ability_id为1001的神通描述从'对3个敌人造成火焰伤害'改为'对3个敌人造成200点火焰伤害'",
+    "expected_answer": [
+      {
+        "table": "ability.xlsx",
+        "sheet": "Ability",
+        "operation": "modify",
+        "row_key": {
+          "ability_id": 1001
+        },
+        "row_content": {
+          "desc": "对3个敌人造成200点火焰伤害"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增灵兽叫'赤炎虎'，model_id为1060，品质3(橙色)，元素类型fire，灵兽蛋道具item_id 28001，出战所需人物等级1，默认加点1，体力资质4500，物攻资质1500，法攻资质1000，物防资质1200，法防资质1200",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "add",
+        "row_content": {
+          "pet_id": "<new_id>",
+          "name": "赤炎虎",
+          "model_id": 1060,
+          "quality": 3,
+          "elemental_type": "fire",
+          "item_id": 28001,
+          "hero_level": 1,
+          "auto_attr_point_alloc_type": 1,
+          "aptitude_base.StrPotCon": 4500,
+          "aptitude_base.PhyatkPotCon": 1500,
+          "aptitude_base.MagatkPotCon": 1000,
+          "aptitude_base.PhydefPotCon": 1200,
+          "aptitude_base.MagdefPotCon": 1200
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改pet_id为1052的火焰犬体力资质从4500改为5000",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "modify",
+        "row_key": {
+          "pet_id": 1052
+        },
+        "row_content": {
+          "aptitude_base.StrPotCon": 5000
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增灵兽技能书叫'烈火撕咬'，关联技能spell_id为100010，习得等级要求5",
+    "expected_answer": [
+      {
+        "table": "pet\\pet_spell_book.xlsx",
+        "sheet": "PetSpellBook",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_id>",
+          "ability_id": 100010
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增pet_id为1052的灵兽进化路径，进化为pet_id 2052烈焰犬，消耗道具item_id 10004数量1",
+    "expected_answer": [
+      {
+        "table": "pet\\pet_evolve.xlsx",
+        "sheet": "PetEvolveData",
+        "operation": "add",
+        "row_content": {
+          "pet_id": 1052,
+          "evolved_pet_id": 2052
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改pet_id为1053的小白鲸品质从3(橙色)改为2(紫色)",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "modify",
+        "row_key": {
+          "pet_id": 1053
+        },
+        "row_content": {
+          "quality": 2
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除pet_id为3052的炽焰獒及其所有相关配置（Pet表和PetLevel表）",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "delete",
+        "row_key": {
+          "pet_id": 3052
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增角色叫'剑客'，初始门派school_id 1(蜀山)，移动速度6，地图图标4004，面板气血上限12000，面板真元上限6000，面板愤怒上限150，面板物攻5000",
+    "expected_answer": [
+      {
+        "table": "hero\\hero.xlsx",
+        "sheet": "Hero",
+        "operation": "add",
+        "row_content": {
+          "hero_id": "<new_id>",
+          "name": "剑客",
+          "school_id": 1,
+          "move_speed": 6,
+          "map_icon_id": 4004,
+          "attributes.HPMaxCon": 12000,
+          "attributes.MPMaxCon": 6000,
+          "attributes.AngerMaxCon": 150,
+          "attributes.WorldAttackCon": 5000
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改hero_id为8001的男角色物理攻击WorldAttackCon从1000改为1200",
+    "expected_answer": [
+      {
+        "table": "hero\\hero.xlsx",
+        "sheet": "Hero",
+        "operation": "modify",
+        "row_key": {
+          "hero_id": 8001
+        },
+        "row_content": {
+          "attributes.WorldAttackCon": 1200
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增hero_id为5022的角色10级等级配置，气血上限HPMaxCon为18000",
+    "expected_answer": [
+      {
+        "table": "hero\\hero_level.xlsx",
+        "sheet": "HeroLevelGrow",
+        "operation": "add",
+        "row_content": {
+          "level": 10,
+          "id": 5022,
+          "attributes.HPMaxCon": 18000
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改hero_id为8002的女角色初始门派从3改为4(阴山)",
+    "expected_answer": [
+      {
+        "table": "hero\\hero.xlsx",
+        "sheet": "Hero",
+        "operation": "modify",
+        "row_key": {
+          "hero_id": 8002
+        },
+        "row_content": {
+          "school_id": 4
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增主线任务叫'迎战灵脉怪物'，任务ID 250010，任务组group_id 250，描述为'击败灵脉中的守卫怪物'，目标类型Combat，目标数据combat_id:[25001001],is_win:1,count:1，奖励reward_id 10050",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "row_content": {
+          "quest_id": 250010,
+          "group_id": 250,
+          "name": "迎战灵脉怪物",
+          "desc": "击败灵脉中的守卫怪物",
+          "target.key": "Combat",
+          "target.data": "combat_id:[25001001],is_win:1,count:1",
+          "rewards": [
+            10050
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改quest_id为250001的任务描述改为'在洞府中创建你的第一座建筑'",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "modify",
+        "row_key": {
+          "quest_id": 250001
+        },
+        "row_content": {
+          "desc": "在洞府中创建你的第一座建筑"
+        }
+      }
+    ]
+  },
+  {
+    "input": "给quest_id为250002的任务设置任务目标NPC，npc_ids为10045，同时在space_id 10008坐标(60,0,30)刷新该NPC",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "modify",
+        "row_key": {
+          "quest_id": 250002
+        },
+        "row_content": {
+          "npc_ids": [
+            10045
+          ]
+        }
+      },
+      {
+        "table": "quest\\spawn_quest_entity.xlsx",
+        "sheet": "SpawnQuestEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10008,
+          "entity_prefab_id": 10045,
+          "pos_list": [
+            [
+              60,
+              0,
+              30
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改quest_id为250001的任务奖励从原有奖励改为reward_id 10045",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "modify",
+        "row_key": {
+          "quest_id": 250001
+        },
+        "row_content": {
+          "rewards": [
+            10045
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增任务组group_id 260，名称'日常任务'，任务类型quest_type 1(主线)，限定条件qualifier为hero_all",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 260,
+          "quest_type": 1,
+          "name": "日常任务",
+          "qualifier": "hero_all"
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除quest_id为250003的任务，同时清除quest_id 250002的next_quest_ids中对该任务的引用（置为空列表）",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "delete",
+        "row_key": {
+          "quest_id": 250003
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "modify",
+        "row_key": {
+          "quest_id": 250002
+        },
+        "row_content": {
+          "next_quest_ids": []
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增门派叫'阴山派'，school 4，门派类型school_type 4，model_id 1027，战斗模型combat_model_id 1074",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "add",
+        "row_content": {
+          "school": 4,
+          "name": "阴山派",
+          "school_type": 4,
+          "model_id": 1027,
+          "combat_model_id": 1074
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改school 1(蜀山)的战斗模型combat_model_id从1074改为1080",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "modify",
+        "row_key": {
+          "school": 1
+        },
+        "row_content": {
+          "combat_model_id": 1080
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增门派天赋叫'会心'，描述'暴击率增加10%'，图标'Icon_120_shentong_1.png'，属于school_id 1，层级layer 1，列column 2",
+    "expected_answer": [
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_id>",
+          "name": "会心",
+          "desc": "暴击率增加10%",
+          "icon": "Icon_120_shentong_1.png",
+          "school_id": 1,
+          "layer": 1,
+          "column": 2
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增门派1的神通叫'御剑术'，描述'召唤飞剑攻击敌人'，图标'spell_default.png'，解锁等级1，技能id 100005",
+    "expected_answer": [
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_id>",
+          "name": "御剑术",
+          "desc": "召唤飞剑攻击敌人",
+          "icon": "spell_default.png",
+          "unlock_level": 1
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_level_id>",
+          "school_ability_id": "<new_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 100005
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增门派1的灵体配置，school_ability_id 101，school_id 1，spirit_id 1，灵体天赋buff为600001",
+    "expected_answer": [
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": 101,
+          "school_id": 1,
+          "spirit_id": 1,
+          "spirit_buffs[0]": 600001
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改天赋id 1011目明的效果描述从'增加目标10%命中率'改为'增加20%命中率'",
+    "expected_answer": [
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "modify",
+        "row_key": {
+          "id": 1011
+        },
+        "row_content": {
+          "desc": "增加20%命中率"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府叫'洞府3'，residence_id 30003，图标'dongfu_look.png'，实例Prefab inst_prefab_id 8009，入口Prefab entry_prefab_id 8030，入口位置(-239.1, 11.6, -877.2)，朝向3.14，group 1001，space_id 10008",
+    "expected_answer": [
+      {
+        "table": "residence\\residence.xlsx",
+        "sheet": "Residence",
+        "operation": "add",
+        "row_content": {
+          "residence_id": 30003,
+          "name": "洞府3",
+          "icon": "dongfu_look.png",
+          "inst_prefab_id": 8009,
+          "entry_prefab_id": 8030,
+          "entry_pos": [
+            -239.1,
+            11.6,
+            -877.2
+          ],
+          "entry_yaw": 3.14,
+          "group": 1001,
+          "space_id": 10008
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府建筑叫'炼丹炉'，building_item_id 22050，建筑类型building_type 2，模型model_id 2205002，等级1，需要洞府等级1，占地area_x 1 area_y 1，地图图标4009",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "ResidenceBuilding",
+        "operation": "add",
+        "row_content": {
+          "building_item_id": 22050,
+          "name": "炼丹炉",
+          "level": 1,
+          "building_type": 2,
+          "model_id": 2205002,
+          "residence_level": 1,
+          "area_x": 1,
+          "area_y": 1,
+          "map_icon_id": 4009
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改building_item_id为22000的灵农机洞府等级要求从1改为2",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "ResidenceBuilding",
+        "operation": "modify",
+        "row_key": {
+          "building_item_id": 22000
+        },
+        "row_content": {
+          "residence_level": 2
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府入口叫'灵兽峰入口'，entry_id 10105，州片区district_id 101，洞府residence_id 30001，候选Prefab 8028，正式Prefab 8008",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_entry.xlsx",
+        "sheet": "ResidenceEntry",
+        "operation": "add",
+        "row_content": {
+          "entry_id": 10105,
+          "name": "灵兽峰入口",
+          "district_id": 101,
+          "residence_id": 30001,
+          "candidate_prefab_id": 8028,
+          "prefab_id": 8008
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增residence_id为30001的洞府网格配置，坐标grid_point_x 5、grid_point_z 10，状态grid_state 0",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_grid.xlsx",
+        "sheet": "ResidenceGrid",
+        "operation": "add",
+        "row_content": {
+          "residence_id": 30001,
+          "grid_point_x": 5,
+          "grid_point_z": 10,
+          "grid_state": 0
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府作物叫'灵草'，item_id 25010，种植在灵农机(building_type [1])，每秒生长值1，生长阶段1需60值，阶段0模型1，阶段1模型2，动作1，收获奖励reward_id 10016",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_plant.xlsx",
+        "sheet": "ResidencePlant",
+        "operation": "add",
+        "row_content": {
+          "item_id": 25010,
+          "name": "灵草",
+          "building_type": [
+            1
+          ],
+          "per_second_growth": 1,
+          "growth_values[0]": 60,
+          "growth_models[0]": 1,
+          "growth_models[1]": 2,
+          "action": 1,
+          "reward_id": 10016
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增蒲团功法叫'天罡功'，背景图'XGUI/res/round/Residence/image/gongfa/bgi_gongfa4.png'，5个阶段[1,2,3,4,5]，经验率0.2",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_putuan.xlsx",
+        "sheet": "PutuanLiangong",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_id>",
+          "name": "天罡功",
+          "bg_img": "XGUI/res/round/Residence/image/gongfa/bgi_gongfa4.png",
+          "stages": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "exp_rate": 0.2
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府关卡叫'关卡2-1'，combat_id 100080011，洞府等级要求2，建筑item_id 22070，图标'temple_02.png'",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_temple.xlsx",
+        "sheet": "ResidenceTemple",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_id>",
+          "name": "关卡2-1",
+          "desc": "关卡2-1",
+          "combat_id": 100080011,
+          "residence_level": 2,
+          "building_item_id": 22070,
+          "icon": "temple_02.png"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增建筑类型3叫'炼丹房'，实体类型ResidenceBuildingForge，一级分类'炼器'，二级分类'丹药'",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingType",
+        "operation": "add",
+        "row_content": {
+          "building_type": 3,
+          "name": "炼丹房",
+          "entity_type": "ResidenceBuildingForge",
+          "primary_class": "炼器",
+          "secondary_class": "丹药"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增建筑类型4(炼器台)的交互动画，状态idle，动画'DongfuSit.graph'，building_state 0，soft_stop 1",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingInteract",
+        "operation": "add",
+        "row_content": {
+          "building_type": 4,
+          "state_id": "idle",
+          "character_montage": "DongfuSit.graph",
+          "building_state": 0,
+          "soft_stop": 1
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改residence_id 30001、obstacle_id 1的巨石头解锁洞府等级从1改为2",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_grid.xlsx",
+        "sheet": "ResidenceObstacle",
+        "operation": "modify",
+        "row_key": {
+          "residence_id": 30001,
+          "obstacle_id": 1
+        },
+        "row_content": {
+          "unlock_residence_level": 2
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增州片区叫'灵兽峰'，district_id 105，归属state_id 1，坐标(-200, 11, -900)",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_entry.xlsx",
+        "sheet": "District",
+        "operation": "add",
+        "row_content": {
+          "district_id": 105,
+          "name": "灵兽峰",
+          "state_id": 1,
+          "pos_list": [
+            [
+              -200,
+              11,
+              -900
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增奖励包叫'灵脉任务奖励'，reward_id 10050，每日领取上限1000，经验概率10000，金币概率10000，金币公式100，必得道具item_id 10001数量5",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "row_content": {
+          "id": 10050,
+          "name": "灵脉任务奖励",
+          "day_limit": 1000,
+          "exp_prob": 10000,
+          "gold_prob": 10000,
+          "gold_formula": 100,
+          "must_items[1].item_ids": [
+            10001
+          ],
+          "must_items[1].num": 5
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改reward_id为10001的奖励包经验概率exp_prob从10000改为15000",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "modify",
+        "row_key": {
+          "id": 10001
+        },
+        "row_content": {
+          "exp_prob": 15000
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增邮件模板叫'维护补偿邮件'，template_id 30010，标题'维护补偿'，内容'亲爱的玩家，这是维护补偿'",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "row_content": {
+          "template_id": 30010,
+          "title": "维护补偿",
+          "content": "亲爱的玩家，这是维护补偿"
+        }
+      }
+    ]
+  },
+  {
+    "input": "发送一条全服邮件，global_id 3，邮件类型1，使用模板template_id 10003，发送时间2024-12-01 00:00:00，发送人'系统'，附带奖励reward_id 10050",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 3,
+          "mail_type": 1,
+          "template_id": 10003,
+          "send_time": "2024-12-01 00:00:00",
+          "sender": "系统",
+          "reward_id": 10050
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改template_id为10001的邮件模板标题改为'测试邮件标题更新'",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "modify",
+        "row_key": {
+          "template_id": 10001
+        },
+        "row_content": {
+          "title": "测试邮件标题更新"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增邮件模板叫'活动奖励邮件'，template_id 30011，标题'活动奖励发放'，内容'恭喜获得活动奖励'，同时配置全服邮件global_id 4使用该模板，发送人'系统'，附带奖励reward_id 10002",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "row_content": {
+          "template_id": 30011,
+          "title": "活动奖励发放",
+          "content": "恭喜获得活动奖励"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 4,
+          "mail_type": 1,
+          "template_id": 30011,
+          "sender": "系统",
+          "reward_id": 10002
+        }
+      }
+    ]
+  },
+  {
+    "input": "删除global_id为1的全服邮件配置",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "delete",
+        "row_key": {
+          "global_id": 1
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改reward_id为10006的奖励包，新增必得道具item_id 10003数量10",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "modify",
+        "row_key": {
+          "id": 10006
+        },
+        "row_content": {
+          "must_items[2].item_ids": [
+            10003
+          ],
+          "must_items[2].num": 10
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增城市叫'洛阳'，city_id 200，关联space_id 10013",
+    "expected_answer": [
+      {
+        "table": "city\\city.xlsx",
+        "sheet": "CityTemplate",
+        "operation": "add",
+        "row_content": {
+          "city_id": 200,
+          "name": "洛阳"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改city_id为200的洛阳城名称改为'神都洛阳'",
+    "expected_answer": [
+      {
+        "table": "city\\city.xlsx",
+        "sheet": "CityTemplate",
+        "operation": "modify",
+        "row_key": {
+          "city_id": 200
+        },
+        "row_content": {
+          "name": "神都洛阳"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增场景叫'副本场景1'，space_id 10050，类型BigWorldSpace，服务器地图资源BattleGround，客户端地图Worlds/BattleGround.iworld，进入位置(50,0,50)",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "add",
+        "row_content": {
+          "space_id": 10050,
+          "name": "副本场景1",
+          "space_type": "BigWorldSpace",
+          "server_map_res_name": "BattleGround",
+          "client_map_res_name": "Worlds/BattleGround.iworld",
+          "enter_pos": [
+            50,
+            0,
+            50
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改space_id为10001的场景进入位置从(70,0,78)改为(80,0,90)",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "modify",
+        "row_key": {
+          "space_id": 10001
+        },
+        "row_content": {
+          "enter_pos": [
+            80,
+            0,
+            90
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增大世界地标叫'灵兽峰传送点'，map_name World02，GlobalID 'County_1_0_C_1010'，LandmarkType 'LT_City'，LocalID 1010，坐标(300, 22, -500)，旋转(0,-135,0)",
+    "expected_answer": [
+      {
+        "table": "space_landmark.xlsx",
+        "sheet": "World02",
+        "operation": "add",
+        "row_content": {
+          "map_name": "World02",
+          "GlobalID": "County_1_0_C_1010",
+          "LandmarkType": "LT_City",
+          "LocalID": 1010,
+          "Location": [
+            300,
+            22,
+            -500
+          ],
+          "Rotation": [
+            0,
+            -135,
+            0
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增地图图标叫'BOSS图标'，icon_id 4010，小地图路径'XGUI/res/old/map/entity_icons/boss_icon.png'，大地图路径同上，层级5，显示类型1(永久显示)",
+    "expected_answer": [
+      {
+        "table": "map.xlsx",
+        "sheet": "Icon",
+        "operation": "add",
+        "row_content": {
+          "icon_id": 4010,
+          "mini_map_icon_path": "XGUI/res/old/map/entity_icons/boss_icon.png",
+          "big_map_icon_path": "XGUI/res/old/map/entity_icons/boss_icon.png",
+          "map_icon_layer": 5,
+          "icon_show_type": 1
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增洞府GameMode，gamemode_id 3，名称'Residence'，描述'新增洞府GameMode'，区域area_x 30 area_z 20，高度范围1为(-3.2,-2.7)，高度范围2为(-10,-3.2)，高度范围3为(-2.7,-0.1)",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "cgm_residence",
+        "operation": "add",
+        "row_content": {
+          "gamemode_id": 3,
+          "name": "Residence",
+          "desc": "新增洞府GameMode",
+          "area_x": 30,
+          "area_z": 20,
+          "height_range[0]": [
+            -3.2,
+            -2.7
+          ],
+          "height_range[1]": [
+            -10,
+            -3.2
+          ],
+          "height_range[2]": [
+            -2.7,
+            -0.1
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改space_id为10001的场景摄像机FOV从30改为35",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "modify",
+        "row_key": {
+          "space_id": 10001
+        },
+        "row_content": {
+          "camera.fov": 35
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增助战叫'剑灵'，assistant_id 100，model_id 1090",
+    "expected_answer": [
+      {
+        "table": "assistant\\assistant.xlsx",
+        "sheet": "Assistant",
+        "operation": "add",
+        "row_content": {
+          "assistant_id": 100,
+          "name": "剑灵",
+          "model_id": 1090
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增助战技能叫'剑气斩'，关联助战assistant_id 100，技能spell_id 200001",
+    "expected_answer": [
+      {
+        "table": "assistant\\assistant_ability.xlsx",
+        "sheet": "AssistantAbility",
+        "operation": "add",
+        "row_content": {
+          "name": "剑气斩",
+          "spell_id": 200001,
+          "ability_id": "<new_id>"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增助战武器叫'灵剑'，weapon_id 5010，关联助战assistant_id 100，model_id 1095",
+    "expected_answer": [
+      {
+        "table": "assistant\\assistant_weapon.xlsx",
+        "sheet": "AssistantWeapon",
+        "operation": "add",
+        "row_content": {
+          "weapon_id": 5010,
+          "name": "灵剑"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增助战秘术叫'剑阵'，描述'范围伤害'，技能spell_id 300001",
+    "expected_answer": [
+      {
+        "table": "assistant\\assistant_mystic.xlsx",
+        "sheet": "AssistantMystic",
+        "operation": "add",
+        "row_content": {
+          "mystic_id": "<new_id>",
+          "name": "剑阵",
+          "desc": "范围伤害"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增常量叫'DROP_RATE'，类型float，值0.5，注释'掉落率系数'",
+    "expected_answer": [
+      {
+        "table": "const.xlsx",
+        "sheet": "Const",
+        "operation": "add",
+        "row_content": {
+          "key": "DROP_RATE",
+          "type": "float",
+          "value": "0.5",
+          "comment": "掉落率系数"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增gameplay tag 'Actor.WorldCharacter.Pet'，描述'灵兽角色'",
+    "expected_answer": [
+      {
+        "table": "gameplay_tags.xlsx",
+        "sheet": "tags",
+        "operation": "add",
+        "row_content": {
+          "tag": "Actor.WorldCharacter.Pet",
+          "comment": "灵兽角色"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增Tips文本，key为'TID_TIPS_WELCOME'，内容'欢迎来到修仙世界'",
+    "expected_answer": [
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "欢迎来到修仙世界",
+          "key": "TID_TIPS_WELCOME",
+          "type": "str"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增世界buff叫'攻击增益buff'，world_buff_id 600010，描述'增加30%物理攻击'，绑定战斗buff 0，持续10秒，最大叠加1，叠加方式COEXIST，生命周期SPACE_BIND，属性修改WorldAttackCon: 0.3",
+    "expected_answer": [
+      {
+        "table": "world_buff.xlsx",
+        "sheet": "world_buff_data",
+        "operation": "add",
+        "row_content": {
+          "world_buff_id": 600010,
+          "name": "攻击增益buff",
+          "desc": "增加30%物理攻击",
+          "bind_combat_buff": 0,
+          "timeout": 10,
+          "max_stack": 1,
+          "dup_op": "COEXIST",
+          "lifecycle_bind": "SPACE_BIND",
+          "attribute_modify": {
+            "WorldAttackCon": 0.3
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增服务器配置叫'服务器2'，realm_id 10002，开服时间2024-12-01 00:00:00",
+    "expected_answer": [
+      {
+        "table": "realm_info.xlsx",
+        "sheet": "RealmInfo",
+        "operation": "add",
+        "row_content": {
+          "realm_id": 10002,
+          "name": "服务器2",
+          "open_server_time": "2024-12-01 00:00:00"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增帮派等级配置level 5，帮派资金上限100000",
+    "expected_answer": [
+      {
+        "table": "guild.xlsx",
+        "sheet": "Vault",
+        "operation": "add",
+        "row_content": {
+          "level": 5,
+          "funds_limit": 100000
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改tips表中key为'TID_PY_APP_NAME'的值从'Zero'改为'仙缘'",
+    "expected_answer": [
+      {
+        "table": "tips.xlsx",
+        "sheet": "ui_txt",
+        "operation": "modify",
+        "row_key": {
+          "key": "TID_PY_APP_NAME"
+        },
+        "row_content": {
+          "value": "仙缘"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改world_buff_id为600001的攻击增益buff持续时间从10秒改为30秒",
+    "expected_answer": [
+      {
+        "table": "world_buff.xlsx",
+        "sheet": "world_buff_data",
+        "operation": "modify",
+        "row_key": {
+          "world_buff_id": 600001
+        },
+        "row_content": {
+          "timeout": 30
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改常量HP_POT_COEF的值从1改为1.5",
+    "expected_answer": [
+      {
+        "table": "const.xlsx",
+        "sheet": "Const",
+        "operation": "modify",
+        "row_key": {
+          "key": "HP_POT_COEF"
+        },
+        "row_content": {
+          "value": "1.5"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改icon_id为4001的村庄地图图标显示层级从0改为3",
+    "expected_answer": [
+      {
+        "table": "map.xlsx",
+        "sheet": "Icon",
+        "operation": "modify",
+        "row_key": {
+          "icon_id": 4001
+        },
+        "row_content": {
+          "map_icon_layer": 3
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改洞府等级配置ResidenceLevel level 1的升级所需玩家等级need_level从1改为5",
+    "expected_answer": [
+      {
+        "table": "residence\\residence.xlsx",
+        "sheet": "ResidenceLevel",
+        "operation": "modify",
+        "row_key": {
+          "level": 1
+        },
+        "row_content": {
+          "need_level": 5
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增特效Actor叫'剑气特效'，effect_actor_key 'SwordQi'，外观Graph 'Graph/Effect/Appearance/SwordQi.graph'，移动方式LinearMove，每目标独立True",
+    "expected_answer": [
+      {
+        "table": "sequence\\effect\\effect_actor.xlsx",
+        "sheet": "effect_actor_data",
+        "operation": "add",
+        "row_content": {
+          "effect_actor_key": "SwordQi",
+          "effect_actor_name": "剑气特效",
+          "appearance_graph": "Graph/Effect/Appearance/SwordQi.graph",
+          "move_enum_key": "LinearMove",
+          "is_per_actor": true
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改player_common中的初始金币为5000",
+    "expected_answer": [
+      {
+        "table": "const.xlsx",
+        "sheet": "Const",
+        "operation": "modify",
+        "row_key": {
+          "key": "init_gold"
+        },
+        "row_content": {
+          "value": 5000
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改model_prefab中model_id为1027的模型名称为'蜀山剑客模型'",
+    "expected_answer": [
+      {
+        "table": "model_prefab.xlsx",
+        "sheet": "MetaData",
+        "operation": "modify",
+        "row_key": {
+          "model_id": 1027
+        },
+        "row_content": {
+          "name": "蜀山剑客模型"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改activity中activity_id为1的活动名称为'春节限时活动'",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "modify",
+        "row_key": {
+          "id": 1
+        },
+        "row_content": {
+          "name": "春节限时活动"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改fabao表中item_id为28501的替身草人文案描述为'旁门左道的保命秘术，以稻草代人受过'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 28501
+        },
+        "row_content": {
+          "dest": "旁门左道的保命秘术，以稻草代人受过"
+        }
+      }
+    ]
+  },
+  {
+    "input": "修改residence_entry中entry_id为10101的灵兽洞名称为'玄天洞'",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_entry.xlsx",
+        "sheet": "ResidenceEntry",
+        "operation": "modify",
+        "row_key": {
+          "entry_id": 10101
+        },
+        "row_content": {
+          "name": "玄天洞"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个新 NPC 叫\"灵兽饲养员老李\"，模型用 1015，摆在野外战场 10001 坐标 (88, 0, 12)。玩家走过去点他弹出对话，对话内容写\"要不要看看我养的灵兽？\"，给两个选项：选\"看看\"就跳到一段新对话，新对话说\"这只赤炎虎饿了，给它喂点东西吧。\"；选\"下次吧\"就什么都不做结束对话。",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "row_content": {
+          "prefab_id": "<new_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1015,
+          "entity_name": "灵兽饲养员老李",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<root_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "row_content": {
+          "conv_id": "<root_conv_id>",
+          "prompt_text": "要不要看看我养的灵兽？",
+          "options[0]": "<opt_see>",
+          "options[1]": "<opt_quit>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": "<opt_see>",
+          "option_text": "看看",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<branch_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": "<opt_quit>",
+          "option_text": "下次吧",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "row_content": {
+          "conv_id": "<branch_conv_id>",
+          "prompt_text": "这只赤炎虎饿了，给它喂点东西吧。"
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_id>",
+          "space_id": 10001,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "灵兽饲养员老李",
+          "entity_num_max": 1,
+          "pos_list": [
+            [
+              88,
+              0,
+              12
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": "加一件新法宝\"玄火鉴\"，法宝编号 28599，品质 3，图标 Icon_fabao_xuanhuo，法宝类型 5，它的法宝技能编号 700010 也一起建一下——是个攻击型火系法术叫\"玄火灼烧\"，对单体造成 180% 伤害。法宝的阴阳权重设 0.35，阳属性描述\"激活后对敌方人物附加灼烧\"，阴属性描述\"激活后对敌方非人物附加灼烧\"。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "row_content": {
+          "item_id": 28599,
+          "name": "玄火鉴",
+          "quality": 3,
+          "item_type": 6,
+          "icon": "Icon_fabao_xuanhuo",
+          "max_stack": 1,
+          "droppable": 0
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "row_content": {
+          "item_id": 28599,
+          "fabao_type": 5,
+          "fabao_spell_id": 700010,
+          "yinyang_rate": 0.35,
+          "yang_desc": "激活后对敌方人物附加灼烧",
+          "yin_desc": "激活后对敌方非人物附加灼烧"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "common_spell",
+        "operation": "add",
+        "row_content": {
+          "id": 700010,
+          "name": "玄火灼烧"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "row_content": {
+          "id": 700010,
+          "spell_type": "attack",
+          "spell_element": "fire",
+          "damage_base_rate": 1.8
+        }
+      }
+    ]
+  },
+  {
+    "input": "给蜀山（门派 1）加一个新神通\"，神通编号 8099，描述\"驭三柄飞剑斩敌\"，图标 spell_default.png，解锁等级 1；神通 0 级配置：升级不花钱、升级要求人物 1 级、关联法术 700020。这个法术归到一个新技能组 500 里，组名叫\"蜀山御剑组\"，组里就含 700020 这一个法术。",
+    "expected_answer": [
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": 8099,
+          "name": "御剑诀",
+          "desc": "驭三柄飞剑斩敌",
+          "icon": "spell_default.png",
+          "unlock_level": 1
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "row_content": {
+          "id": 80990,
+          "school_ability_id": 8099,
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 700020
+        }
+      },
+      {
+        "table": "combat\\spell_group.xlsx",
+        "sheet": "SpellGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 500,
+          "name": "蜀山御剑组",
+          "spell_ids": [
+            700020
+          ]
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "common_spell",
+        "operation": "add",
+        "row_content": {
+          "id": 700020,
+          "name": "御剑诀"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "row_content": {
+          "id": 700020,
+          "spell_type": "attack"
+        }
+      }
+    ]
+  },
+  {
+    "input": "加一条日常打怪任务\"清剿赤炎虎\"，任务号 777001，归到任务组 510（组名\"测试日常\"，主线类型），描述\"去野外把赤炎虎清掉\"，目标是打赢战斗 77777001，打赢给奖励包 10999。战斗 77777001 配成在战场 10001 里打 npc 3000 和 3001 两只怪，赢了给奖励包 10999、输了和平局都不给。奖励包 10999 也建一下，叫\"清剿奖励\"，每日领 50 次，必给道具 10001 共 5 个，另外 100% 给经验、100% 给金币、金币公式填 100。",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 510,
+          "quest_type": 1,
+          "name": "测试日常"
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "row_content": {
+          "quest_id": 777001,
+          "group_id": 510,
+          "name": "清剿赤炎虎",
+          "desc": "去野外把赤炎虎清掉",
+          "target.key": "Combat",
+          "target.data": "combat_id:[77777001],is_win:1,count:1",
+          "rewards": [
+            10999
+          ]
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "row_content": {
+          "combat_id": 77777001,
+          "name": "清剿赤炎虎",
+          "combat_type": "pve",
+          "space_id": 10001,
+          "win_reward": 10999,
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids": [
+            3000,
+            3001
+          ]
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "row_content": {
+          "id": 10999,
+          "name": "清剿奖励",
+          "day_limit": 50,
+          "exp_prob": 10000,
+          "gold_prob": 10000,
+          "gold_formula": "100",
+          "must_items[1].item_ids": [
+            10001
+          ],
+          "must_items[1].num": 5
+        }
+      }
+    ]
+  },
+  {
+    "input": "洞府新增一种炼丹房。先把建筑类型 11 建好，叫\"炼丹房\"，实体类型 ResidenceBuildingForge，一级分类\"炼造\"、二级分类\"丹药\"，洞府 1 级最多放 2 个、2 级最多放 3 个。再加一个这种建筑实例\"初级炼丹炉\"，建筑道具编号 22199，建筑等级 1，模型 2205002，地图图标 4004，需要洞府等级 1，占地 1×1，图纸道具用 10001。最后给炼丹房类型配一个 idle 交互动画，角色蒙太奇 DongfuSit.graph，建筑状态 0，软停止开。",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingType",
+        "operation": "add",
+        "row_content": {
+          "building_type": 11,
+          "name": "炼丹房",
+          "entity_type": "ResidenceBuildingForge",
+          "primary_class": "炼造",
+          "secondary_class": "丹药",
+          "level_building_limited[0]": 2,
+          "level_building_limited[1]": 3
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "ResidenceBuilding",
+        "operation": "add",
+        "row_content": {
+          "building_item_id": 22199,
+          "blueprint_item_id": 10001,
+          "name": "初级炼丹炉",
+          "level": 1,
+          "building_type": 11,
+          "model_id": 2205002,
+          "map_icon_id": 4004,
+          "residence_level": 1,
+          "area_x": 1,
+          "area_y": 1
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingInteract",
+        "operation": "add",
+        "row_content": {
+          "building_type": 11,
+          "state_id": "idle",
+          "character_montage": "DongfuSit.graph",
+          "building_state": 0,
+          "soft_stop": true
+        }
+      }
+    ]
+  },
+  {
+    "input": "把 28501 号法宝替身草人的阳属性描述改成\"激活后 10 秒内替主人承受一次致命伤害\"，它的阴阳权重同步从 0.3 调到 0.4；再把 15001 号精钢剑的可用门派列表覆盖成 1, 2, 3，基础物攻词条 WorldAttackCon 的范围改成 70 到 90。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 28501
+        },
+        "row_content": {
+          "yang_desc": "激活后 10 秒内替主人承受一次致命伤害",
+          "yinyang_rate": 0.4
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "modify",
+        "row_key": {
+          "item_id": 15001
+        },
+        "row_content": {
+          "equip_sch_list": [
+            1,
+            2,
+            3
+          ],
+          "equip_base_attrs[0]": [
+            "WorldAttackCon",
+            70,
+            90
+          ]
+        }
+      }
+    ]
+  }
+]

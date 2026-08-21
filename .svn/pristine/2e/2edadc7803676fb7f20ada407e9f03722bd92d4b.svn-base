@@ -1,0 +1,323 @@
+"""分解 SubAgent:消费 LocatorResult + schema,产 SplitIntent[] 含 produces/consumes。
+
+替代 cross_table_splitter.py 11 个 _build_*_intents 硬编码模板。
+新链型零代码——LLM 读候选表真实表头列名 + FK 边产每表一 op。
+
+职责边界:
+  - 输入: LocatorResult(candidates + fk_edges) + schema(每表 row1/row2 表头)
+  - 输出: list[SplitIntent](每表一 op,含 produces/consumes)
+  - 安全网: 产 <2 intent 或畸形 → 调用方回退 cross_table_splitter 规则模板
+
+规则安全网保留原则:
+  LLM 为主,规则为兜底。DecomposeAgent 产 ≥2 intent 时取代 splitter;
+  产 <2/畸形时 splitter 11 模式作 fallback,保 ok 率不回归。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Optional
+
+from .base import SubAgent
+from .llm_agent import LLMSubAgent
+from .locator_agent import LocatorResult, CandidateTable, FKEdge
+
+logger = logging.getLogger(__name__)
+
+
+# 复用 cross_table_splitter.SplitIntent 结构(不重新定义,保兼容)
+def _SplitIntent():
+    """延迟导入避免循环 import。"""
+    from ..cross_table_splitter import SplitIntent
+    return SplitIntent
+
+
+class DecomposeAgent(LLMSubAgent):
+    """分解 Agent:LLM 产每表一 op + produces/consumes。
+
+    流程:
+      1. 从 LocatorResult 取候选表 + FK 边
+      2. 读每表所有业务 sheet 的 row1+row2 表头,构 schema 块
+      3. LLM 产 JSON 数组,每元素 {table,sheet,action,fields,produces,consumes}
+      4. 解析为 SplitIntent 列表
+    """
+
+    def __init__(self, parser=None, thinking_sink=None, cli=None):
+        super().__init__("DecomposeAgent", parser=parser,
+                         thinking_sink=thinking_sink,
+                         prompt_template="跨表链分解产 SplitIntent[]")
+        self._cli = cli
+
+    def decompose(self, text: str, locator_result: LocatorResult) -> list:
+        """主入口:text + LocatorResult → SplitIntent[]。
+
+        Args:
+            text: 用户原始指令
+            locator_result: LocatorAgent 产出(候选表 + FK 边)
+
+        Returns:
+            SplitIntent 列表(每表一 op)。失败返回空列表,
+            调用方降级走 cross_table_splitter 规则模板。
+        """
+        if not text or not locator_result or not locator_result.candidates:
+            return []
+        if not self.parser:
+            logger.warning("DecomposeAgent 无 parser,跳过")
+            return []
+
+        import os as _os
+        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "45"))
+        candidates = locator_result.candidates
+        fk_block = self._build_fk_block(locator_result.fk_edges)
+        self.add_thinking("细分", f"DecomposeAgent 并行分解 {len(candidates)} 表(每表单 prompt,timeout={per_to}s)")
+
+        # 单表 prompt 列表(各表 schema 独立,降低复杂度防 7 表并置时 LLM 超时/空返;
+        # 跨表 produces/consumes 占位符交 produces_inference 在 agent.run 后置补)
+        jobs = []
+        for cand in candidates:
+            schema_one = self._build_schema_block([cand])
+            if not schema_one:
+                continue
+            jobs.append((cand, self._build_prompt(text, schema_one, fk_block)))
+        if not jobs:
+            return []
+
+        # 并行调用(线程池:sync urlopen 不阻塞 GIL)。失败的表跳过,后续 Step5 不写。
+        from concurrent.futures import ThreadPoolExecutor
+        max_workers = int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "3")) or 1
+
+        # F3: 并发 ≥4 candidates 时禁重试(防 156s × 重试堆坝空响应)
+        _retry_env = int(_os.environ.get("CODEMAKER_DECOMPOSE_RETRY", "1"))
+        retries = 0 if len(candidates) >= 4 else max(0, _retry_env)
+
+        # F3: 本地取消事件——fail-fast 用，绝不复用 run 级 _cancel_event
+        # (run 级事件被 Step5 循环轮询，set 会误判"用户取消"中止整轮写库)。
+        import threading as _threading
+        _local_ce = _threading.Event()
+        _run_ce = getattr(self.parser, "_cancel_event", None)
+        if _run_ce is not None:
+            def _mirror_cancel():
+                if _run_ce.wait():
+                    _local_ce.set()
+            _threading.Thread(target=_mirror_cancel, daemon=True).start()
+
+        def _run_one(job):
+            from .base import _isolated_empty_dir
+            cand, prompt = job
+            client = getattr(self.parser, "client", None)
+            if client is None:
+                return []
+            raw = ""
+            last_err = ""
+            import time as _time
+            backoff_base = float(_os.environ.get("CODEMAKER_DECOMPOSE_RETRY_BACKOFF", "1"))
+            for _attempt in range(retries + 1):
+                try:
+                    # 每表独立隔离 session(空目录),避免共享 _sid 在并行下被串行化/状态混乱
+                    sr = client.create_session(
+                        directory=_isolated_empty_dir(),
+                        model=getattr(self.parser, "model", ""))
+                    if not getattr(sr, "ok", False):
+                        last_err = "建会话失败"
+                    else:
+                        resp = client.prompt(sr.session_id, prompt, timeout=per_to,
+                                              model=getattr(self.parser, "model", ""),
+                                              cancel_event=_local_ce)
+                        self._bump_llm("decompose")
+                        raw = getattr(resp, "response_text", "") or ""
+                        if raw:
+                            break
+                        # 用户取消/fail-fast：跳出重试，不再等待
+                        if getattr(resp, "error_type", "") == "cancelled":
+                            break
+                        last_err = "空响应/超时"
+                except Exception as e:  # noqa: BLE001
+                    last_err = f"{type(e).__name__}: {e}"
+                # 指数退避:失败且还有重试时等待(2^attempt * base 秒,base=0 禁用)
+                if _attempt < retries and backoff_base > 0:
+                    _time.sleep(backoff_base * (2 ** _attempt))
+            if not raw:
+                self.add_thinking("细分", f"DecomposeAgent {cand.stem} 调用失败({last_err}, retry={retries})")
+                return []
+            arr = self._parse_json_array(raw)
+            if not arr:
+                self.add_thinking("细分", f"DecomposeAgent {cand.stem} 非 JSON 数组")
+                return []
+            return self._to_split_intents(arr, text)
+
+        all_intents: list = []
+        if len(jobs) == 1:
+            all_intents.extend(_run_one(jobs[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as ex:
+                futures = [ex.submit(_run_one, j) for j in jobs]
+                # F3: 首呼 fail-fast——前 2 个候选均空响应 → 取消剩余候选，降级规则模板兜底
+                first_two = [f.result() or [] for f in futures[:2]]
+                all_intents.extend(first_two[0])
+                all_intents.extend(first_two[1])
+                if not first_two[0] and not first_two[1]:
+                    _local_ce.set()
+                    self.add_thinking("细分",
+                        "DecomposeAgent 前 2 候选均空响应，取消剩余并发候选，降级规则模板兜底")
+                else:
+                    for f in futures[2:]:
+                        all_intents.extend(f.result() or [])
+        self.add_thinking("细分", f"DecomposeAgent 产出 {len(all_intents)} 条意图(并行 {len(jobs)} 表)")
+        return all_intents
+
+    # ── schema 构建 ─────────────────────────────────────────────
+
+    def _build_schema_block(self, candidates: list[CandidateTable]) -> str:
+        """读每表所有业务 sheet 的 row1+row2 表头,构 schema 块。
+
+        Token 预算裁剪:每表 sheet 数 / 列数可配置(防 prompt 膨胀致超时)。
+        """
+        if self._cli is None:
+            return ""
+        import os as _os
+        max_sheets = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_SHEETS", "3")))
+        max_cols = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_COLS", "12")))
+        all_tables = {}
+        try:
+            all_tables = {p.stem: p for p in self._cli.list_tables()}
+        except Exception:
+            return ""
+        lines: list[str] = []
+        for cand in candidates:
+            p = all_tables.get(cand.stem)
+            if p is None:
+                continue
+            try:
+                sheets = self._cli.get_sheets(p)
+            except Exception:
+                continue
+            biz = [s for s in sheets if s and "说明" not in s and "CONFIG" not in s]
+            for sh in biz[:max_sheets]:
+                try:
+                    hdrs = self._cli.read_header(p, sh)
+                    trow = self._cli.read_type_row(p, sh)
+                except Exception:
+                    continue
+                cols = []
+                for h, t in zip(hdrs, trow):
+                    if h:
+                        cols.append(str(h) + (f"（{t}）" if t and str(t) != str(h) else ""))
+                if cols:
+                    lines.append(f"- {cand.stem}/{sh}: " + " | ".join(cols[:max_cols]))
+        return "\n".join(lines) if lines else ""
+
+    def _build_fk_block(self, fk_edges: list[FKEdge]) -> str:
+        """构 FK 块:每条边 from.column → to.column。"""
+        if not fk_edges:
+            return "（无显式 FK）"
+        lines = []
+        for e in fk_edges:
+            lines.append(f"  {e.from_stem}.{e.from_sheet}.{e.from_column} → "
+                         f"{e.to_stem}.{e.to_sheet}.{e.to_column}")
+        return "\n".join(lines)
+
+    # ── LLM prompt ─────────────────────────────────────────────
+
+    def _build_prompt(self, text: str, schema_block: str, fk_block: str) -> str:
+        """构 LLM prompt:候选表 schema + FK 链 + 指令 + 输出格式。"""
+        return (
+            "你是配表跨表链分解器。一条指令可能涉及多张表(经外键关联)。"
+            "请分解为每张表一个原子操作,用真实表头列名。\n\n"
+            f"## 候选表 schema(row1 显示名,row2 规范名)\n{schema_block}\n\n"
+            f"## 外键关联(决定 produces/consumes)\n{fk_block}\n\n"
+            f"## 指令\n{text}\n\n"
+            "## 输出 fenced JSON 数组,每元素一个原子操作:\n"
+            "```json\n[{\"table\":\"<stem>\",\"sheet\":\"<sheet名>\",\"action\":\"add|set\","
+            "\"fields\":{<真实表头列名>:<值>},\"produces\":\"new_<stem>_id 或空\","
+            "\"consumes\":{<列名>:\"<produces_label>\"}}]\n```\n"
+            "规则:\n"
+            "- ⚠ 不要调用任何工具，不要读取/搜索/打开任何文件(含上述 stem 对应的 xlsx)，"
+            "严格仅基于本 prompt 文本中已给出的 schema 文本作答\n"
+            "- fields 键必须用上面 schema 的真实表头列名(row1 显示名)\n"
+            "- 新增行若主键自动(未在指令给)→ produces=\"new_<stem>_id\"\n"
+            "- 引用他表新产出的 ID → 该字段值用 \"<produces_label>\" 占位符,并在 consumes 标注\n"
+            "- 仅输出 JSON 数组,不要解释,不要前后缀任何文字"
+        )
+
+    # ── 解析 ───────────────────────────────────────────────────
+
+    def _parse_json_array(self, raw: str) -> list:
+        """从 LLM 返回解析 JSON 数组。容忍 fenced code block、裸 JSON、多数组、单 dict。"""
+        # 1) fenced ```json [ ... ]```（显式组1）
+        m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
+        if not m:
+            # 2) 裸 JSON 数组（也带组1，避免 m.group(1) 在无组正则上报 IndexError）
+            m = re.search(r"(\[\s*\{.*\}\s*\])", raw, re.DOTALL)
+        if m:
+            try:
+                arr = json.loads(m.group(1))
+                return arr if isinstance(arr, list) else []
+            except ValueError:
+                pass
+        # 3) 单 dict（LLM 未包数组，仅产一个 op）→ 包装成 [dict] 接收，避免单 op 输出被丢弃
+        md = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL) or \
+            re.search(r"(\{.*\})", raw, re.DOTALL)
+        if md:
+            try:
+                d = json.loads(md.group(1))
+                if isinstance(d, dict):
+                    return [d]
+            except ValueError:
+                pass
+        return []
+
+    def _to_split_intents(self, arr: list, text: str) -> list:
+        """LLM JSON 数组 → SplitIntent 列表。
+
+        consumes 字段值替换为 <label> 占位符。
+        """
+        SI = _SplitIntent()
+        intents: list = []
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            stem = str(item.get("table") or "").strip()
+            sheet = str(item.get("sheet") or "").strip() or None
+            act = str(item.get("action") or "add").strip().lower()
+            if act not in ("add", "set", "delete", "get"):
+                act = "add"
+            fields = item.get("fields") or {}
+            if not isinstance(fields, dict):
+                fields = {}
+            produces = str(item.get("produces") or "").strip() or None
+            consumes = item.get("consumes") or {}
+            # consumes: 字段值替换为 <label> 占位符
+            if isinstance(consumes, dict):
+                for k, label in consumes.items():
+                    if k in fields and label:
+                        fields[k] = f"<{str(label).strip()}>"
+            intents.append(SI(
+                text=text, table_hint=stem, sheet_hint=sheet,
+                action=act, fields=fields, produces=produces,
+            ))
+        return intents
+
+    def _run_impl(self, prompt: str, skill_docs: list, context: dict):
+        """SubAgent 接口适配:从 context 取 text+locator_result。"""
+        text = context.get("text") or prompt
+        locator_result = context.get("locator_result")
+        if not locator_result:
+            return None
+        intents = self.decompose(text, locator_result)
+        if not intents:
+            return None
+        # 转 dict fragment 供 base.run 包装
+        return {
+            "sql_or_ops": [{"action": i.action, "table_hint": i.table_hint,
+                            "sheet_hint": i.sheet_hint, "fields": i.fields,
+                            "produces": i.produces} for i in intents],
+            "produces": None,
+            "references": [],
+            "split_intents": intents,
+            "target_table": "",
+            "target_sheet": "",
+        }
+
+
+__all__ = ["DecomposeAgent"]

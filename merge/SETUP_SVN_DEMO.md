@@ -1,0 +1,106 @@
+# SVN Demo Fixture 搭建说明（合并引导数据源）
+
+合并引导（`/api/merge/branch/dirs`、`/api/merge/subdir/...`）依赖 `merge/svn/demo_svn/` 下的真实 SVN 仓库与工作副本。该目录**非版本控制**（被 `svn:ignore` 排除），需用户在本机用脚本生成。
+
+## 前置依赖
+
+- **SVN 命令行工具**：`svn` + `svnadmin`。Windows 安装 TortoiseSVN 时需勾选 *command line client tools*。验证：`svn --version` 且 `svnadmin --version`。
+- **Python 依赖**：项目已配（`openpyxl` 等，随 `uv sync` 安装）。
+- **种子数据**：随项目版本控制提供，位于 `merge/_seed_data/`（trunk + dev1 + dev2，约 41MB）。
+
+## 一键搭建
+
+```bash
+# 默认从项目内置 merge/_seed_data/ 读取，自包含
+uv run python merge/scripts/setup_svn_demo.py --clean
+```
+
+该脚本依次执行：
+
+| 顺序 | 脚本 | 作用 |
+|------|------|------|
+| 1 | `build_svn_real.py` | svnadmin create + 导入 trunk（含 trunk/subdev_1 子目录）+ 切 dev1/dev2 + checkout（r1-r8） |
+| 2 | `build_svn_small_branches.py` | 新增 dev3/dev4/subdev_2/subdev_3 四个小表分支（排除 monster/skill_level/item_drop）+ 全配对冲突锚点 |
+| 3 | `seed_svn_conflicts.py` | 追加首批冲突数据 |
+| 4 | `seed_svn_conflicts2.py` | 扩充冲突点 |
+| 5 | `seed_more_conflicts.py` | 再追加冲突 |
+| 6 | `seed_safe_conflicts.py` | 补充安全冲突 |
+
+完成后生成：
+
+```
+merge/svn/demo_svn/
+├── repo/                          # svnadmin 仓库（file:// 直连，无需 svnserve）
+└── wc/                            # 工作副本
+    ├── trunk/                     # 全量大表（74 张，含 monster 10w 行）+ 子目录
+    │   ├── subdev_1/              # 目录合并 source（5 张私有表：ability/const/item_drop/monster/reward）
+    │   ├── subdev_2/             # 目录合并 source（5 张小私有表：const/fabao/guild/mail/tips）
+    │   └── subdev_3/             # 目录合并 source（5 张小私有表：ability/reward/map/interaction/world_buff）
+    └── branches/
+        ├── dev1/                  # 跨分支合并 source/target（全量）
+        ├── dev2/                  # 跨分支合并 source/target（全量）
+        ├── dev3/                  # 平行分支，小表（已删 monster/skill_level/item_drop，改 ability/reward/tips）
+        └── dev4/                  # 平行分支，小表（已删 3 大表，改 const/fabao/guild）
+```
+
+> branches/ 只含 dev1-dev4（均为 dev* 命名）；subdev_1 不再作分支，trunk/subdev_1
+> 子目录随 trunk 导入供目录合并 source。dev1-dev4 的 tips.xlsx 首个 sheet B2 各写
+> 不同标记，使任两分支合并都在该单元格冲突（每两个组合都有冲突）。
+
+合并引导：
+- `/api/merge/branch/dirs` 返回 trunk + branches/{dev1..4} 共 5 个工作副本（跨分支合并）
+- `/api/merge/subdir/dirs` 递归扫描返回 svn/demo_svn/wc/trunk/subdev_{1,2,3}（目录合并 source）
+
+小表分支（dev3/dev4）+ 小表子目录（trunk/subdev_2、trunk/subdev_3）用于测试合并时间，
+排除大表 monster 10w 行级 O(n²) 卡顿。
+
+## 参数
+
+```
+uv run python merge/scripts/setup_svn_demo.py [OPTIONS]
+
+  --src DIR        覆盖默认数据源（默认 merge/_seed_data/，如指向桌面 Merge测试集）
+  --clean          透传给 build_svn_real，先删旧 repo/wc 再重建
+  --build-only     只跑 build_svn_real，跳过 4 个 seed 脚本
+```
+
+## 仅重建基础仓库（不含冲突数据）
+
+```bash
+uv run python merge/scripts/build_svn_real.py --clean
+```
+
+## 仅扩展小表分支/子目录（dev3/dev4 + trunk/subdev_2|3）
+
+```bash
+# 依赖 build_svn_real.py 已跑过；幂等，已存在则跳过
+uv run python merge/scripts/build_svn_small_branches.py
+# 强制重建（删 dev3/dev4 分支 + trunk/subdev_2|3 子目录 + 遗留脏分支）
+uv run python merge/scripts/build_svn_small_branches.py --clean-branches
+```
+
+## 自定义数据源
+
+如需用更大或更新的数据集，把含 `trunk/`、`dev1/`、`dev2/`、`trunk/subdev_1/` 子目录的源目录传给 `--src`：
+
+```bash
+uv run python merge/scripts/setup_svn_demo.py --clean --src "C:\Users\<u>\Desktop\Merge测试集"
+```
+
+源目录要求：
+- `trunk/`：全量 xdev1/`、`dev2/`：各含与 trunk 有差异的改表（8 张左右）
+- `trunk/subdev_1/`：5 张私有表（ability/const/item_drop/monster/reward）
+
+## 常见问题
+
+**Q: `svnadmin: E165002: ... is an existing repository`**
+A: 旧 repo 残留。加 `--clean` 强制重建，或手动删除 `merge/svn/demo_svn/` 后重跑。
+
+**Q: TSVNCache 锁定 `.svn/wc.db` 导致删除失败**
+A: 脚本已优先用系统 `rd /s /q`（Windows）/ `rm -rf`（Unix）删除，比 Python `shutil.rmtree` 更稳。若仍失败，临时停止 TortoiseSVN 进程（任务管理器结束 `TSVNCache.exe`）后重跑。
+
+**Q: 中文路径编码错误**
+A: 脚本内部已统一 UTF-8 输出并避免中文路径进 svn CLI（用 Python shutil 处理中文源）。若控制台乱码，PowerShell 先执行 `chcp 65001`。
+
+**Q: monster.xlsx 10w 行 compare 阶段卡顿**
+A: 已知性能问题 M7（见 `合并引导问题排查报告.md`），与数据搭建无关。compare 阶段 O(n²) 在 10w 行级表上较慢属预期。

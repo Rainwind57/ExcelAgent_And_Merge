@@ -1,0 +1,164 @@
+{
+  "relations": [
+    {
+      "from_path": "pet/pet_evolve.xlsx",
+      "from_sheet": "PetEvolveData",
+      "from_column": "宠物id",
+      "to_path": "pet/pet.xlsx",
+      "to_sheet": "Pet",
+      "to_column": "灵兽id",
+      "relation_type": "foreign_key",
+      "description": "灵兽进化表通过宠物id关联灵兽主表"
+    },
+    {
+      "from_path": "pet/pet_evolve.xlsx",
+      "from_sheet": "PetEvolveData",
+      "from_column": "进化后的灵兽ID",
+      "to_path": "pet/pet.xlsx",
+      "to_sheet": "Pet",
+      "to_column": "灵兽id",
+      "relation_type": "foreign_key",
+      "description": "进化结果指向灵兽主表"
+    },
+    {
+      "from_path": "entity_prefab/entity_prefab.xlsx",
+      "from_sheet": "Base",
+      "from_column": "交互id",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "Interaction",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "NPC prefab 通过交互id关联 Interaction 链接表（点击触发交互效果）"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "Interaction",
+      "from_column": "effect.data.3006.conv_id",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "InteractionConv",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "Interaction 对话效果(effect.key=3006)引用 InteractionConv 对话内容主键"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "InteractionConv",
+      "from_column": "选项N",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "InteractionConvOption",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "对话内容引用多个 InteractionConvOption 选项行"
+    },
+    {
+      "from_path": "spawn_world_entity/spawn_world_entity.xlsx",
+      "from_sheet": "SpawnWorldEntity",
+      "from_column": "实体Prefab ID",
+      "to_path": "entity_prefab/entity_prefab.xlsx",
+      "to_sheet": "Base",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "场景刷新实体通过实体Prefab ID引用 entity_prefab 主表"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "Fabao",
+      "to_column": "法宝id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.法宝id"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "FabaoLevel",
+      "to_column": "技能id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.技能id"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "FabaoType",
+      "to_column": "分组ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.分组ID"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "Interaction",
+      "from_column": "3002",
+      "to_path": "reward/reward.xlsx",
+      "to_sheet": "Reward",
+      "to_column": "reward_id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：interaction.3002 → reward.reward_id"
+    },
+    {
+      "from_path": "item/item.xlsx",
+      "from_sheet": "Chest",
+      "from_column": "reward ID",
+      "to_path": "reward/reward.xlsx",
+      "to_sheet": "Reward",
+      "to_column": "reward_id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：item.reward ID → reward.reward_id"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "Space编号",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.Space编号"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "大陆id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.大陆id"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "客户端GameMode实例ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.客户端GameMode实例ID"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "场景BGM事件ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.场景BGM事件ID"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "cgm_free",
+      "to_column": "GameMode实例ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.GameMode实例ID"
+    }
+  ]
+}

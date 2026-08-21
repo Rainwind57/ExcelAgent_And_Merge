@@ -1,0 +1,5 @@
+{
+  "copyfrom_path": "trunk_r2",
+  "copyfrom_rev": "r2",
+  "note": "B 分支从 trunk_r2 切出（含嵌套 config/skill.xlsx + 10w行 big_data.xlsx）"
+}

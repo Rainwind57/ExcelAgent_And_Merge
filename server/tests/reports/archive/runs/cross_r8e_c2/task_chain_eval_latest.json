@@ -1,0 +1,160 @@
+{
+  "meta": {
+    "start": 2,
+    "end": 2,
+    "done": 1,
+    "span": 1,
+    "total_all": 3,
+    "last_cid": 2
+  },
+  "aggregate": {
+    "n": 1,
+    "n_total": 1,
+    "n_excluded": 0,
+    "fixture_error_rate": 0.0,
+    "ok_rate": 0.0,
+    "truth_ok_rate": 0.0,
+    "chain_complete_rate": 0.0,
+    "strict_pass_rate": 0.0,
+    "locate_rate": 0.5,
+    "coverage": 0.5,
+    "field_accuracy": 0.0,
+    "ref_consistency_rate": 0.0,
+    "producers_resolve_rate": 0.5,
+    "avg_extra_ops": 3,
+    "avg_extra_off_table": 0,
+    "avg_elapsed_ms": 83051.8,
+    "p50_elapsed_ms": 83051.8,
+    "p95_elapsed_ms": 83051.8,
+    "total_elapsed_s": 83.1,
+    "error_type_distribution": {
+      "unknown": 1
+    },
+    "total_llm_calls": 6,
+    "total_tokens": 5963,
+    "avg_llm_calls": 6,
+    "success_path_calls": 6,
+    "failure_path_calls": 0
+  },
+  "failures": {
+    "modes": {
+      "parse_or_exec_failed": 0,
+      "table_sheet_miss": 1,
+      "row_missing": 0,
+      "field_error": 1,
+      "ref_broken": 0,
+      "producer_not_resolved": 1,
+      "extra_writes": 0,
+      "precondition_missing": 0
+    },
+    "samples": {
+      "table_sheet_miss": [
+        2
+      ],
+      "field_error": [
+        2
+      ],
+      "producer_not_resolved": [
+        2
+      ]
+    }
+  },
+  "skill": "on",
+  "results": [
+    {
+      "cid": 2,
+      "input_text": "新增一把武器叫'霜寒剑'，item_id 7001，品质4，道具类型为武器。它是装备：装备部位为武器，装备类型为剑，基础属性1是攻击力，可用门派列表为剑宗。",
+      "skill_enabled": true,
+      "ok": false,
+      "error": "失败：match_field - 未找到列[物品编号]",
+      "elapsed_ms": 83051.8,
+      "needs_confirm_used": false,
+      "steps": [
+        {
+          "index": 0,
+          "table": "item/item.xlsx",
+          "sheet": "ItemBase",
+          "operation": "add",
+          "status": "missing",
+          "table_sheet_hit": false,
+          "row_located": false,
+          "field_score": 0.0,
+          "concrete_total": 4,
+          "concrete_matched": 0,
+          "note": "未找到新增行（该表/sheet 无新增记录，或已被其它 expected 项占用）",
+          "produces": "new_item_id",
+          "matched_op": false
+        },
+        {
+          "index": 1,
+          "table": "item/item.xlsx",
+          "sheet": "Equipment",
+          "operation": "add",
+          "status": "located_only",
+          "table_sheet_hit": true,
+          "row_located": true,
+          "field_score": 0.0,
+          "concrete_total": 4,
+          "concrete_matched": 0,
+          "note": "",
+          "produces": "new_equip_id",
+          "matched_op": true
+        }
+      ],
+      "ref_checks": [
+        {
+          "step_index": 1,
+          "field": "物品编号",
+          "placeholder": "<new_item_id>",
+          "producer_index": 0,
+          "expected_value": null,
+          "actual_value": null,
+          "ok": false,
+          "reason": "producer 步[0]未产出新 ID（行未生成或主键未回传）"
+        }
+      ],
+      "extra_ops": 3,
+      "extra_ops_off_table": 0,
+      "n_expected": 2,
+      "n_effective": 2,
+      "locate_rate": 0.5,
+      "coverage": 0.5,
+      "field_accuracy": 0.0,
+      "strict_pass": false,
+      "truth_ok": false,
+      "chain_complete": false,
+      "ref_total": 1,
+      "ref_ok": 0,
+      "ref_consistency_rate": 0.0,
+      "producers_total": 2,
+      "producers_resolved": 1,
+      "fixture_errors": [],
+      "fixture_error": false,
+      "error_type": "unknown",
+      "llm_stats": {
+        "total_calls": 6,
+        "total_tokens": 5963,
+        "by_site": {
+          "pipeline_merge": {
+            "calls": 2,
+            "tokens": 3261
+          },
+          "react": {
+            "calls": 1,
+            "tokens": 860
+          },
+          "induce_anti_pattern": {
+            "calls": 1,
+            "tokens": 838
+          },
+          "summarize": {
+            "calls": 2,
+            "tokens": 1004
+          }
+        },
+        "success_path_calls": 6,
+        "failure_path_calls": 0
+      }
+    }
+  ]
+}

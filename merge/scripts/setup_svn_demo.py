@@ -1,0 +1,84 @@
+"""一键搭建 SVN demo fixture（merge/svn/demo_svn/），供合并引导使用。
+
+串联 6 个脚本：
+  1. build_svn_real.py          — svnadmin create + trunk/dev1/dev2/subdev_1 基础（r1-r8）
+  2. build_svn_small_branches.py — 新增 4 个小表分支 dev3/dev4/subdev_2/subdev_3（排除大表）
+  3. seed_svn_conflicts.py       — 追加首批冲突数据
+  4. seed_svn_conflicts2.py     — 扩充冲突点
+  5. seed_more_conflicts.py     — 再追加
+  6. seed_safe_conflicts.py     — 补充安全冲突
+
+其他用户 clone 项目后，只需本机装有 svn CLI（TortoiseSVN 等），直接运行：
+    python merge/scripts/setup_svn_demo.py
+即可从项目内置种子数据（merge/_seed_data/）自包含搭建完整 demo fixture。
+
+数据源默认 merge/_seed_data/，可用 --src 覆盖（如指向桌面 Merge测试集）。
+--clean 透传给 build_svn_real，先删旧 repo/wc 再重建。
+
+前置依赖：
+  - svn / svnadmin 命令行工具（TortoiseSVN 安装时勾选 command line tools）
+  - merge/_seed_data/ 目录（项目内置，随 svn checkout 获取）
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# 搭建顺序：build 必须最先，4 个 seed 依赖已建好的 wc
+PIPELINE = [
+    "build_svn_real.py",
+    "build_svn_small_branches.py",   # 新增 4 个小表分支 dev3/dev4/subdev_2/subdev_3
+    "seed_svn_conflicts.py",
+    "seed_svn_conflicts2.py",
+    "seed_more_conflicts.py",
+    "seed_safe_conflicts.py",
+]
+
+
+def _run_script(name: str, extra_args: list[str]) -> int:
+    """以子进程运行脚本，继承当前 Python 解释器，实时透传输出。"""
+    script = SCRIPT_DIR / name
+    cmd = [sys.executable, str(script), *extra_args]
+    print(f"\n>>> {name} {' '.join(extra_args) if extra_args else ''}".rstrip())
+    print("=" * 60)
+    r = subprocess.run(cmd)
+    if r.returncode != 0:
+        print(f"!!! {name} 失败（exit {r.returncode}），中止 pipeline", file=sys.stderr)
+    return r.returncode
+
+
+def main():
+    ap = argparse.ArgumentParser(description="一键搭建 SVN demo fixture（build + 4 seed）")
+    ap.add_argument("--src", help="覆盖默认数据源（merge/_seed_data/），如桌面 Merge测试集")
+    ap.add_argument("--clean", action="store_true", help="透传给 build_svn_real，先删旧 repo/wc 再重建")
+    ap.add_argument("--build-only", action="store_true", help="只跑 build_svn_real，跳过 4 个 seed")
+    args = ap.parse_args()
+
+    # build 脚本接收 --src/--clean；seed 脚本无参数
+    build_args: list[str] = []
+    if args.src:
+        build_args += ["--src", args.src]
+    if args.clean:
+        build_args += ["--clean"]
+
+    scripts = PIPELINE[:1] if args.build_only else PIPELINE
+
+    for i, name in enumerate(scripts, 1):
+        print(f"\n[{i}/{len(scripts)}] {name}")
+        extra = build_args if name == "build_svn_real.py" else []
+        rc = _run_script(name, extra)
+        if rc != 0:
+            sys.exit(rc)
+
+    print("\n" + "=" * 60)
+    print("SVN demo fixture 搭建完成。")
+    print("  仓库_svn/repo")
+    print("  工作副本: merge/svn/demo_svn/wc/{trunk,branches/dev1,branches/dev2,branches/subdev_1}")
+    print("           新增小表分支: wc/branches/{dev3,dev4,subdev_2,subdev_3}（排除 monster/skill_level/item_drop）")
+    print("  合并引导 /api/merge/branch/dirs 可见全部 8 个分支。")
+
+
+if __name__ == "__main__":
+    main()

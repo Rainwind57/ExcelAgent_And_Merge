@@ -1,0 +1,80 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+.venv
+uv.lock
+
+# Node / Frontend
+node_modules
+frontend/node_modules
+frontend/dist
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Snapshots
+.snapshots
+
+# SVN 两种方式的本地数据（物理隔离，互不交错；均由脚本/svn 命令生成，不应提交）
+# 方式一：demo 快照（merge/demo/，由 merge/scripts/build_svn_demo.py 生成）
+merge/demo
+# 方式二：真实 SVN 仓库与工作副本（merge/svn/，svnadmin create + svn checkout 初始化）
+merge/svn
+
+# Server runtime
+backups
+merge_sessions
+downloads
+server_run.log
+*_debug.log
+resources/.history
+
+# Skill 自动派生产物（regenerate_skills 每次按真实表结构重算 L1_derived，
+# 启动/deploy 都会重写，提交会导致每次 update 冲突，勿跟踪）
+server/agent/excel/skills/L1_derived
+
+# Secrets (real credentials live in .env, never commit)
+.env
+.env.local
+.env.*.local
+
+# Codemaker / Claude
+.codemap
+.codemaker
+.claude
+.openspec
+
+# TODO
+TODO.md
+
+# Agent runtime artifacts
+# (evidence/*.jsonl 由 evidence/ 目录自身 svn:ignore 控制，root 路径模式无效)
+dialogs
+dialog_examples
+dialog_failures
+*.runtime.json
+*.runtime.yaml
+anti_pattern_signals.jsonl
+column_alias_candidates.jsonl
+quarantine
+tests/reports
+*.log
+
+server/agent/excel/evidence
+
+# openspec
+openspec
+
+merge/mergebase
+merge/history
+merge/src/devbranch/reward_consolidated.xlsx
+merge/src/devbranch/reward_merged_devbranch1.xlsx

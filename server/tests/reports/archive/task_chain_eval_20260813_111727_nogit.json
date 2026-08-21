@@ -1,0 +1,493 @@
+{
+  "_header": {
+    "run_id": "20260813_111727_nogit",
+    "git_hash": "nogit",
+    "generated_at": "2026-08-13 11:17:27",
+    "script": "task_chain_eval",
+    "case_count": 0
+  },
+  "results": {
+    "meta": {
+      "start": 1,
+      "end": 1,
+      "done": 1,
+      "span": 1,
+      "total_all": 1,
+      "last_cid": 1
+    },
+    "aggregate": {
+      "n": 1,
+      "n_total": 1,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.0,
+      "truth_ok_rate": 0.0,
+      "chain_complete_rate": 0.0,
+      "strict_pass_rate": 0.0,
+      "locate_rate": 0.9091,
+      "coverage": 0.8182,
+      "field_accuracy": 0.5648,
+      "ref_consistency_rate": 0.625,
+      "producers_resolve_rate": 0.9,
+      "avg_extra_ops": 4,
+      "avg_extra_off_table": 0,
+      "avg_elapsed_ms": 126018.2,
+      "p50_elapsed_ms": 126018.2,
+      "p95_elapsed_ms": 126018.2,
+      "total_elapsed_s": 126.0,
+      "error_type_distribution": {
+        "unknown": 1
+      },
+      "total_llm_calls": 29,
+      "total_tokens": 29362,
+      "avg_llm_calls": 29,
+      "success_path_calls": 29,
+      "failure_path_calls": 0
+    },
+    "failures": {
+      "modes": {
+        "parse_or_exec_failed": 0,
+        "table_sheet_miss": 1,
+        "row_missing": 1,
+        "field_error": 7,
+        "ref_broken": 4,
+        "producer_not_resolved": 2,
+        "extra_writes": 0,
+        "precondition_missing": 0
+      },
+      "samples": {
+        "table_sheet_miss": [
+          1
+        ],
+        "row_missing": [
+          1
+        ],
+        "field_error": [
+          1
+        ],
+        "ref_broken": [
+          1
+        ],
+        "producer_not_resolved": [
+          1
+        ]
+      }
+    },
+    "skill": "on",
+    "results": [
+      {
+        "cid": 1,
+        "input_text": "新增一个任务NPC叫'寻宝老人'，model_id 1019，放在space_id 10001坐标(120,0,80)，玩家点击后弹出对话：老人说'年轻人，老朽有一事相求——我祖传的玉佩被山贼头目夺走，能否帮我寻回？'选项1'我帮你寻回'，选项2'我现在没空，稍后再来'。点击'我帮你寻回'后老人继续说'多谢！那山贼头目盘踞在space_id 10008，请击杀他取回玉佩，必有重谢。'，再点'我这就去'接下任务。配置对应支线任务'寻回玉佩'，任务ID 250020，任务组group_id 250，描述'帮寻宝老人从山贼头目处夺回祖传玉佩'，目标类型Combat，目标数据'combat_id:[25002001],npc_id:5025,count:1'，完成奖励reward_id 10090。在space_id 10008坐标(50,0,60)刷新山贼头目(npc_id 5025)供玩家击杀。同时把reward_id 10090的名称改为'寻回玉佩奖励'。",
+        "skill_enabled": true,
+        "ok": false,
+        "error": "失败：transaction_rollback - 跳过：依赖的前序 producer {3} 已失败（独立任务不受影响）",
+        "elapsed_ms": 126018.2,
+        "needs_confirm_used": false,
+        "steps": [
+          {
+            "index": 0,
+            "table": "entity_prefab.xlsx",
+            "sheet": "Base",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": "",
+            "produces": "new_prefab_id",
+            "matched_op": true
+          },
+          {
+            "index": 1,
+            "table": "interaction.xlsx",
+            "sheet": "Interaction",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 1,
+            "concrete_matched": 1,
+            "note": "",
+            "produces": "new_interaction_id",
+            "matched_op": true
+          },
+          {
+            "index": 2,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "located_only",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": "",
+            "produces": "new_conv_id_1",
+            "matched_op": true
+          },
+          {
+            "index": 3,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.5,
+            "concrete_total": 2,
+            "concrete_matched": 1,
+            "note": "",
+            "produces": "option_accept_id",
+            "matched_op": true
+          },
+          {
+            "index": 4,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "matched",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 1.0,
+            "concrete_total": 2,
+            "concrete_matched": 2,
+            "note": "",
+            "produces": "option_decline_id",
+            "matched_op": true
+          },
+          {
+            "index": 5,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConv",
+            "operation": "add",
+            "status": "missing",
+            "table_sheet_hit": true,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 1,
+            "concrete_matched": 0,
+            "note": "未找到新增行（该表/sheet 无新增记录，或已被其它 expected 项占用）",
+            "produces": "new_conv_id_2",
+            "matched_op": false
+          },
+          {
+            "index": 6,
+            "table": "interaction.xlsx",
+            "sheet": "InteractionConvOption",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.6666666666666666,
+            "concrete_total": 3,
+            "concrete_matched": 2,
+            "note": "",
+            "produces": "option_go_id",
+            "matched_op": true
+          },
+          {
+            "index": 7,
+            "table": "quest/quest.xlsx",
+            "sheet": "Quest",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.25,
+            "concrete_total": 8,
+            "concrete_matched": 2,
+            "note": "",
+            "produces": "new_quest_id",
+            "matched_op": true
+          },
+          {
+            "index": 8,
+            "table": "quest/spawn_quest_entity.xlsx",
+            "sheet": "SpawnQuestEntity",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.25,
+            "concrete_total": 4,
+            "concrete_matched": 1,
+            "note": "",
+            "produces": "new_spawn_quest_id",
+            "matched_op": true
+          },
+          {
+            "index": 9,
+            "table": "spawn_world_entity.xlsx",
+            "sheet": "SpawnWorldEntity",
+            "operation": "add",
+            "status": "partial",
+            "table_sheet_hit": true,
+            "row_located": true,
+            "field_score": 0.75,
+            "concrete_total": 4,
+            "concrete_matched": 3,
+            "note": "",
+            "produces": "new_spawn_id",
+            "matched_op": true
+          },
+          {
+            "index": 10,
+            "table": "reward.xlsx",
+            "sheet": "Reward",
+            "operation": "modify",
+            "status": "missing",
+            "table_sheet_hit": false,
+            "row_located": false,
+            "field_score": 0.0,
+            "concrete_total": 0,
+            "concrete_matched": 0,
+            "note": "未定位到 row_key 匹配的行操作",
+            "produces": "",
+            "matched_op": false
+          }
+        ],
+        "ref_checks": [
+          {
+            "step_index": 0,
+            "field": "prefab_id",
+            "placeholder": "<new_prefab_id>",
+            "producer_index": 0,
+            "expected_value": 10013112008,
+            "actual_value": 10013112008,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 0,
+            "field": "interaction_id",
+            "placeholder": "<new_interaction_id>",
+            "producer_index": 1,
+            "expected_value": 10065,
+            "actual_value": "10065",
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 1,
+            "field": "interaction_id",
+            "placeholder": "<new_interaction_id>",
+            "producer_index": 1,
+            "expected_value": 10065,
+            "actual_value": 10065,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 1,
+            "field": "effect.data.3006.conv_id",
+            "placeholder": "<new_conv_id_1>",
+            "producer_index": 2,
+            "expected_value": 20,
+            "actual_value": null,
+            "ok": false,
+            "reason": "引用断裂：期望 20，实际 None"
+          },
+          {
+            "step_index": 2,
+            "field": "conv_id",
+            "placeholder": "<new_conv_id_1>",
+            "producer_index": 2,
+            "expected_value": 20,
+            "actual_value": 20,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 2,
+            "field": "options[0]",
+            "placeholder": "<option_accept_id>",
+            "producer_index": 3,
+            "expected_value": 24,
+            "actual_value": "23",
+            "ok": false,
+            "reason": "引用断裂：期望 24，实际 '23'"
+          },
+          {
+            "step_index": 2,
+            "field": "options[1]",
+            "placeholder": "<option_decline_id>",
+            "producer_index": 4,
+            "expected_value": 22,
+            "actual_value": null,
+            "ok": false,
+            "reason": "引用断裂：期望 22，实际 None"
+          },
+          {
+            "step_index": 3,
+            "field": "option_id",
+            "placeholder": "<option_accept_id>",
+            "producer_index": 3,
+            "expected_value": 24,
+            "actual_value": 24,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 3,
+            "field": "option_function.data.1.conv_id",
+            "placeholder": "<new_conv_id_2>",
+            "producer_index": 5,
+            "expected_value": null,
+            "actual_value": null,
+            "ok": false,
+            "reason": "producer 步[5]未产出新 ID（行未生成或主键未回传）"
+          },
+          {
+            "step_index": 4,
+            "field": "option_id",
+            "placeholder": "<option_decline_id>",
+            "producer_index": 4,
+            "expected_value": 22,
+            "actual_value": 22,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 5,
+            "field": "conv_id",
+            "placeholder": "<new_conv_id_2>",
+            "producer_index": 5,
+            "expected_value": null,
+            "actual_value": null,
+            "ok": false,
+            "reason": "producer 步[5]未产出新 ID（行未生成或主键未回传）"
+          },
+          {
+            "step_index": 5,
+            "field": "options[0]",
+            "placeholder": "<option_go_id>",
+            "producer_index": 6,
+            "expected_value": 23,
+            "actual_value": null,
+            "ok": false,
+            "reason": "consumer 步未匹配到实际行操作"
+          },
+          {
+            "step_index": 6,
+            "field": "option_id",
+            "placeholder": "<option_go_id>",
+            "producer_index": 6,
+            "expected_value": 23,
+            "actual_value": 23,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 8,
+            "field": "spawn_id",
+            "placeholder": "<new_spawn_quest_id>",
+            "producer_index": 8,
+            "expected_value": 25001004,
+            "actual_value": 25001004,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 9,
+            "field": "spawn_id",
+            "placeholder": "<new_spawn_id>",
+            "producer_index": 9,
+            "expected_value": 10013111012,
+            "actual_value": 10013111012,
+            "ok": true,
+            "reason": "引用闭环成立"
+          },
+          {
+            "step_index": 9,
+            "field": "entity_prefab_id",
+            "placeholder": "<new_prefab_id>",
+            "producer_index": 0,
+            "expected_value": 10013112008,
+            "actual_value": "10013112008",
+            "ok": true,
+            "reason": "引用闭环成立"
+          }
+        ],
+        "extra_ops": 4,
+        "extra_ops_off_table": 0,
+        "n_expected": 11,
+        "n_effective": 11,
+        "locate_rate": 0.9091,
+        "coverage": 0.8182,
+        "field_accuracy": 0.5648,
+        "strict_pass": false,
+        "truth_ok": false,
+        "chain_complete": false,
+        "ref_total": 16,
+        "ref_ok": 10,
+        "ref_consistency_rate": 0.625,
+        "producers_total": 10,
+        "producers_resolved": 9,
+        "fixture_errors": [],
+        "fixture_error": false,
+        "error_type": "unknown",
+        "llm_stats": {
+          "total_calls": 29,
+          "total_tokens": 29362,
+          "by_site": {
+            "verify_intents": {
+              "calls": 1,
+              "tokens": 1641
+            },
+            "plan_operation": {
+              "calls": 10,
+              "tokens": 9282
+            },
+            "react": {
+              "calls": 7,
+              "tokens": 11141
+            },
+            "induce_anti_pattern": {
+              "calls": 3,
+              "tokens": 2398
+            },
+            "summarize": {
+              "calls": 8,
+              "tokens": 4900
+            }
+          },
+          "success_path_calls": 29,
+          "failure_path_calls": 0
+        }
+      }
+    ],
+    "summary": {
+      "n": 1,
+      "n_total": 1,
+      "n_excluded": 0,
+      "fixture_error_rate": 0.0,
+      "ok_rate": 0.0,
+      "truth_ok_rate": 0.0,
+      "chain_complete_rate": 0.0,
+      "strict_pass_rate": 0.0,
+      "locate_rate": 0.9091,
+      "coverage": 0.8182,
+      "field_accuracy": 0.5648,
+      "ref_consistency_rate": 0.625,
+      "producers_resolve_rate": 0.9,
+      "avg_extra_ops": 4,
+      "avg_extra_off_table": 0,
+      "avg_elapsed_ms": 126018.2,
+      "p50_elapsed_ms": 126018.2,
+      "p95_elapsed_ms": 126018.2,
+      "total_elapsed_s": 126.0,
+      "error_type_distribution": {
+        "unknown": 1
+      },
+      "total_llm_calls": 29,
+      "total_tokens": 29362,
+      "avg_llm_calls": 29,
+      "success_path_calls": 29,
+      "failure_path_calls": 0
+    }
+  }
+}

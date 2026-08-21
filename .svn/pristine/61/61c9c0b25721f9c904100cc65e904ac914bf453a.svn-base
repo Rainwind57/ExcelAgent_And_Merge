@@ -1,0 +1,354 @@
+"""公式处理 Agent 功能完整性验证脚本。
+
+独立可运行，产出结构化验证报告，证明 P0-1（§1.2 insert_row + §1.3 L2 语义原语）功能完整。
+
+用法:
+    python -m server.tests.verify_formula_agent
+    python -X utf8 -m server.tests.verify_formula_agent   # Windows 中文输出
+
+验证项（10 项）:
+  1. insert_row 机械位移（真实样本）
+  2. insert_row 边界（范围首行/内部扩展）
+  3. interpret_formula 汇总语义（真实样本）
+  4. interpret_formula 跨表/查表/动态函数
+  5. scan_sheet_formulas 全表扫描（真实样本）
+  6. preview_formula_impact append 语义缺口
+  7. preview_formula_impact insert/delete 机械位移
+  8. rewrite_formula 写入+缓存校验
+  9. agent 流程 A：append 扩展汇总（scan→preview→append→rewrite）
+  10. agent 流程 B：insert 机械正确无需 rewrite
+
+任一失败 exit code=1。
+"""
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+import openpyxl
+
+from server.agent.cli_interface import StubCodeMakerCLI
+
+ROOT = Path(__file__).resolve().parents[2]
+REAL_SAMPLE = ROOT / "resources/qa_test/formula_samples/formula_sum.xlsx"
+
+_passed = 0
+_failed = 0
+
+
+def _check(name: str, ok: bool, detail: str = "") -> bool:
+    """记录一项验证结果并打印。"""
+    global _passed, _failed
+    mark = "PASS" if ok else "FAIL"
+    print(f"  [{mark}] {name}")
+    if detail:
+        for line in detail.splitlines():
+            print(f"        {line}")
+    if ok:
+        _passed += 1
+    else:
+        _failed += 1
+    return ok
+
+
+def _build_sum_sample(d: Path) -> Path:
+    """数据行 F3:F12 各 =SUM(B:E)，汇总 F13=SUM(F3:F12)。"""
+    p = d / "sum.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "S"
+    ws.append(["id", "a", "b", "c", "d", "sum"])
+    ws.append(["int"] * 6)
+    for i in range(1, 11):
+        r = 2 + i
+        ws.append([i, i, i, i, i, f"=SUM(B{r}:E{r})"])
+    ws.append([99, "", "", "", "", "=SUM(F3:F12)"])
+    wb.save(p)
+    wb.close()
+    return p
+
+
+def _build_sep_summary_sample(d: Path) -> Path:
+    """汇总放 G 列（与被汇总 F 列分离），避免 rewrite 循环引用。"""
+    p = d / "sep.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "S"
+    ws.append(["id", "a", "b", "c", "d", "sum", "total"])
+    ws.append(["int"] * 7)
+    for i in range(1, 11):
+        r = 2 + i
+        ws.append([i, i, i, i, i, f"=SUM(B{r}:E{r})", ""])
+    ws.append([99, "", "", "", "", "", "=SUM(F3:F12)"])
+    wb.save(p)
+    wb.close()
+    return p
+
+
+def _build_cross_sample(d: Path) -> Path:
+    """跨表 VLOOKUP。"""
+    p = d / "cross.xlsx"
+    wb = openpyxl.Workbook()
+    main = wb.active
+    main.title = "Main"
+    ref = wb.create_sheet("Ref")
+    ref.append(["key", "val"])
+    ref.append(["int", "int"])
+    for i in range(1, 6):
+        ref.append([i, i * 100])
+    main.append(["id", "lookup"])
+    main.append(["int", "int"])
+    for i in range(1, 6):
+        r = 2 + i
+        main.append([i, f"=VLOOKUP(A{r},Ref!A:B,2,FALSE)"])
+    wb.save(p)
+    wb.close()
+    return p
+
+
+def _build_dynamic_sample(d: Path) -> Path:
+    """含 OFFSET 动态函数。"""
+    p = d / "dyn.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Dyn"
+    ws.append(["id", "v", "x", "dyn"])
+    ws.append(["int"] * 4)
+    for i in range(1, 4):
+        r = 2 + i
+        ws.append([i, i * 10, 0, f"=OFFSET(A1,{i},1)"])
+    wb.save(p)
+    wb.close()
+    return p
+
+
+def _load_formulas(path: Path, sheet: str) -> dict:
+    wb = openpyxl.load_workbook(path, data_only=False)
+    ws = wb[sheet]
+    out = {}
+    for row in ws.iter_rows():
+        for c in row:
+            if isinstance(c.value, str) and c.value.startswith("="):
+                out[c.coordinate] = c.value
+    wb.close()
+    return out
+
+
+# ============ 验证项 ============
+
+def v1_insert_row_real():
+    """1. insert_row 机械位移（真实样本副本）。"""
+    print("\n[1] insert_row 机械位移（真实 formula_sum.xlsx）")
+    if not REAL_SAMPLE.exists():
+        _check("真实样本存在", False, f"未找到 {REAL_SAMPLE}")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "f.xlsx"
+        shutil.copy2(REAL_SAMPLE, p)
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        r = cli.insert_row(p, "SeasonStat", 5, values={1: 999})
+        formulas = _load_formulas(p, "SeasonStat")
+        # 汇总原 F15→F16，范围 F3:F14→F3:F15（插第5行在范围内→扩展含新行）
+        ok = r.ok and formulas.get("F16", "").lower() == "=sum(f3:f15)"
+        _check("insert_row 真实样本位移正确", ok,
+               f"ok={r.ok}\nF16={formulas.get('F16')!r} 期望='=SUM(F3:F15)'")
+
+
+def v2_insert_row_boundary():
+    """2. insert_row 边界：范围首行下移 / 内部扩展。"""
+    print("\n[2] insert_row 边界（范围首行 vs 内部）")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sum_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        # 边界：插在范围首行(3) → 范围下移 F3:F12→F4:F13（Excel 兼容）
+        cli.insert_row(p, "S", 3, values={1: 777})
+        f = _load_formulas(p, "S")
+        ok1 = f.get("F14", "").lower() == "=sum(f4:f13)"
+        _check("范围首行插行→范围下移跟数据", ok1, f"F14={f.get('F14')!r}")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sum_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        # 内部：插第5行（范围内）→ 扩展 F3:F12→F3:F13
+        cli.insert_row(p, "S", 5, values={1: 888})
+        f = _load_formulas(p, "S")
+        ok2 = f.get("F14", "").lower() == "=sum(f3:f13)"
+        _check("范围内部插行→扩展含新行", ok2, f"F14={f.get('F14')!r}")
+
+
+def v3_interpret_real():
+    """3. interpret_formula 汇总语义（真实样本）。"""
+    print("\n[3] interpret_formula 汇总语义（真实 formula_sum.xlsx F15）")
+    if not REAL_SAMPLE.exists():
+        _check("真实样本存在", False)
+        return
+    cli = StubCodeMakerCLI("resources", data_start_row=3)
+    s = cli.interpret_formula(REAL_SAMPLE, "SeasonStat", "F15")
+    ok = (s.formula == "=SUM(F3:F14)" and s.is_aggregate
+          and s.covers_data_area and s.is_last_row and not s.is_cross_sheet)
+    _check("汇总语义解析正确", ok,
+           f"formula={s.formula}\naggregate={s.is_aggregate} covers_data={s.covers_data_area} "
+           f"last_row={s.is_last_row}\nnotes={s.notes}")
+
+
+def v4_interpret_special():
+    """4. interpret 跨表/查表/动态函数。"""
+    print("\n[4] interpret_formula 跨表/查表/动态函数")
+    with tempfile.TemporaryDirectory() as d:
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        # 跨表 + 查表
+        pc = _build_cross_sample(Path(d))
+        sc = cli.interpret_formula(pc, "Main", "B3")
+        ok1 = sc.is_lookup and sc.is_cross_sheet and any(r.sheet == "Ref" for r in sc.refs)
+        _check("跨表 VLOOKUP（is_lookup + is_cross_sheet）", ok1,
+               f"formula={sc.formula}\nlookup={sc.is_lookup} cross={sc.is_cross_sheet}")
+        # 动态函数
+        pd = _build_dynamic_sample(Path(d))
+        sd = cli.interpret_formula(pd, "Dyn", "D3")
+        ok2 = sd.has_dynamic_func
+        _check("OFFSET 动态函数（has_dynamic_func）", ok2,
+               f"formula={sd.formula}\nhas_dynamic_func={sd.has_dynamic_func}")
+
+
+def v5_scan_real():
+    """5. scan_sheet_formulas 全表扫描（真实样本）。"""
+    print("\n[5] scan_sheet_formulas（真实 formula_sum.xlsx）")
+    if not REAL_SAMPLE.exists():
+        _check("真实样本存在", False)
+        return
+    cli = StubCodeMakerCLI("resources", data_start_row=3)
+    sems = cli.scan_sheet_formulas(REAL_SAMPLE, "SeasonStat")
+    summaries = [s for s in sems if s.is_aggregate and s.is_last_row and s.covers_data_area]
+    ok = len(sems) == 39 and len(summaries) == 3  # F15/G15/H15
+    _check("扫描识别 39 公式 + 3 末行汇总", ok,
+           f"total={len(sems)} summaries={[s.cell for s in summaries]}")
+
+
+def v6_preview_append():
+    """6. preview append 语义缺口。"""
+    print("\n[6] preview_formula_impact append 语义缺口")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sum_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        r = cli.preview_formula_impact(p, "S", {"kind": "append_rows", "count": 3})
+        ok = r.needs_agent_decision and any("F13" in g for g in r.semantic_gaps)
+        _check("append 预演标注汇总缺口", ok,
+               f"needs_decision={r.needs_agent_decision}\n"
+               + "\n".join(f"  gap: {g}" for g in r.semantic_gaps))
+
+
+def v7_preview_mechanical():
+    """7. preview insert/delete 机械位移。"""
+    print("\n[7] preview_formula_impact insert/delete 机械位移")
+    with tempfile.TemporaryDirectory() as d:
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        # insert：机械扩展，无缺口
+        p1 = _build_sum_sample(Path(d))
+        r1 = cli.preview_formula_impact(p1, "S", {"kind": "insert_row", "row": 5})
+        f13 = next(i for i in r1.impacts if i.cell == "F13")
+        ok1 = (not r1.needs_agent_decision and f13.changed
+               and f13.formula_after.lower() == "=sum(f3:f13)")
+        _check("insert 预演机械扩展无缺口", ok1,
+               f"needs_decision={r1.needs_agent_decision}\n"
+               f"F13: {f13.formula_before} -> {f13.formula_after}")
+        # delete_row：单点 #REF!
+        p2 = _build_sum_sample(Path(d))
+        wb = openpyxl.load_workbook(p2)
+        wb["S"]["H1"] = "=A5"
+        wb.save(p2); wb.close()
+        r2 = cli.preview_formula_impact(p2, "S", {"kind": "delete_row", "row": 5})
+        h1 = next(i for i in r2.impacts if i.cell == "H1")
+        ok2 = h1.has_ref_error and "#REF!" in h1.formula_after
+        _check("delete_row 预演 #REF! 标记", ok2,
+               f"H1: {h1.formula_before} -> {h1.formula_after} ref_err={h1.has_ref_error}")
+        # delete_col：#REF! + 右侧位移
+        p3 = Path(d) / "mul.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "M"
+        ws.append(["id", "a", "c", "d", "prod"])
+        ws.append(["int"] * 5)
+        ws.append([1, 1, 2, 3, "=C3*D3"])
+        wb.save(p3); wb.close()
+        r3 = cli.preview_formula_impact(p3, "M", {"kind": "delete_col", "col": 3})
+        e3 = next(i for i in r3.impacts if i.cell == "E3")
+        ok3 = e3.has_ref_error and e3.formula_after.lower() == "=#ref!*c3"
+        _check("delete_col 预演 #REF! + 位移", ok3,
+               f"E3: {e3.formula_before} -> {e3.formula_after}")
+
+
+def v8_rewrite():
+    """8. rewrite_formula 写入+缓存校验。"""
+    print("\n[8] rewrite_formula 写入 + 缓存校验")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sum_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        r = cli.rewrite_formula(p, "S", "F13", "=SUM(F3:F15)")
+        f = _load_formulas(p, "S")
+        ok = r.ok and f.get("F13") == "=SUM(F3:F15)"
+        _check("rewrite 写入成功 + 缓存校验", ok,
+               f"ok={r.ok} cache={r.cache_message}\nF13={f.get('F13')!r}")
+        # 失败路径：无效 sheet
+        r2 = cli.rewrite_formula(p, "NoSuch", "F13", "=SUM(F3:F15)")
+        _check("rewrite 无效 sheet 失败不崩溃", not r2.ok, f"ok={r2.ok} error={r2.error}")
+
+
+def v9_agent_flow_append():
+    """9. agent 流程 A：append 扩展汇总。"""
+    print("\n[9] agent 流程 A：scan→preview→append→rewrite")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sep_summary_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        sems = cli.scan_sheet_formulas(p, "S")
+        summary = next((s for s in sems if s.is_aggregate and s.is_last_row and s.covers_data_area), None)
+        ok1 = summary is not None and summary.cell == "G13"
+        _check("scan 定位末行汇总 G13", ok1, f"cell={summary.cell if summary else None}")
+        report = cli.preview_formula_impact(p, "S", {"kind": "append_rows", "count": 3})
+        ok2 = report.needs_agent_decision
+        _check("preview 标注 append 缺口", ok2, report.semantic_gaps[0] if report.semantic_gaps else "无缺口")
+        for i in range(3):
+            cli.append_row(p, "S", {1: 100 + i, 2: 1, 3: 1, 4: 1, 5: 1, 6: f"=SUM(B{14+i}:E{14+i})"})
+        r = cli.rewrite_formula(p, "S", "G13", "=SUM(F3:F16)")
+        f = _load_formulas(p, "S")
+        ok3 = r.ok and f.get("G13") == "=SUM(F3:F16)"
+        _check("append + rewrite 扩展汇总闭环", ok3,
+               f"rewrite ok={r.ok}\nG13={f.get('G13')!r}")
+
+
+def v10_agent_flow_insert():
+    """10. agent 流程 B：insert 机械正确无需 rewrite。"""
+    print("\n[10] agent 流程 B：preview 无缺口→insert 直接完成")
+    with tempfile.TemporaryDirectory() as d:
+        p = _build_sum_sample(Path(d))
+        cli = StubCodeMakerCLI(d, data_start_row=3)
+        report = cli.preview_formula_impact(p, "S", {"kind": "insert_row", "row": 5})
+        ok1 = not report.needs_agent_decision
+        _check("preview insert 无语义缺口", ok1, f"needs_decision={report.needs_agent_decision}")
+        cli.insert_row(p, "S", 5, values={1: 999})
+        f = _load_formulas(p, "S")
+        ok2 = f.get("F14", "").lower() == "=sum(f3:f13)"
+        _check("insert 机械位移已正确处理汇总", ok2, f"F14={f.get('F14')!r}")
+
+
+def main():
+    print("=" * 64)
+    print("公式处理 Agent 功能完整性验证（P0-1 §1.2 + §1.3）")
+    print("=" * 64)
+    v1_insert_row_real()
+    v2_insert_row_boundary()
+    v3_interpret_real()
+    v4_interpret_special()
+    v5_scan_real()
+    v6_preview_append()
+    v7_preview_mechanical()
+    v8_rewrite()
+    v9_agent_flow_append()
+    v10_agent_flow_insert()
+    print("\n" + "=" * 64)
+    print(f"验证结果：{_passed} 通过 / {_failed} 失败")
+    print("=" * 64)
+    sys.exit(0 if _failed == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>后端 Agent · 技术文档 · AI 配表助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">后端 Agent · 技术文档</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav"><a href="index.html">← 返回首页</a></nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">手册</div>
+      <nav class="nav">
+        <a href="user-manual.html"><span class="badge planner">用户</span> 后端 Agent</a>
+        <a class="active" href="tech-manual.html"><span class="badge tech">技术</span> 后端 Agent</a>
+        <a href="codemaker-user-manual.html"><span class="badge planner">用户</span> 配表模式</a>
+        <a href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 配表模式</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">本页章节</div>
+      <nav class="nav">
+        <a href="#arch">1. 整体架构</a>
+        <a href="#start">2. 启动</a>
+        <a href="#env">3. 环境变量</a>
+        <a href="#flow">4. 核心数据流</a>
+        <a href="#files">5. 核心文件</a>
+        <a href="#api">6. API 端点</a>
+        <a href="#excel">7. Excel 分层引擎</a>
+        <a href="#init">8. 启动初始化</a>
+        <a href="#debug">9. 故障排查</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <p class="muted"><span class="badge tech">技术 · 后端 Agent</span></p>
+    <h1>后端 Agent 技术使用文档</h1>
+    <p class="lead">面向开发 / 维护人员：Web 端「AI 配表助手」后端的架构、启动、数据流、API 与关键模块。使用侧操作见 <a href="user-manual.html">后端 Agent 用户手册</a>。</p>
+
+    <h2 id="arch">1. 整体架构</h2>
+    <p>系统由<strong>两个进程</strong>协作：</p>
+    <pre><code>┌──────────────────────────────────────────────────────┐
+│                  前端 (Vue 3 + Vite)                   │
+│                http://127.0.0.1:8000                   │
+└──────────────────────┬───────────────────────────────┘
+                       │ HTTP REST
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│              FastAPI 业务后端 (:8000)                   │
+│   AgentService · Orchestrator → QA / CRUD              │
+│   Diff/Merge Engine（openpyxl 本地操作）                │
+└───────────┬────────────────────────────────────────────┘
+            │ HTTP（Basic Auth）
+            ▼
+┌──────────────────────────────────────────────────────┐
+│           CodeMaker Serve (LLM 后端 :8666)             │
+│  /api/session · /session/{id}/message · /api/model     │
+└──────────────────────────────────────────────────────┘</code></pre>
+    <ul>
+      <li><strong>FastAPI 业务后端（:8000）</strong>：承载全部业务逻辑、Excel 读写、Diff/Merge 引擎、前端静态页。入口 <code>server/main.py</code>。</li>
+      <li><strong>CodeMaker Serve（:8666）</strong>：LLM 底座，仅负责自然语言理解。业务后端通过 HTTP 调用它做意图分类与解析。</li>
+    </ul>
+    <p>主智能体 <code>OrchestratorAgent</code> 负责对话 + 意图分类，分发到两个子智能体：</p>
+    <pre><code>FastAPI :8000 ──HTTP──▶ CodeMaker Serve :8666
+    │
+    ├─ qa 分支   ─▶ QAHandler（LLM 基于 table_index 回答结构/用途问题）
+    └─ crud 分支 ─▶ TableAgent（LLM 解析 → 列名匹配 → openpyxl 读写 Excel）</code></pre>
+
+    <h2 id="start">2. 启动</h2>
+    <h3>2.1 前置条件</h3>
+    <ul>
+      <li>Python 3.10+</li>
+      <li>uv（Python 包管理器）</li>
+      <li>CodeMaker CLI</li>
+      <li>Node.js（仅前端开发需要）</li>
+    </ul>
+    <pre><code>uv sync</code></pre>
+
+    <h3>2.2 一键脚本（推荐）</h3>
+    <pre><code>tools\start.bat</code></pre>
+    <p><code>start.bat</code> 自动加载 <code>.env</code>，启动 codemaker serve + FastAPI 两个常驻窗口。首次运行前若无 <code>.env</code>，先跑 <code>tools\deploy.bat</code>（从 <code>.env.example</code> 生成）。</p>
+
+    <h3>2.3 手动启动（两个终端）</h3>
+    <div class="callout warn"><span class="ctitle">注意</span>手动启动务必先把 <code>.env</code> 变量注入当前 shell，否则后端会回退默认模型导致调用失败。</div>
+    <pre><code># 终端1 — CodeMaker Serve（LLM 底座）
+$env:OPENCODE_SERVER_USERNAME="codemaker"
+$env:OPENCODE_SERVER_PASSWORD="CMniubi2026"
+codemaker serve --port 8666 --hostname 0.0.0.0
+
+# 终端2 — FastAPI 业务后端（PowerShell 先注入 .env）
+Get-Content .env | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $kv=$_.Split('=',2); Set-Item -Path ("env:"+$kv[0].Trim()) -Value $kv[1].Trim() }
+uv run python server/main.py</code></pre>
+    <p>cmd 加载 .env：<code>for /f "usebackq eol=# tokens=1,* delims==" %a in (.env) do @set "%a=%b"</code></p>
+
+    <h3>2.4 访问地址</h3>
+    <table>
+      <thead><tr><th>地址</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>http://127.0.0.1:8000</code></td><td>生产模式（后端直出前端）</td></tr>
+        <tr><td><code>http://localhost:5173</code></td><td>开发模式（<code>cd frontend &amp;&amp; npm install &amp;&amp; npm run dev</code>）</td></tr>
+        <tr><td><code>http://127.0.0.1:8000/docs</code></td><td>Swagger API 文档</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="env">3. 环境变量</h2>
+    <table>
+      <thead><tr><th>变量</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>CODEMAKER_SERVER_URL</code></td><td><code>http://127.0.0.1:8666</code></td><td>codemaker serve 地址</td></tr>
+        <tr><td><code>CODEMAKER_USERNAME</code></td><td>(空)</td><td>Basic auth 用户名</td></tr>
+        <tr><td><code>CODEMAKER_PASSWORD</code></td><td>(空)</td><td>Basic auth 密码</td></tr>
+        <tr><td><code>CODEMAKER_MODEL</code></td><td>(空)</td><td>格式 <code>providerID/modelID</code>，须用 serve 实际存在的 provider/model（见 <code>/api/model</code>）。serve 1.17 内置 provider <code>netease-codemaker</code>，如 <code>netease-codemaker/deepseek-v4-flash</code>（最便宜，默认）。后端走同步端点 <code>POST /session/{id}/message</code> 拿回复</td></tr>
+        <tr><td><code>CODEMAKER_API_TIMEOUT</code></td><td><code>120</code></td><td>API 超时秒数</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="flow">4. 核心数据流（CRUD）</h2>
+    <ol>
+      <li>用户在前端输入自然语言（如「把 ability 表里饕餮的攻击力改为 200」）</li>
+      <li>FastAPI <code>POST /api/agent/chat</code> 收到请求</li>
+      <li><code>AgentService</code> → <code>OrchestratorAgent.chat()</code> → LLM 分类为 <code>qa</code> 或 <code>crud</code></li>
+      <li><strong>crud 分支</strong> → <code>CodemakerNLParser.parse()</code> → HTTP <code>codemaker serve /session/{id}/message</code></li>
+      <li>LLM 返回 JSON：<code>{"action":"set","table_hint":"ability",...}</code></li>
+      <li><code>TableAgent</code> 定位表格 / 列 / 行，调用 openpyxl 执行 CRUD</li>
+      <li><strong>qa 分支</strong> → <code>QAHandler</code> 基于 <code>table_index</code> 让 LLM 回答结构/用途问题</li>
+      <li>结果返回前端</li>
+    </ol>
+
+    <h2 id="files">5. 核心文件</h2>
+    <pre><code>server/
+├── main.py                  # FastAPI 入口，注册路由 + 启动时构建索引/预生成 skills
+├── config.py                # 路径配置（RESOURCES_DIR / STATIC_DIR）
+├── routers/                 # API 路由层
+│   ├── agent.py             # /api/agent/*  聊天/流式/预览/批量/校验
+│   ├── tables.py            # /api/tables/* 浏览/搜索/增删改查（原子 API）
+│   ├── diff.py              # /api/compare, /api/merge 比对合并
+│   ├── merge_stages.py      # 三阶段引导合并
+│   ├── workflow.py          # /api/workflow/* 快照
+│   ├── validate.py          # /api/validate/id-scope 跨表 ID 校验
+│   └── skills.py            # /api/skills/* skill 清单/导出/diff
+├── agent/                   # AI 引擎（主子智能体架构）
+│   ├── orchestrator.py      # 主智能体：对话 + qa/crud 分类调度
+│   ├── codemaker_client.py  # codemaker serve HTTP 客户端
+│   ├── codemaker_parser.py  # 基于 serve API 的 NL 解析器
+│   ├── qa_handler.py        # QA 子智能体
+│   ├── agent.py             # TableAgent：CRUD 子智能体（执行层）
+│   ├── real_cli.py          # openpyxl Excel 操作
+│   └── excel/               # 分层解耦引擎（见第 7 章）
+├── engine/                  # 差异比对 & 合并引擎
+├── models/                  # Pydantic 模型
+├── services/                # 业务服务层（agent_service.py）
+└── static/                  # 前端打包产物</code></pre>
+
+    <h2 id="api">6. API 端点总览</h2>
+    <h3>6.1 Agent（<code>/api/agent</code>）</h3>
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>POST</td><td><code>/chat</code></td><td>自然语言对话（qa/crud 自动分类）</td></tr>
+        <tr><td>POST</td><td><code>/chat/stream</code></td><td>流式对话</td></tr>
+        <tr><td>POST</td><td><code>/preview</code></td><td>操作预览（不写盘）</td></tr>
+        <tr><td>GET</td><td><code>/history</code> · <code>/checkpoints</code></td><td>对话历史 / 检查点</td></tr>
+        <tr><td>POST</td><td><code>/rollback</code></td><td>回滚到检查点</td></tr>
+        <tr><td>POST</td><td><code>/batch</code></td><td>批量指令</td></tr>
+        <tr><td>POST</td><td><code>/validate</code> · <code>/suggest-merge</code></td><td>数据校验 / 合并建议</td></tr>
+      </tbody>
+    </table>
+
+    <h3>6.2 Tables（<code>/api/tables</code>）</h3>
+    <p>浏览、搜索、增删改查的原子 API（同时供 CodeMaker 配表模式复用）：</p>
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>GET</td><td><code>` `</code>（根）· <code>/search</code></td><td>所有表列表 / 全文搜索</td></tr>
+        <tr><td>GET</td><td><code>/{stem}</code> · <code>/{stem}/sheets/{sheet}</code></td><td>表详情 / sheet 分页数据</td></tr>
+        <tr><td>GET</td><td><code>/{stem}/sheets/{sheet}/columns</code> · <code>/suggest</code></td><td>列约束 / 相近项建议</td></tr>
+        <tr><td>POST</td><td><code>/cell/update</code> · <code>/cells/batch-update</code></td><td>单格 / 多格改值（事务性）</td></tr>
+        <tr><td>POST</td><td><code>/add-form/build</code>·<code>/validate</code>·<code>/commit</code></td><td>新增行三步</td></tr>
+        <tr><td>POST</td><td><code>/row/delete</code>·<code>/row/insert</code></td><td>删 / 插行</td></tr>
+        <tr><td>POST</td><td><code>/column/add</code>·<code>/column/delete</code></td><td>列增删（需 confirm）</td></tr>
+        <tr><td>GET/POST</td><td><code>/history</code> · <code>/history/rollback/{id}</code></td><td>操作历史 / 回滚</td></tr>
+      </tbody>
+    </table>
+
+    <h3>6.3 其他</h3>
+    <ul>
+      <li><strong>Diff/Merge</strong>：<code>/api/compare</code>、<code>/api/merge</code>、<code>compare-folder</code>、<code>compare-local</code>、<code>auto-merge</code>、<code>recommend</code>、<code>merge/history</code>；三阶段见 <code>merge_stages.py</code>（<code>stage1/2/3</code> 系列）。</li>
+      <li><code>GET /api/validate/id-scope</code> — 跨表 ID 编号段校验 + 查重。</li>
+      <li><code>POST /api/workflow/snapshot</code>、<code>GET /api/workflow/snapshots</code> — 快照。</li>
+      <li><code>GET /api/skills/manifest</code>·<code>/export</code>·<code>/diff</code> — skill 清单。</li>
+    </ul>
+
+    <h2 id="excel">7. Excel 分层解耦引擎（<code>server/agent/excel</code>）</h2>
+    <p>四大核心层 + 三大运行期机制：</p>
+    <table>
+      <thead><tr><th>层</th><th>模块</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td>层 1 · 表格注册中心</td><td><code>table_index.py</code> + <code>alias_mapping.py</code></td><td>启动扫描 <code>resources/</code> 提取列名/行数/样本 → <code>_table_index.json</code>；MD5 增量刷新；语义别名（灵兽→pet.xlsx）</td></tr>
+        <tr><td>层 2 · 模糊匹配引擎</td><td><code>fuzzy_matcher.py</code></td><td>子串 + Levenshtein + Jaccard 三路加权融合，置信度分高/中/低档供交互确认</td></tr>
+        <tr><td>层 3 · 表格定位器</td><td><code>table_locator.py</code></td><td>自然语言→文件+Sheet，5 级递进（精确 100%→别名 90%→模糊 80%→Sheet 75%→列名 60%），歧义返回候选不猜</td></tr>
+        <tr><td>层 4 · LLM 上下文构建器</td><td><code>llm_context.py</code></td><td>≤12000 token 动态上下文，注入 5 个 Skill + 操作规则，超限降级为摘要</td></tr>
+      </tbody>
+    </table>
+    <p><strong>运行期机制：</strong></p>
+    <ul>
+      <li><strong>文件监听</strong>（<code>file_watcher.py</code>）：watchdog 防抖（1s）自动刷新索引。</li>
+      <li><strong>操作安全</strong>（<code>backup_audit.py</code>）：改前备份到 <code>server/backups/</code>，JSONL 审计日志，支持按备份/索引回滚。</li>
+      <li><strong>多表关联</strong>（<code>table_relations.py</code>）：<code>table_relations.json</code> 外键图谱，跨表查询把关联表结构一并注入上下文。</li>
+    </ul>
+
+    <h2 id="init">8. 启动时初始化</h2>
+    <p><code>server/main.py</code> 的 <code>startup</code> 事件：</p>
+    <ol>
+      <li><code>init_agent_service(RESOURCES_DIR)</code> — 初始化 AgentService 并构建索引。</li>
+      <li><code>regenerate_skills(RESOURCES_DIR)</code> — R25 轻量预生成 L1_derived skills，保证别名与真实表结构同步（非致命，失败仅跳过）。</li>
+    </ol>
+
+    <h2 id="debug">9. 故障排查</h2>
+    <table>
+      <thead><tr><th>现象</th><th>原因 / 处理</th></tr></thead>
+      <tbody>
+        <tr><td>「AI 服务未启动」</td><td>codemaker serve(:8666) 未运行</td></tr>
+        <tr><td>「底层模型调用失败」/ 403 余额不足</td><td><code>CODEMAKER_MODEL</code> 无效被回退默认模型或额度耗尽，改用 <code>/api/model</code> 中存在的免费模型</td></tr>
+        <tr><td>调用回退默认模型</td><td>手动启动时 <code>.env</code> 未注入当前 shell</td></tr>
+        <tr><td>索引与实际不符</td><td>触发文件监听刷新，或重启后端重新扫描</td></tr>
+        <tr><td>修改误操作</td><td>用 <code>backup_audit</code> 回滚，或 <code>/api/agent/rollback</code> 回到检查点</td></tr>
+      </tbody>
+    </table>
+
+    <hr class="hr">
+    <p class="muted">面向程序员，使用侧见 <a href="user-manual.html">后端 Agent 用户手册</a>；轻量的 CodeMaker 配表模式技术细节见 <a href="codemaker-tech-manual.html">配表模式技术文档</a>。</p>
+  </main>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.figure img').forEach(function (img) {
+      img.title = '点击查看原图';
+      img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+    });
+  });
+</script>
+</body>
+</html>

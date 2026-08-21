@@ -1,0 +1,628 @@
+"""LLM 上下文构建器与 Skill 注入（层4）。
+
+职责：
+  1. 每次调用 LLM 前，动态构建不超过 Token 限制的结构化上下文。
+  2. 注入 7 个 Skill 定义（locate_table / fuzzy_search_value / get_table_structure
+     / add_column / list_all_tables / analyze_enum_columns / update_enum_mapping）。
+  3. 组装系统提示词：表格结构摘要 + Skill 定义 + 操作规则。
+
+Skill 双重形态：
+  - 成功路径：build_skill_context 把 skill 定义拼进 prompt 作知识注入（零工具调用）。
+  - repair 路径：SkillExecutor 经 tools.make_skill_tools 注册为 LangChain @tool，
+    供 Level 2 ReAct 循环 LLM 自主探查调用（capability: skill-executor-tools）。
+
+Token 感知策略：
+  - 估算：中文 ≈ 2 token/字，英文/ASCII ≈ 0.5 token/字符，其它 ≈ 1 token/字符。
+  - 上限 12000 token，预留 2000 token 安全余量（有效预算 10000）。
+  - 增量加载：聚焦表格注入完整结构，剩余空间补充其他表格简要摘要（文件名+Sheet名）。
+  - 降级：全量摘要超限时，自动降级为简要摘要模式（聚焦表也降为摘要）。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+from .cli_interface import CodeMakerCLI
+from .fuzzy_matcher import FuzzyMatcher, FuzzyCandidate
+from .table_index import TableMeta, load_index
+from .table_locator import TableLocator, LocateResult, LocateOutcome
+from .table_relations import RelationGraph
+
+
+# ── Token 估算 ───────────────────────────────────────────────
+
+def estimate_tokens(text: str) -> int:
+    """估算文本 token 数。
+
+    中文（CJK）字符 ≈ 2 token/字；ASCII 字符 ≈ 0.5 token/字符；其它 ≈ 1 token/字符。
+    向上取整。
+    """
+    if not text:
+        return 0
+    cjk = 0
+    ascii_cnt = 0
+    other = 0
+    for ch in text:
+        cp = ord(ch)
+        if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+            cjk += 1
+        elif ch.isascii():
+            ascii_cnt += 1
+        else:
+            other += 1
+    # 0.5 token/ascii → 每 2 个 ascii 1 token；向上取整统一用 math.ceil
+    import math
+    return math.ceil(cjk * 2 + ascii_cnt * 0.5 + other * 1)
+
+
+# ── Skill 定义 ───────────────────────────────────────────────
+
+SKILL_DEFINITIONS: list[dict] = [
+    {
+        "name": "locate_table",
+        "description": "根据自然语言描述定位到具体的表格文件和 Sheet。采用 5 级递进策略"
+                       "（精确文件名/别名/文件名模糊/Sheet名/列名），歧义时返回候选列表。",
+        "parameters": {"text": "str — 自然语言描述（如『灵兽的数据』）"},
+        "returns": "{'path': str, 'stem': str, 'sheet': str|None, 'confidence': float, "
+                   "'level': str, 'matched_term': str, 'ambiguous': [...]}",
+    },
+    {
+        "name": "fuzzy_search_value",
+        "description": "在候选值集合中模糊搜索，返回按相似度降序的候选列表。"
+                       "融合子串匹配、Levenshtein 编辑距离、字符重叠度三路评分。",
+        "parameters": {"query": "str — 查询值", "candidates": "list[str] — 候选值集合"},
+        "returns": "[{'value': str, 'score': float, 'confidence': 'high|medium|low', "
+                   "'reasons': [str]}]",
+    },
+    {
+        "name": "get_table_structure",
+        "description": "获取指定表格的完整结构：每个 Sheet 的列名、数据起始行、行数、前3行样本。",
+        "parameters": {"path": "str — 表格相对路径（如 pet/pet.xlsx）或 stem"},
+        "returns": "{'path': str, 'stem': str, 'sheets': [{'name', 'headers', 'header_names', "
+                   "'data_start_row', 'row_count', 'samples'}]}",
+    },
+    {
+        "name": "add_column",
+        "description": "向指定 Sheet 添加列。写入前应已通过 locate_table 与 get_table_structure "
+                       "确认目标，写操作需用户确认后执行。",
+        "parameters": {
+            "path": "str — 表格相对路径",
+            "sheet": "str — Sheet 名",
+            "name": "str — 新列表头名",
+            "after": "int|None — 插入位置（某列索引），None 追加末尾",
+            "type_str": "str|None — 类型标注（写入类型行）",
+            "default": "Any — 数据区默认值，None 不填充",
+        },
+        "returns": "{'ok': bool, 'data': {...}|None, 'error': str|None}",
+    },
+    {
+        "name": "list_all_tables",
+        "description": "列出所有已注册表格的简要信息（文件名 + Sheet 名列表）。",
+        "parameters": {},
+        "returns": "[{'path': str, 'stem': str, 'sheets': [str]}]",
+    },
+    {
+        "name": "analyze_enum_columns",
+        "description": "分析指定表的所有 int 列，扫描实际数据返回每列的唯一值集合、"
+                       "值域、是否疑似枚举列。用于让 AI 自己发现哪些 int 列有中文枚举含义"
+                       "（如品质1=蓝/2=紫/3=橙），无需人工配置。",
+        "parameters": {
+            "path": "str — 表格相对路径（如 pet/pet.xlsx）或 stem",
+            "sheet": "str|None — 指定 sheet，None 分析全部业务 sheet",
+            "max_unique": "int — 唯一值数上限，超过则不视为枚举候选（默认 20）",
+        },
+        "returns": "{'stem': str, 'columns': [{'col_name','col_index','col_type',"
+                   "'unique_values','value_count','value_range','is_enum_candidate',"
+                   "'has_existing_mapping'}]}",
+    },
+    {
+        "name": "update_enum_mapping",
+        "description": "为指定 int 列写入枚举映射（中文标签→数值），持久化到 "
+                       "enum_mappings.yaml 并刷新内存缓存。配合 analyze_enum_columns 使用："
+                       "AI 先看到列的实际值，再结合表头/说明/上下文推断每个值对应的中文含义，"
+                       "最后调用本工具写入。写入后后续自然语言输入『品质紫』即可自动转为 2。",
+        "parameters": {
+            "stem": "str — 表名（如 pet）",
+            "sheet": "str — sheet 名（如 Pet）",
+            "col_name": "str — 列名（如 灵兽品质）",
+            "mappings": "dict — 中文标签到数值的映射，如 {'蓝':1,'紫':2,'橙':3}",
+        },
+        "returns": "{'ok': bool, 'count': int, 'message': str}",
+    },
+]
+
+
+def format_skills(skills: list[dict] | None = None) -> str:
+    """把 Skill 定义格式化为可注入提示词的多行文本。"""
+    skills = skills if skills is not None else SKILL_DEFINITIONS
+    lines = ["## Skills（可用操作能力）", ""]
+    for i, s in enumerate(skills, start=1):
+        lines.append(f"### {i}. `{s['name']}`")
+        lines.append(f"描述：{s['description']}")
+        params = s.get("parameters", {})
+        if params:
+            lines.append("参数：")
+            for pname, pdesc in params.items():
+                lines.append(f"  - {pname}: {pdesc}")
+        lines.append(f"返回：{s.get('returns', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── 操作规则 ─────────────────────────────────────────────────
+
+OPERATION_RULES = """## 操作规则
+
+1. **定位优先**：任何增删改查操作前，先用 `locate_table` 确定目标文件与 Sheet，不要凭文件名猜测。
+2. **模糊匹配**：当查询值无法精确命中时，用 `fuzzy_search_value` 返回候选列表，绝不臆测唯一答案。
+3. **结构感知**：写入或加列前，用 `get_table_structure` 确认目标列存在、类型行与新列名不冲突。
+4. **交互确认**：定位出现歧义（多候选）或模糊匹配返回多个候选时，列出候选项请用户确认后再执行，不自动猜测。
+5. **路径规范**：所有文件路径使用相对 `resources/` 的正斜杠形式（如 `pet/pet.xlsx`），Sheet 名区分大小写。
+6. **枚举值映射**：如果列类型是 int 但用户用中文输入（如"品质紫"），保留中文原文。后端会根据枚举映射自动转换（如"紫"→2）。如果上下文提供了枚举映射，可直接使用数字值。
+7. **跨表操作**：当用户提到"进化链""进化成/进化为"时，涉及 pet（灵兽）和 pet_evolve（进化链）两张表。进化链的 宠物id 和 进化后的灵兽ID 均引用 pet 表的灵兽id。
+8. **枚举自动发现**：当遇到 int 列但用户用中文描述且无现有映射时，主动调用 `analyze_enum_columns` 查看该列的实际数据值（唯一值集合、值域），结合表头含义和说明 sheet 推断每个值对应的中文标签，再调用 `update_enum_mapping` 写入映射。写入后即可自动转换该列的中文输入。示例：发现"灵兽类型"列 unique=[1,2]，结合游戏常识推断 1=物攻 2=法攻，调用 update_enum_mapping 写入 {物攻:1, 法攻:2}。
+"""
+
+
+# ── 上下文构建 ───────────────────────────────────────────────
+
+@dataclass
+class ContextResult:
+    """build_context 的返回结果。"""
+    system_prompt: str
+    table_summary: str
+    skill_block: str
+    rules_block: str
+    token_used: int
+    token_budget: int
+    degraded: bool                 # 是否降级为简要摘要模式
+    focused_full: list[str] = field(default_factory=list)   # 注入完整结构的表 path
+    included_brief: list[str] = field(default_factory=list) # 注入简要摘要的表 path
+    omitted: list[str] = field(default_factory=list)        # 因超限被省略的表 path
+    relation_expanded: list[str] = field(default_factory=list)  # 经关系图谱扩展进来的关联表 path
+
+
+class LLMContextBuilder:
+    """Token 感知的 LLM 上下文构建器。
+
+    优先注入聚焦表格的完整结构，剩余预算补充其他表格简要摘要；超限时降级为全简要模式。
+    """
+
+    def __init__(self,
+                 index: list[TableMeta] | None = None,
+                 token_cap: int = 12000,
+                 safety_margin: int = 2000,
+                 relation_graph: RelationGraph | None = None):
+        self.index = index if index is not None else load_index()
+        self.token_cap = token_cap
+        self.safety_margin = safety_margin
+        # 关系图谱：开启后聚焦表会自动扩展含直接关联表，跨表结构一并注入
+        self.relation_graph = relation_graph
+        # 按 path 与 stem 建立快速查找
+        self._by_path: dict[str, TableMeta] = {t.path: t for t in self.index}
+        self._by_stem: dict[str, TableMeta] = {t.stem: t for t in self.index}
+
+    # ── 单表摘要 ─────────────────────────────────────────────
+
+    def table_brief(self, t: TableMeta) -> str:
+        """简要摘要：文件名 + Sheet 名列表（单行）。"""
+        sheets = ", ".join(s.name for s in t.sheets)
+        return f"- {t.path}  sheets=[{sheets}]"
+
+    def table_full(self, t: TableMeta) -> str:
+        """完整结构：每个 Sheet 的列名、行数、前3行样本。"""
+        lines = [f"### {t.path}  (stem={t.stem})"]
+        for s in t.sheets:
+            lines.append(f"- Sheet `{s.name}`: rows={s.row_count}, "
+                         f"data_start_row={s.data_start_row}")
+            lines.append(f"  列名: {s.header_names}")
+            if s.samples:
+                lines.append(f"  样本(前{len(s.samples)}行):")
+                for i, row in enumerate(s.samples, start=1):
+                    # 样本截断显示，避免过长
+                    cells = " | ".join(c for c in row[:8])
+                    lines.append(f"    {i}. {cells}")
+        return "\n".join(lines)
+
+    # ── 查找 ─────────────────────────────────────────────────
+
+    def find_table(self, key: str) -> Optional[TableMeta]:
+        """按 path 或 stem 查找表。"""
+        return self._by_path.get(key) or self._by_stem.get(key)
+
+    # ── 主构建 ───────────────────────────────────────────────
+
+    def _resolve_focused(self, focused: list[Any]) -> list[TableMeta]:
+        """把聚焦标识（path/stem/LocateResult）解析为 TableMeta 列表，去重保序。"""
+        out: list[TableMeta] = []
+        seen: set[str] = set()
+        for f in focused:
+            if isinstance(f, LocateResult):
+                key = f.path
+                t = self._by_path.get(key)
+            elif isinstance(f, TableMeta):
+                key = f.path
+                t = f
+            else:
+                key = str(f)
+                t = self.find_table(key)
+            if t is not None and t.path not in seen:
+                seen.add(t.path)
+                out.append(t)
+        return out
+
+    def _build_enum_context(self, focused_tables: list) -> str:
+        """为聚焦表构建枚举映射上下文文本。"""
+        try:
+            from .enum_resolver import get_enum_resolver
+        except ImportError:
+            return ""
+        er = get_enum_resolver()
+        stems = {t.stem for t in focused_tables if hasattr(t, "stem")}
+        parts: list[str] = []
+        for stem in stems:
+            ctx = er.format_context(stem)
+            if ctx:
+                parts.append(ctx)
+        return "\n".join(parts) if parts else ""
+
+    def build_context(self, focused: list[Any] | None = None) -> ContextResult:
+        """构建系统提示词上下文。
+
+        Args:
+            focused: 聚焦表标识列表（path / stem / LocateResult / TableMeta）。
+                     聚焦表优先注入完整结构；其余表注入简要摘要。
+
+        Returns:
+            ContextResult，含 system_prompt 与各项统计。
+        """
+        focused_tables = self._resolve_focused(focused or [])
+        # 关系图谱扩展：把聚焦表直接关联的表也纳入完整结构注入范围
+        relation_expanded: list[str] = []
+        if self.relation_graph is not None and focused_tables:
+            expanded_paths = self.relation_graph.expand([t.path for t in focused_tables])
+            relation_expanded = [p for p in expanded_paths if p not in {t.path for t in focused_tables}]
+            # 把扩展进来的关联表也加入 focused_tables（享受完整结构注入）
+            for p in relation_expanded:
+                t = self._by_path.get(p)
+                if t is not None and t not in focused_tables:
+                    focused_tables.append(t)
+        focused_paths = {t.path for t in focused_tables}
+        other_tables = [t for t in self.index if t.path not in focused_paths]
+
+        skill_block = format_skills()
+        rules_block = OPERATION_RULES
+        header = ("# 表格配置助手\n\n你是一个游戏配置表智能操作助手，可对 resources/ 下的 "
+                  "Excel 配置表进行增删查改。请严格遵守下方操作规则，优先调用 Skills 完成任务。\n")
+
+        # 固定部分 token：header + skills + rules + 摘要标题
+        fixed_text = header + "\n" + skill_block + "\n" + rules_block + "\n## 表格结构摘要\n"
+        fixed_tokens = estimate_tokens(fixed_text)
+        budget = self.token_cap - self.safety_margin - fixed_tokens
+
+        # ── 第一阶段：聚焦表完整结构 + 其他表简要摘要 ──
+        full_text_parts: list[str] = []
+        focused_full: list[str] = []
+        focused_brief_fallback: list[str] = []
+        used = 0
+        for t in focused_tables:
+            full = self.table_full(t) + "\n"
+            tk = estimate_tokens(full)
+            if used + tk <= budget:
+                full_text_parts.append(full)
+                focused_full.append(t.path)
+                used += tk
+            else:
+                # 单个聚焦表完整结构超预算 → 降级为简要
+                brief = self.table_brief(t) + "\n"
+                full_text_parts.append(brief)
+                focused_brief_fallback.append(t.path)
+                used += estimate_tokens(brief)
+
+        # 其他表简要摘要
+        brief_parts: list[str] = []
+        included_brief: list[str] = []
+        omitted: list[str] = []
+        overflow = False
+        for t in other_tables:
+            brief = self.table_brief(t) + "\n"
+            tk = estimate_tokens(brief)
+            if used + tk <= budget:
+                brief_parts.append(brief)
+                included_brief.append(t.path)
+                used += tk
+            else:
+                overflow = True
+                omitted.append(t.path)
+
+        # ── 第二阶段：降级 ──
+        # 若第一阶段出现超限（其他表有 omitted），或聚焦表被迫降为摘要，
+        # 则进入降级模式：所有表都只用简要摘要，能装多少装多少。
+        degraded = False
+        if overflow or focused_brief_fallback:
+            degraded = True
+            # 重建：全部表简要摘要
+            all_brief_parts: list[str] = []
+            new_included: list[str] = []
+            new_omitted: list[str] = []
+            used2 = 0
+            # 聚焦表优先（即使是降级，聚焦表也排在前面）
+            for t in focused_tables + other_tables:
+                if t.path in new_included:
+                    continue
+                brief = self.table_brief(t) + "\n"
+                tk = estimate_tokens(brief)
+                if used2 + tk <= budget:
+                    all_brief_parts.append(brief)
+                    new_included.append(t.path)
+                    used2 += tk
+                else:
+                    new_omitted.append(t.path)
+            full_text_parts = all_brief_parts
+            brief_parts = []
+            focused_full = []
+            included_brief = new_included
+            omitted = new_omitted
+            used = used2
+
+        table_summary = "".join(full_text_parts) + "".join(brief_parts)
+
+        # ── 枚举映射注入 ──
+        enum_text = self._build_enum_context(focused_tables)
+        if enum_text:
+            table_summary += "\n" + enum_text
+
+        system_prompt = fixed_text + table_summary
+        token_used = estimate_tokens(system_prompt)
+
+        return ContextResult(
+            system_prompt=system_prompt,
+            table_summary=table_summary,
+            skill_block=skill_block,
+            rules_block=rules_block,
+            token_used=token_used,
+            token_budget=self.token_cap - self.safety_margin,
+            degraded=degraded,
+            focused_full=focused_full,
+            included_brief=included_brief,
+            omitted=omitted,
+            relation_expanded=relation_expanded,
+        )
+
+
+# ── Skill 执行器 ─────────────────────────────────────────────
+
+class SkillExecutor:
+    """把 7 个 Skill 名称分派到底层引擎（定位器/模糊匹配/注册中心/CLI）。
+
+    读类 Skill 直接返回结构化结果；写类 Skill（add_column / update_enum_mapping）
+    经 tools.make_skill_tools 包装时返回确认提案，不直接落盘。
+
+    用途：repair Level 2 ReAct 循环的 tool 引擎（capability: skill-executor-tools）。
+    成功路径不走 SkillExecutor（用 build_skill_context 知识注入保持低延迟）。
+    """
+
+    def __init__(self,
+                 locator: TableLocator | None = None,
+                 fuzzy: FuzzyMatcher | None = None,
+                 index: list[TableMeta] | None = None,
+                 cli: CodeMakerCLI | None = None):
+        self.locator = locator or TableLocator(index=index)
+        self.fuzzy = fuzzy or FuzzyMatcher()
+        self.index = index if index is not None else load_index()
+        self.cli = cli
+        self._by_path = {t.path: t for t in self.index}
+        self._by_stem = {t.stem: t for t in self.index}
+
+    @classmethod
+    def for_agent(cls, cli: "CodeMakerCLI | None",
+                  index: "list[TableMeta] | None" = None) -> "SkillExecutor":
+        """为 TableAgent 构造 SkillExecutor，共享 agent 的 cli 与表索引。
+
+        repair 路径的 skill tool 与成功路径的 build_skill_context 数据源同源
+        （均基于 _table_index.json），由 TableAgent 持有单一实例避免重复加载与状态分裂。
+        """
+        return cls(cli=cli, index=index)
+
+    def _find(self, key: str) -> Optional[TableMeta]:
+        return self._by_path.get(key) or self._by_stem.get(key)
+
+    def call(self, skill: str, **kwargs) -> Any:
+        """按 Skill 名称调用。未知 Skill 抛 ValueError。"""
+        handler = getattr(self, f"_skill_{skill}", None)
+        if handler is None:
+            raise ValueError(f"未知 Skill: {skill}")
+        return handler(**kwargs)
+
+    # ── 读类 Skill ───────────────────────────────────────────
+
+    def _skill_locate_table(self, text: str, **_) -> dict:
+        out: LocateOutcome = self.locator.locate(text)
+        best = out.best
+        if best is None:
+            return {"path": None, "ambiguous": []}
+        return {
+            "path": best.path,
+            "stem": best.stem,
+            "sheet": best.sheet,
+            "confidence": best.confidence,
+            "level": best.level,
+            "matched_term": best.matched_term,
+            "ambiguous": [
+                {"path": a.path, "sheet": a.sheet, "confidence": a.confidence,
+                 "level": a.level, "matched_term": a.matched_term}
+                for a in out.ambiguous
+            ],
+        }
+
+    def _skill_fuzzy_search_value(self, query: str, candidates: list[str], **_) -> list[dict]:
+        res: list[FuzzyCandidate] = self.fuzzy.search(query, candidates)
+        return [
+            {"value": c.value, "score": c.score, "confidence": c.confidence,
+             "reasons": c.reasons}
+            for c in res
+        ]
+
+    def _skill_get_table_structure(self, path: str, **_) -> dict | None:
+        t = self._find(path)
+        if t is None:
+            return None
+        return {
+            "path": t.path,
+            "stem": t.stem,
+            "sheets": [
+                {"name": s.name, "headers": s.headers, "header_names": s.header_names,
+                 "data_start_row": s.data_start_row, "row_count": s.row_count,
+                 "samples": s.samples}
+                for s in t.sheets
+            ],
+        }
+
+    def _skill_list_all_tables(self, **_) -> list[dict]:
+        return [
+            {"path": t.path, "stem": t.stem, "sheets": [s.name for s in t.sheets]}
+            for t in self.index
+        ]
+
+    # ── 写类 Skill ───────────────────────────────────────────
+
+    def _skill_add_column(self, path: str, sheet: str, name: str,
+                          after: int | None = None, type_str: str | None = None,
+                          default: Any = None, **_) -> dict:
+        if self.cli is None:
+            return {"ok": False, "error": "未配置 CLI（CodeMakerCLI），无法执行写操作",
+                    "data": None}
+        from pathlib import Path
+        t = self._find(path)
+        if t is None:
+            return {"ok": False, "error": f"未找到表: {path}", "data": None}
+        result = self.cli.insert_column(Path(t.path), sheet, name,
+                                        after=after, type_str=type_str, default=default)
+        return {"ok": result.ok, "data": result.data, "error": result.error}
+
+    # ── 枚举分析 Skill ────────────────────────────────────────
+
+    def _skill_analyze_enum_columns(self, path: str, sheet: str | None = None,
+                                    max_unique: int = 20, **_) -> dict:
+        """分析指定表所有 int 列的实际数据值，识别候选枚举列。"""
+        t = self._find(path)
+        if t is None:
+            return {"stem": None, "columns": [], "error": f"未找到表: {path}"}
+
+        # table_index.TableMeta: sheets 是 list[SheetMeta]，无 columns/col_type
+        # 列类型从 value_constraints.yaml 查
+        from pathlib import Path
+        from .enum_resolver import get_enum_resolver
+
+        try:
+            import yaml as _yaml
+            vc_path = Path(__file__).parent / "skills" / "value_constraints.yaml"
+            vc_raw = _yaml.safe_load(vc_path.read_text(encoding="utf-8")) if vc_path.exists() else {}
+            vc = vc_raw.get("tables", {}) or {}
+        except Exception:
+            vc = {}
+
+        er = get_enum_resolver()
+
+        # 选 sheet
+        def _is_business(name: str) -> bool:
+            if not name or name.upper() == "CONFIG" or "说明" in name:
+                return False
+            return True
+
+        target_sheets = [s for s in t.sheets if _is_business(s.name)]
+        if sheet:
+            target_sheets = [s for s in target_sheets if s.name == sheet]
+        if not target_sheets:
+            return {"stem": t.stem, "columns": [], "error": "无业务 sheet"}
+
+        if self.cli is None:
+            return {"stem": t.stem, "columns": [],
+                    "error": "未配置 CLI，无法读取数据"}
+
+        results: list[dict] = []
+        for sm in target_sheets:
+            # 该 sheet 的列类型表 {col_name: type}
+            sheet_vc = vc.get(t.stem, {}).get(sm.name, {}).get("columns", {})
+            # header_names 是清理后列名，与 value_constraints 的 key 对齐
+            if not sm.header_names:
+                continue
+            try:
+                full_path = self.cli.workspace / t.path
+                rows = self.cli.read_sheet(full_path, sm.name)
+            except Exception as e:
+                results.append({"sheet": sm.name, "error": f"读取失败: {e}"})
+                continue
+
+            for col_idx, col_name in enumerate(sm.header_names):
+                col_type = sheet_vc.get(col_name, {}).get("type", "")
+                if not col_type or col_type.lower() not in ("int", "integer"):
+                    continue
+                # 收集该列所有非空 int 值
+                values: list[int] = []
+                for row in rows:
+                    if col_idx < len(row):
+                        v = row[col_idx]
+                        if v is None:
+                            continue
+                        try:
+                            values.append(int(v))
+                        except (ValueError, TypeError):
+                            continue
+                if not values:
+                    continue
+                unique = sorted(set(values))
+                is_candidate = len(unique) <= max_unique
+                has_mapping = er.has_enum(t.stem, sm.name, col_name)
+                results.append({
+                    "sheet": sm.name,
+                    "col_name": col_name,
+                    "col_index": col_idx,
+                    "col_type": col_type,
+                    "unique_values": unique,
+                    "value_count": len(unique),
+                    "value_range": [min(unique), max(unique)],
+                    "is_enum_candidate": is_candidate,
+                    "has_existing_mapping": has_mapping,
+                })
+
+        return {"stem": t.stem, "columns": results}
+
+    def _skill_update_enum_mapping(self, stem: str, sheet: str, col_name: str,
+                                   mappings: dict, **_) -> dict:
+        """写入/更新单列枚举映射，持久化到 enum_mappings.yaml 并刷新缓存。"""
+        from .enum_resolver import get_enum_resolver, reset_enum_resolver
+        try:
+            er = get_enum_resolver()
+            count = er.update_column(stem, sheet, col_name, mappings)
+            saved = er.save()
+            # 刷新全局单例，让后续 _coerce_value 立即生效
+            reset_enum_resolver()
+            return {
+                "ok": saved,
+                "count": count,
+                "message": (f"已写入 {stem}.{sheet}.{col_name} 枚举映射 {count} 条"
+                            if saved else "内存更新成功但持久化失败"),
+            }
+        except Exception as e:
+            return {"ok": False, "count": 0, "message": f"更新失败: {e}"}
+
+
+if __name__ == "__main__":
+    # 自测：构建上下文 + 执行读类 Skill
+    b = LLMContextBuilder()
+    # 聚焦 pet 表
+    ctx = b.build_context(focused=["pet"])
+    print(f"token_used={ctx.token_used}/{ctx.token_budget}  degraded={ctx.degraded}")
+    print(f"focused_full={ctx.focused_full}  brief={len(ctx.included_brief)}  omitted={len(ctx.omitted)}")
+    print("=== system_prompt 头部 ===")
+    print(ctx.system_prompt[:600])
+    print("...")
+    print("=== SkillExecutor ===")
+    ex = SkillExecutor()
+    print("locate_table 灵兽:", ex.call("locate_table", text="灵兽")["path"])
+    print("list_all_tables count:", len(ex.call("list_all_tables")))
+    print("get_table_structure pet:", {s["name"] for s in ex.call("get_table_structure", path="pet")["sheets"]})
+    print("fuzzy_search_value 刑天:", [c["value"] for c in ex.call("fuzzy_search_value", query="刑天", candidates=["刑天一阶", "刑天二阶", "饕餮"])])

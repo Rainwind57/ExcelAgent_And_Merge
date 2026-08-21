@@ -1,0 +1,263 @@
+"""表/sheet 检索器：自然语言 → 表 + sheet。
+
+策略：
+  1. 关键词匹配：用自然语言中的词与索引中每个表的 keywords 做交集，按匹配数排序
+  2. 若命中明确关键词（如"神通"）且只有一个表匹配，直接返回
+  3. 若多表命中，用余弦相似度在候选表间消歧
+  4. Sheet 选择：YAML 配置优先，其次用自然语言与 sheet 名/header 的余弦相似度
+
+索引由 index_builder.py 从 resources/ 自动扫描生成，无需手动维护映射表。
+YAML skill 文件（table_context.yaml）提供额外业务消歧关键词作为增强。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .column_matcher import _tokenize, _bow, _cosine
+from .table_index import TableMeta, SheetMeta, load_index, load_index_safe
+from .skill_loader import TableContextConfig, SheetAliasConfig
+
+
+def _keywords_of_meta(t: TableMeta, index_data: dict[str, dict] | None = None) -> set[str]:
+    """从 TableMeta + 索引 JSON 中提取合并后的关键词集合。优先用 JSON keywords 字段。"""
+    all_kw: set[str] = set()
+    # 从索引 JSON 的关键词字段获取（如果可用）
+    if index_data:
+        json_kw = index_data.get("keywords", [])
+        all_kw.update(json_kw)
+    # 兜底：从 stem + header_names 推断
+    all_kw.update(t.stem.replace("_", " ").split())
+    for s in t.sheets:
+        for hn in s.header_names:
+            if hn and len(hn) >= 2:
+                all_kw.add(hn)
+    return all_kw
+
+
+@dataclass
+class TableResolve:
+    table_stem: str
+    table_path: str
+    sheet: str
+    score: float
+    source: str          # "keyword" | "similarity" | "yaml_hint"
+    matched_term: str = ""
+
+
+class TableResolver:
+    """自然语言 → 表 + sheet。"""
+
+    def __init__(self, index: list[TableMeta] | None = None,
+                 ctx_cfg: TableContextConfig | None = None,
+                 sheet_cfg: SheetAliasConfig | None = None):
+        self.index = index or load_index_safe()
+        self.ctx_cfg = ctx_cfg or TableContextConfig.load()
+        self.sheet_cfg = sheet_cfg or SheetAliasConfig.load()
+        # skill 增强标志：sheet_cfg 非空视为 skill=on（启用反稀释 + 别名表级强信号）
+        self._skill_on = bool(self.sheet_cfg.mapping)
+
+        # Load JSON index for keyword access（防御式：并发原子写瞬间可能读到空文件）
+        # 容错：_table_index.json 可能被并发 refresh 写成空/截断（refresh_if_changed
+        # 的 write_text 非原子，agent_service 吞了其 OSError 后此处读到半截文件）。
+        # 读失败时回退空 dict，定位仅靠 TableMeta + ctx_cfg 关键词，不致命。
+        import json
+        idx_path = Path(__file__).parent / "_table_index.json"
+        self._json_index: dict[str, dict] = {}
+        if idx_path.exists():
+            try:
+                raw = idx_path.read_text(encoding="utf-8").strip()
+                if raw:
+                    for item in json.loads(raw):
+                        self._json_index[item["stem"]] = item
+            except (json.JSONDecodeError, ValueError, OSError, KeyError, TypeError) as e:
+                # 索引文件损坏/空（含并发写截断），不阻断 Agent 启动；下次 refresh 会重建。
+                # keyword 增强回退为空，定位仅靠 TableMeta + ctx_cfg 关键词，不致命。
+                import logging
+                logging.getLogger("aitable.resolver").warning(
+                    "_table_index.json 读取失败（%s），keyword 增强回退为空", e)
+                self._json_index = {}
+
+        self._stem_bows: dict[str, dict[str, int]] = {t.stem: _bow(_tokenize(t.stem)) for t in self.index}
+        self._stem_keywords: dict[str, set[str]] = {}
+        self._stem_paths: dict[str, str] = {}
+        for t in self.index:
+            json_entry = self._json_index.get(t.stem)
+            all_kw = _keywords_of_meta(t, json_entry)
+            for s in t.sheets:
+                if json_entry:
+                    for js in json_entry.get("sheets", []):
+                        if js["name"] == s.name:
+                            all_kw.update(js.get("keywords", []))
+                            break
+            # 合并 table_context.yaml 中的业务消歧关键词（含 2 字短词如"属性"）
+            ctx_tbl = self.ctx_cfg.mapping.get(t.stem, {})
+            for sheet_cfg in ctx_tbl.values():
+                all_kw.update(sheet_cfg.get("keywords", []))
+            self._stem_keywords[t.stem] = all_kw
+            self._stem_paths[t.stem] = t.path
+
+    def _find_table_meta(self, stem: str) -> Optional[TableMeta]:
+        """根据 stem 名查找对应的 TableMeta 对象。
+        
+        遍历索引表，按 stem 精确匹配。
+        """
+        for t in self.index:
+            if t.stem == stem:
+                return t
+        return None
+
+    def resolve(self, text: str) -> Optional[TableResolve]:
+        """自然语言文本 → 最佳匹配的表 + sheet。
+        
+        两层匹配策略：
+          第一层：关键词匹配 —— 用预计算的 keywords 集合与输入文本做子串命中，
+                  按命中数/总关键词数打分，长关键词有额外权重加成。
+          第二层：余弦相似度回退 —— 关键词无命中时，用词袋 + 余弦相似度在表 stem 间匹配，
+                  阈值 0.15 过滤噪声。
+        最后按分数降序取最优，进入 sheet 消歧。
+        """
+        if not text:
+            return None
+        text_l = text.lower()
+
+        # ── 第一层：关键词匹配（加权命中率+位置奖励）──
+        # skill=on：反稀释（封顶分母）+ 基础表强偏好 + 绝对命中数奖励
+        # skill=off：legacy 稀释评分（多 sheet 大表被惩罚）
+        scores: list[tuple[float, str, str]] = []
+        for stem, keywords in self._stem_keywords.items():
+            matched_kw: list[tuple[str, int, int]] = []
+            for kw in keywords:
+                kw_l = kw.lower()
+                pos = text_l.find(kw_l)
+                if pos >= 0:
+                    matched_kw.append((kw, len(kw), pos))
+            if matched_kw:
+                total_kw_len = sum(len(kw) for kw in keywords)
+                max_len = max(m[1] for m in matched_kw)
+                earliest_pos = min(m[2] for m in matched_kw)
+                position_bonus = 0.15 * (1 - min(earliest_pos / max(1, len(text_l)), 1.0))
+                seg_count = stem.count("_") + 1
+                if self._skill_on:
+                    # 反稀释：分母封顶 60，避免多 sheet 大表（pet/guild）被无限惩罚
+                    weighted_hit = sum(m[1] for m in matched_kw) / max(1, min(total_kw_len, 60))
+                    # 基础表强偏好（0.20/seg，原 0.05/seg 太弱被稀释压过）
+                    base_pref = 0.20 / seg_count
+                    # 绝对命中数奖励：覆盖面广的表加分（原公式只看比率，惩罚大表）
+                    match_count_bonus = 0.02 * len(matched_kw)
+                    # max_len 封顶 6：防跨表引用关键词（如 entity_prefab header 含"model_prefab"12字符）
+                    # 滥用长关键词拿高分压过真实目标表
+                    max_len_bonus = 0.1 * min(max_len, 6)
+                    score = weighted_hit + max_len_bonus + position_bonus + base_pref + match_count_bonus
+                else:
+                    weighted_hit = sum(m[1] for m in matched_kw) / max(1, total_kw_len)
+                    stem_bonus = 0.05 / seg_count
+                    score = weighted_hit + 0.1 * max_len + position_bonus + stem_bonus
+                scores.append((score, stem, ",".join(m[0] for m in matched_kw)))
+
+        # ── skill 增强：sheet 别名作为表级强信号 ──
+        # 文本含某表 sheet 别名（如"灵兽表"→pet.Pet）→ 该表强加分 0.30。
+        # 修复基础表输给衍生表（pet 输给 pet_refine）：别名是用户明确意图，权重最高。
+        if self._skill_on:
+            scored_stems = {s for _, s, _ in scores}
+            new_scores: list[tuple[float, str, str]] = []
+            for sc, stem, matched in scores:
+                bonus = 0.30 if self.sheet_cfg.sheet_for_text(stem, text) else 0.0
+                new_scores.append((sc + bonus, stem, matched + ",(alias)" if bonus else matched))
+            # 别名命中但无关键词匹配的表：补条目
+            for stem in self._stem_keywords:
+                if stem in scored_stems:
+                    continue
+                if self.sheet_cfg.sheet_for_text(stem, text):
+                    new_scores.append((0.30, stem, "(alias_only)"))
+            scores = new_scores
+
+        # ── 第二层：余弦相似度回退（对 stem + 中文 header_names）──
+        if not scores:
+            tokens = [_tokenize(w) for w in text_l.split()]
+            flat_tokens = [t for sub in tokens for t in sub]
+            q = _bow(flat_tokens)
+            for t in self.index:
+                chinese_terms = []
+                for s in t.sheets:
+                    for hn in s.header_names:
+                        if hn and any('\u4e00' <= c <= '\u9fff' for c in hn):
+                            chinese_terms.append(hn)
+                context_text = t.stem + " " + " ".join(chinese_terms)
+                stem_bow = _bow(_tokenize(context_text))
+                sc = _cosine(q, stem_bow)
+                if sc > 0.05:
+                    scores.append((sc, t.stem, f"(sim={sc:.2f})"))
+
+        if not scores:
+            return None
+
+        # 按分数降序，取最高分
+        scores.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_stem, matched = scores[0]
+        tmeta = self._find_table_meta(best_stem)
+        if tmeta is None:
+            return None
+
+        # ── Sheet 消歧：确定表后，选择最合适的 sheet ──
+        sheet = self._resolve_sheet(tmeta, text)
+        if sheet is None:
+            return None
+
+        return TableResolve(
+            table_stem=best_stem,
+            table_path=tmeta.path,
+            sheet=sheet,
+            score=min(best_score, 1.0),
+            source="keyword" if not matched.startswith("(sim=") else "similarity",
+            matched_term=matched,
+        )
+
+    def _resolve_sheet(self, tmeta: TableMeta, text: str) -> Optional[str]:
+        """在已确定的表中消歧选择具体 sheet。
+
+        优先级：
+          1. 单 sheet 表 → 直接返回
+          2. sheet 别名（文本中的业务别名 → 真实 sheet，取最长命中）
+          3. YAML 上下文关键词消歧
+          4. 余弦相似度 + 行数加权（对辅助类 sheet 降权）
+          5. 兜底：首个非辅助业务 sheet
+        """
+        sheets = [s for s in tmeta.sheets if s.name.lower() != "config"]
+        if not sheets:
+            return None
+        if len(sheets) == 1:
+            return sheets[0].name
+
+        # 优先级2：sheet 别名（业务别名 → 真实 sheet 名，取最长命中）
+        alias_sn = self.sheet_cfg.sheet_for_text(tmeta.stem, text)
+        if alias_sn and any(s.name == alias_sn for s in sheets):
+            return alias_sn
+
+        ctx_sheet = self.ctx_cfg.sheet_for_keywords(tmeta.stem, text)
+        if ctx_sheet and any(s.name == ctx_sheet for s in sheets):
+            return ctx_sheet
+
+        # 区分：辅助类 sheet（说明/备注/Sheet1/副本） vs 主数据 sheet
+        helper_keywords = ("说明", "备注", "副本", "Sheet1", "sheet1", "枚举", "配置")
+        data_sheets = [s for s in sheets if not any(kw in s.name for kw in helper_keywords)]
+        candidates = data_sheets if data_sheets else sheets
+
+        q = _bow(_tokenize(text))
+        best, best_score = None, 0.0
+        for s in candidates:
+            txt = s.name + " " + " ".join(s.header_names)
+            sc = _cosine(q, _bow(_tokenize(txt)))
+            row_bonus = min(s.row_count * 0.001, 0.1)
+            # 对辅助类 sheet 降权 30%
+            if any(kw in s.name for kw in helper_keywords):
+                row_bonus = 0
+                sc *= 0.7
+            sc += row_bonus
+            if sc > best_score:
+                best, best_score = s.name, sc
+        if best and best_score > 0.02:
+            return best
+        return sheets[0].name

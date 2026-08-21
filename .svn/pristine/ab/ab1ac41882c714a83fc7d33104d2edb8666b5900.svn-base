@@ -1,0 +1,191 @@
+# 配表知识库
+
+> CodeMaker 配表操作模式的知识库。进入模式后据此解析自然语言意图 + 调原子 API。
+> 本文件由 `install.py` 从 `tools/table-mode/知识库.md` 复制到 `.codemaker/table-mode/`，并伴随 `skills/` 目录（yaml 原文）。
+
+## 1. 实体 → 表路由
+
+用户说某实体类别时，路由到对应 `table_stem`（即 `resources/` 下的 xlsx 文件名去扩展名）：
+
+| 实体类别（自然语言） | table_stem | 主 sheet | 主名称列（一般规则） |
+|---|---|---|---|
+| 灵兽/宠物 | `pet` | `Pet` | 灵兽名称 |
+| 道具/物品 | `item` | `ItemBase` / `ItemType` | 道具名称 |
+| 神通 | `ability` | `Ability` | 神通名称 |
+| 英雄 | `hero` | `Hero` | 英雄名称 |
+| 英雄等级 | `hero_level` | `HeroLevel` | — |
+| 装备 | `equipment` | `EquipmentSlot` 等 | — |
+| 门派 | `school` | `School` | 门派名称 |
+| 建筑 | `building` | `BuildingType` | 建筑名称 |
+| 法宝 | `fabao` | `Fabao` | 法宝名称 |
+| 技能 | `spell` | `common_spell` | 技能名称 |
+| 仙友 | `assistant` | `Assistant` | 仙友名称 |
+| 仙友神通 | `assistant_ability` | `AssistantAbility` | — |
+| 仙友等级 | `assistant_level` | `AssistantLevel` | — |
+| 仙友秘法 | `assistant_mystic` | `AssistantMystic` | — |
+| 仙友仙器 | `assistant_weapon` | `AssistantWeapon` | — |
+| 洞府/城池 | `city` | `CityTemplate` | — |
+| 攻城 | `city_siege` | `SiegeAttackableBuilding` | — |
+| 帮派 | `guild` | `Const` / `Role` 等 | — |
+| 编号管理 | `id_mgr` | `SETTING` / `各模块编号占段表` | — |
+| 交互 | `interaction` | `Interaction` | — |
+| 配方 | `item_recipe` | `ItemRecipe` | — |
+| 邮件 | `mail` | `MailTemplate` | — |
+| 模型 | `model_prefab` | `MetaData` / `Model` | — |
+
+> **主名称列**：一般规则是"实体类别 + 名称"（灵兽→灵兽名称、建筑→建筑名称）。**真实列名以 `GET /api/tables/{stem}/sheets/{sheet}/columns` 或 `add-form/build` 返回为准**，不要臆测。
+
+## 2. Sheet 别名消歧
+
+多 sheet 表用业务别名指代真实 sheet（来源 `sheet_aliases.yaml`）。常用：
+
+| table_stem | 别名 | 真实 sheet |
+|---|---|---|
+| `pet` | 灵兽表/灵兽基础/基础 | `Pet` |
+| `item` | 道具类型→`ItemType`；道具基础/道具表→`ItemBase`；宝箱→`Chest`；药水→`Potion`；装备→`Equipment`；宝石→`Gem`；法宝→`Fabao` |
+| `building` | 建筑类型/建筑基础/建筑名称→`BuildingType`；建筑等级→`BuildingLevel`；建筑初始→`BuildingLevelInit` |
+| `fabao` | 法宝表/法宝基础/法宝描述→`Fabao`；法宝等级→`FabaoLevel`；法宝升级消耗→`FabaoUpgradeCost`；法宝槽位→`FabaoSlotUnlockCost`；法宝分组→`FabaoType`；法宝品质概率→`FabaoQuality` |
+| `ability` | 神通表/神通→`Ability` |
+| `hero` | 英雄表/英雄基础→`Hero` |
+| `spell` | 技能表/技能名称→`common_spell`；主动技能→`spell_data`；被动技能→`passive_data`；buff表→`buff_data` |
+| `city` | 洞府表/城池模板→`CityTemplate`；城市布局→`CityLayout`；城池等级→`CityLevelData` |
+| `guild` | 帮派常量→`Const`；帮派职位→`Role`；帮派大厅→`GuildHall`；帮派金库→`Vault`；帮派商店→`Store`；帮派技能→`SpellData` |
+| `equipment` | 装备槽位→`EquipmentSlot`；装备基础属性→`EquipmentBaseAttr`；装备附加属性→`EquipmentExtraAttr`；装备品质概率→`EquipmentQuality` |
+
+完整别名见 `.codemaker/table-mode/skills/sheet_aliases.yaml`。
+
+**R25 真实名优先**：表结构变更后别名 yaml 可能滞后。解析时优先调 `GET /api/tables/{stem}` 取真实 sheet 名，别名 yaml 仅作提示兜底；列名同理优先调 `GET /api/tables/{stem}/sheets/{sheet}?include_columns=1` 取真实列名。后端启动时自动 `regenerate_skills` 重算 L1_derived，保证别名与真实结构同步。
+
+## 3. 列别名
+
+用户输入的列名别名 → 真实列名（来源 `column_aliases.yaml`，全局通配 `*`）：
+
+| 用户输入 | 真实列名 |
+|---|---|
+| 名/名字/name/名称 | `名称` |
+| 描述/介绍/详情/desc | `描述` |
+| 图标/icon | `图标` |
+| 编号/no | `id` 或 `编号` |
+| 等级/level/lv | `等级` |
+| 备注 | `备注` |
+| 类型 | `类型` |
+| 品质 | `品质` |
+| 数量 | `数量` |
+| 价格 | `价格` |
+
+**中英对照（R14，双向）**：
+
+| 中文 | 英文列名 |
+|---|---|
+| 法宝/法宝类型 | `fabao_type` |
+| 法宝id/法宝编号 | `fabao_id` |
+| 灵根/灵根属性 | `spirit` |
+| 攻击/攻击力 | `atk` |
+
+## 4. 列短形式
+
+用户输入短形式 → 扩展真实列名（来源 `column_short_form.yaml`）：
+
+| 短形式 | 真实列名 |
+|---|---|
+| 名/名字/名子/称呼 | `名称` |
+| 描/说明/简介 | `描述` |
+| 图/icon/img | `图标` |
+| 号/编/序号 | `编号` |
+| 级/lv/level | `等级` |
+| 型/分类/类别 | `类型` |
+| 品/品级/品阶 | `品质` |
+| 数/量/个数 | `数量` |
+| 经/exp/经验值 | `经验` |
+| 价/钱/售价 | `价格` |
+| 注/说明备注 | `备注` |
+| 攻/物攻/法攻 | `攻击` |
+| 防/物防/法防 | `防御` |
+| 血/hp/血量 | `生命` |
+
+## 5. 行定位规则
+
+来源 `row_aliases.yaml`（全局通配）：
+
+- **locator_column**：`名称`（默认按名称列定位）
+- **match**：`contains`（包含匹配）
+
+例：用户说"名称为青锋" → 在 `名称` 列做 contains 匹配 `青锋`。多行命中时全部返回让用户选。
+
+若用户明确指出按其他列定位（如"法宝id为1001"），locator_column 改为该列（`fabao_id`）。
+
+## 6. 解析器配置
+
+来源 `parser_config.yaml`：
+
+- **前导动词**（提取业务值前剥离）：`给 将 把 为 让 使 对`
+  - 例："把法宝名称为青锋的攻击力改为100" → 剥离"把""为" → 法宝/名称为青锋/攻击力/改/100
+- **非业务 sheet 标记**（含任一字符串的 sheet 跳过）：`说明 Sheet1 程序用勿删 程序用 勿删 备注 CONFIG`
+
+## 7. 原子 API（简表）
+
+base = `http://127.0.0.1:8000`，用 `curl` 调。完整请求体见 `配表操作模式.md` §5。
+
+| 用途 | 方法 + 路径 |
+|---|---|
+| 列所有表 | `GET /api/tables` |
+| 搜索 | `GET /api/tables/search?q=关键词&table=限定表` |
+| 表详情 | `GET /api/tables/{stem}` |
+| sheet 数据 | `GET /api/tables/{stem}/sheets/{sheet}?page=1&page_size=100` |
+| 列约束 | `GET /api/tables/{stem}/sheets/{sheet}/columns` |
+| 跨表 ID 校验 | `GET /api/validate/id-scope` |
+| 改值 | `POST /api/tables/cell/update` `{table_stem, sheet, row, col, value}` |
+| 新增-构建 | `POST /api/tables/add-form/build` `{text}` |
+| 新增-校验 | `POST /api/tables/add-form/validate` `{table_stem, sheet, values}` |
+| 新增-提交 | `POST /api/tables/add-form/commit` `{table_stem, sheet, values, confirm?}` |
+
+## 8. 操作规则与示例
+
+### 8.1 改值流程
+
+用户："把法宝表名称为青锋的攻击力改成 100"
+
+1. 路由：法宝→`fabao`，sheet `Fabao`，列 攻击力→`atk`（或真实列名）
+2. `GET /api/tables/fabao/sheets/Fabao?page=1&page_size=1000` 读数据
+3. 在 `名称` 列 contains 匹配 `青锋` → 找到 Excel 行号 `row`
+4. `GET /api/tables/fabao/sheets/Fabao/columns` 确认 `atk` 列号 `col` + 类型（数字）+ 唯一性
+5. `POST /api/tables/cell/update` `{"table_stem":"fabao","sheet":"Fabao","row":<row>,"col":<col>,"value":"100"}`
+6. 返回：旧值→新值，提示校验结果
+
+### 8.2 新增流程
+
+用户："增加灵兽名称朱雀 成长率2.0"
+
+1. `POST /api/tables/add-form/build` `{"text":"增加灵兽"}` → 得 `table_stem=pet, sheet=Pet, columns, empty_row`
+2. 填 `values`：名称列="朱雀"，成长率列="2.0"（列号从 columns 找）
+3. `POST /api/tables/add-form/validate` → 查 errors/warnings
+4. `POST /api/tables/add-form/commit`（confirm 默认 false）
+5. 返回新增结果
+
+### 8.3 查询流程
+
+用户："查询建筑名称为瞭望塔的所有信息"
+
+1. 路由：建筑→`building`，sheet `BuildingType`
+2. `GET /api/tables/building/sheets/BuildingType?page=1&page_size=1000`
+3. 在 `建筑名称` 列 contains 匹配 `瞭望塔`
+4. 返回命中行的所有列值
+
+## 9. 公式处理要点
+
+含公式列的表（来源 `formula_agent.md`）：
+
+- **公式列识别**：`columns` API 标记的公式列，值是 `=SUM(...)` 等公式串
+- **公式重写不支持**：L2 语义原语（`interpret`/`scan`/`preview`/`rewrite`）仅暴露在 CLI 层，未挂 HTTP API，配表模式无法走完整 agent 重写闭环。若用户要改公式本身，提示"公式语义重写原语未暴露，请退出模式用 Web 端 agent"
+- **append_row 与汇总（真缺口）**：末尾追加行不会自动扩展 `=SUM(F3:F14)` 汇总范围 —— 这需 L2 语义原语理解公式意图才能闭环，当前无解，提示用户汇总可能需手动调整或退出模式用 Web 端 agent
+- **删/插行机械位移已生效**：`row/delete`、`row/insert`、`column/add`、`column/delete` 内部调 `formula_ref_shifter` 做公式引用机械位移（范围收缩/扩展/行号位移），配表模式可正常放行删/插行操作
+- **公式缓存自动保护**：所有写表路径经 `_save_with_cache_check`——save 前快照公式缓存 → save 后回读 → 丢失则 libreoffice 重算。改公式输入源后缓存值自动重算更新，用户无需手动处理缓存丢失
+
+## 10. 反模式与值约束
+
+来源 `L3_anti_patterns/anti_patterns.yaml` + `L1_derived/value_constraints.yaml`（当前均为空占位，skill_updater 运行后自动填充）：
+
+- **反模式类型**：`ambiguous_column`（列歧义→强制精确匹配）、`type_constraint`（类型约束→写非数字前确认）、`failed_operation`（失败操作→拒绝 dry-run）
+- **值约束**：类型/必填/唯一/外键/范围 —— 以 `columns` API 实时返回为准
+
+> 知识库 yaml 原文在 `.codemaker/table-mode/skills/`，可深入查询具体规则。

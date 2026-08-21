@@ -1,0 +1,236 @@
+"""T6 D6.4 验证：用户纠正识别（agent_service 跨轮缓存 + 比对）。
+
+覆盖：
+  - 上一轮无缓存 → 不触发纠正，本轮写入缓存
+  - 同表同 sheet 列 resolved 不同 → user_corrected=True + corrected_to=新列名
+  - 同表同 sheet 行 resolved 不同 → user_corrected=True + corrected_to=新行值
+  - 纠正关键词触发（"不是/搞错了/应该是/改回/不对/错了"）→ 强制纠正
+  - 不同表 → 不触发纠正
+  - needs_confirm=True → 跳过缓存更新
+  - 缓存正确写入下一轮可比对
+
+用法:
+    cd server
+    python -m tests.verify_t6_d64
+"""
+from __future__ import annotations
+
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, cond: bool, detail: str = ""):
+    results.append((name, cond, detail))
+    mark = "PASS" if cond else "FAIL"
+    print(f"{mark}  {name}" + (f"  [{detail}]" if detail and not cond else ""))
+
+
+def _make_result(table_stem="", sheet="", col_resolved=None,
+                 row_resolved=None, needs_confirm=False, ok=True):
+    """构造一个最小 AgentResult，只填纠正识别用到的字段。"""
+    from agent.agent import AgentResult, NLIntent
+    res = AgentResult(ok=ok, intent=NLIntent(action="set", target_field="",
+                                             table_hint="", value=""))
+    res.table_stem = table_stem
+    res.table_sheet = sheet
+    if col_resolved is not None:
+        res.col_evidence = {"resolved": col_resolved}
+    if row_resolved is not None:
+        res.row_evidence = {"resolved": row_resolved}
+    res.needs_confirm = needs_confirm
+    return res
+
+
+def test_first_round_no_correction():
+    """首轮无缓存 → 不触发纠正，缓存被写入。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)  # 不走 __init__（避免起 watcher/cli）
+    svc._session_last_evidence = {}
+
+    res = _make_result(table_stem="ability", sheet="Ability",
+                      col_resolved="名称", row_resolved="御剑·养剑")
+    svc._detect_user_correction(res, "sess_a", "把神通名改成XXX")
+
+    check("首轮无纠正", not res.user_corrected)
+    check("首轮缓存写入 table_stem",
+          svc._session_last_evidence.get("sess_a", {}).get("table_stem") == "ability")
+    check("首轮缓存写入 col_resolved",
+          svc._session_last_evidence.get("sess_a", {}).get("col_resolved") == "名称")
+    check("首轮缓存写入 row_resolved",
+          svc._session_last_evidence.get("sess_a", {}).get("row_resolved") == "御剑·养剑")
+
+
+def test_col_correction_detected():
+    """同表同 sheet 列 resolved 变化 → 纠正。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_b": {"table_stem": "ability", "sheet": "Ability",
+                   "col_resolved": "名称", "row_resolved": "御剑·养剑"}
+    }
+
+    res = _make_result(table_stem="ability", sheet="Ability",
+                      col_resolved="神通名")  # 列变了
+    svc._detect_user_correction(res, "sess_b", "把神通名改成XXX")
+
+    check("列纠正触发 user_corrected", res.user_corrected)
+    check("列纠正 corrected_to=新列名", res.corrected_to == "神通名")
+
+
+def test_row_correction_detected():
+    """同表同 sheet 行 resolved 变化 → 纠正（行优先）。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_c": {"table_stem": "fabao", "sheet": "Fabao",
+                   "col_resolved": "名称", "row_resolved": "飞剑·初阶"}
+    }
+
+    res = _make_result(table_stem="fabao", sheet="Fabao",
+                      col_resolved="名称", row_resolved="飞剑·高阶")  # 行变了
+    svc._detect_user_correction(res, "sess_c", "把名称改成YYY")
+
+    check("行纠正触发 user_corrected", res.user_corrected)
+    check("行纠正 corrected_to=新行值", res.corrected_to == "飞剑·高阶")
+
+
+def test_correction_keyword_forces_flag():
+    """纠正关键词触发，即使 resolved 相同也标记。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_d": {"table_stem": "ability", "sheet": "Ability",
+                   "col_resolved": "名称", "row_resolved": "御剑·养剑"}
+    }
+
+    # resolved 完全相同，但消息含"不是"
+    res = _make_result(table_stem="ability", sheet="Ability",
+                      col_resolved="名称", row_resolved="御剑·养剑")
+    svc._detect_user_correction(res, "sess_d", "不是这个，应该是名称列")
+
+    check("关键词'不是'触发纠正", res.user_corrected)
+    check("关键词纠正 corrected_to 非空", res.corrected_to is not None)
+
+    # 测试其他关键词
+    for kw in ("搞错了", "应该是", "改回", "不对", "错了"):
+        svc2 = AgentService.__new__(AgentService)
+        svc2._session_last_evidence = {
+            "sess_e": {"table_stem": "ability", "sheet": "Ability",
+                       "col_resolved": "名称", "row_resolved": "御剑"}
+        }
+        res2 = _make_result(table_stem="ability", sheet="Ability",
+                           col_resolved="名称", row_resolved="御剑")
+        svc2._detect_user_correction(res2, "sess_e", f"xxx{kw}yyy")
+        check(f"关键词'{kw}'触发纠正", res2.user_corrected)
+
+
+def test_different_table_no_correction():
+    """不同表 → 不触发纠正。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_f": {"table_stem": "ability", "sheet": "Ability",
+                   "col_resolved": "名称", "row_resolved": "御剑"}
+    }
+
+    res = _make_result(table_stem="item", sheet="ItemBase",  # 不同表
+                      col_resolved="名称", row_resolved="铁剑")
+    svc._detect_user_correction(res, "sess_f", "把名称改成XXX")
+
+    check("不同表不触发纠正", not res.user_corrected)
+    check("不同表缓存更新为新表",
+          svc._session_last_evidence["sess_f"]["table_stem"] == "item")
+
+
+def test_needs_confirm_skips_cache():
+    """needs_confirm=True → 不更新缓存（等确认回传时再比）。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_g": {"table_stem": "ability", "sheet": "Ability",
+                   "col_resolved": "名称", "row_resolved": "御剑"}
+    }
+
+    res = _make_result(table_stem="fabao", sheet="Fabao",
+                      col_resolved="名称", row_resolved="飞剑",
+                      needs_confirm=True)
+    svc._detect_user_correction(res, "sess_g", "删掉飞剑")
+
+    check("needs_confirm 不触发纠正", not res.user_corrected)
+    check("needs_confirm 不更新缓存",
+          svc._session_last_evidence["sess_g"]["table_stem"] == "ability")
+
+
+def test_no_location_skips_cache():
+    """无定位结果（col/row 都空）→ 不更新缓存。"""
+    from services.agent_service import AgentService
+    svc = AgentService.__new__(AgentService)
+    svc._session_last_evidence = {
+        "sess_h": {"table_stem": "ability", "sheet": "Ability",
+                   "col_resolved": "名称", "row_resolved": "御剑"}
+    }
+
+    res = _make_result(table_stem="ability", sheet="Ability")  # 无 col/row
+    svc._detect_user_correction(res, "sess_h", "查下表")
+
+    check("无定位不触发纠正", not res.user_corrected)
+    check("无定位缓存保持原值",
+          svc._session_last_evidence["sess_h"]["col_resolved"] == "名称")
+
+
+def test_chat_integration_smoke():
+    """集成烟雾测试：AgentService 实例化 + chat 路径不报错（不真正执行 CRUD）。
+
+    验证 _session_last_evidence 字段在 __init__ 中被正确初始化。
+    """
+    try:
+        from services.agent_service import AgentService
+        # 不真正实例化（避免起 watcher/cli/parser 重依赖），只验证类定义
+        import inspect
+        src = inspect.getsource(AgentService.__init__)
+        check("__init__ 初始化 _session_last_evidence",
+              "_session_last_evidence" in src)
+        check("_detect_user_correction 方法定义存在",
+              hasattr(AgentService, "_detect_user_correction"))
+        check("_CORRECTION_KEYWORDS 常量存在",
+              hasattr(AgentService, "_CORRECTION_KEYWORDS"))
+    except Exception as e:
+        check("集成烟雾测试异常", False, str(e))
+
+
+def main():
+    print("=" * 60)
+    print("T6 D6.4 用户纠正识别 验证测试套件")
+    print("=" * 60)
+
+    test_first_round_no_correction()
+    print()
+    test_col_correction_detected()
+    print()
+    test_row_correction_detected()
+    print()
+    test_correction_keyword_forces_flag()
+    print()
+    test_different_table_no_correction()
+    print()
+    test_needs_confirm_skips_cache()
+    print()
+    test_no_location_skips_cache()
+    print()
+    test_chat_integration_smoke()
+
+    print()
+    print("=" * 60)
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print(f"结果: {passed}/{total} PASS ({100 * passed // total}%)")
+    print("=" * 60)
+    return 0 if passed == total else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

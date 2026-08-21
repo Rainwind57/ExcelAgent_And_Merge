@@ -1,0 +1,1500 @@
+"""T7/T8/T9/T10 skill 自动更新引擎：
+
+- L2 运行时别名候选（T7）
+- L3 反模式升级（T8）
+- 衰减 + 冲突 + 失效清理（T9）
+- 安全阀：快照 + 回归门禁 + 回滚 + 隔离（T10）
+
+数据流（D9.6）:
+    evidence 写入 → ingest_evidence
+        ├─ 列定位低置信度/纠正 → 候选池 _pending/column_alias_candidates.jsonl
+        │      ↓ (同 query→resolved 命中 ≥3 次, 7 天内, 平均置信度 ∈ [0.3,0.75))
+        │   promote_with_guard → L2_runtime/column_aliases.runtime.yaml (带 hits/last_seen/_meta)
+        ├─ 行歧义信号 → _pending/anti_pattern_signals.jsonl
+        │      ↓ (同 (table,sheet,column) ambiguous ≥3 次, 7 天内)
+        │   升级 → L3_anti_patterns/anti_patterns.yaml (status=active, action=force_exact)
+        └─ 跨表同 session 操作 → L2_runtime/table_relations.runtime.json (co_occur++)
+
+衰减（D9.1）: runtime yaml _meta 段按 hits/last_seen 算 weight:
+    base = min(hits/10, 1.0); days = now - last_seen;
+    recency = 1.0(<30d) / 0.5(30-60d) / 0(≥60d)
+    weight = base * recency
+    weight==0 && days>=60 → 移除；0<weight<0.3 → dormant；>=0.3 → active
+
+冲突消解（D7.5 / D9.3）: 同 query 指向 >=2 个不同 resolved → 歧义漂移，不入库，
+写 _pending/conflicts.yaml 等人工 review；runtime yaml 中已有 alias 被新 evidence
+推翻 → 同样进 conflicts，未解决前该 query 临时 dormant。
+
+人工优先（D7.6）: skill_loader 合并时 manual 别名覆盖 runtime，runtime 条目
+带 source=runtime 标记供 evidence 记录溯源。
+
+安全阀（T10）: promote 不直接写盘，走 promote_with_guard:
+    快照 → promote → 跑 verify_formula_agent 回归 → 失败回滚 + 隔离候选
+所有写 runtime yaml / anti_patterns 的 promote 动作都必须过 guard。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import warnings
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional, TYPE_CHECKING
+import hashlib
+
+if TYPE_CHECKING:
+    from .step_ai_enhancer import StepAIEnhancer
+
+try:
+    import yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+
+# ── promote 阈值（D7.3）──
+PROMOTE_HITS = 3
+PROMOTE_WINDOW_DAYS = 7
+PROMOTE_MIN_CONF = 0.3
+PROMOTE_MAX_CONF = 0.75  # exclusive
+
+# ── 反模式升级阈值（D8.2）──
+AP_AMBIGUOUS_HITS = 3
+AP_AMBIGUOUS_WINDOW_DAYS = 7
+# capability: error-classification-repair —— repair 路径频次信号提升阈值
+AP_FREQUENT_HITS = 3
+AP_FREQUENT_WINDOW_DAYS = 7
+_FREQUENT_ACTION_MAP = {
+    "frequent_type_mismatch": "force_type_check",
+    "frequent_column_mapping_error": "require_explicit_column",
+    "frequent_row_match_failure": "require_row_confirm",
+    "missed_cross_table_dep": "force_dependency_check",
+}
+AP_FAILED_OP_HITS = 2
+AP_FAILED_OP_WINDOW_DAYS = 30
+AP_DORMANT_DAYS = 30
+# AI 归纳反模式 promote 阈值（induce_anti_patterns 产出走 pending_review，达此次数升 active）
+AP_AI_HITS = 2
+
+# 每 N 次 ingest 触发一次 try_promote（批量降开销）
+PROMOTE_CHECK_INTERVAL = 20
+
+# ── T9 衰减阈值（D9.1）──
+DECAY_DORMANT_DAYS = 30      # 30 天无新命中 → recency 降到 0.5（dormant 候选）
+DECAY_REMOVE_DAYS = 60       # 60 天无新命中 → 移除条目
+DECAY_HITS_CAP = 10          # hits 归一化上限
+DECAY_DORMANT_WEIGHT = 0.3   # weight < 此值 → status=dormant
+
+# ── T10 安全阀（D10.3 / D10.5 / D11）──
+SNAPSHOT_KEEP = 5             # 保留最近 5 份快照
+QUARANTINE_KEEP_DAYS = 30     # 隔离区保留 30 天
+# D11: 放弃绝对通过率门禁，改相对提升门禁（lift = pass_on - pass_off）
+RELATIVE_LIFT_THRESHOLD = 0.05
+MINI_REGRESSION_SAMPLE = 30   # mini 回归抽样数（on/off 各一轮）
+MINI_REGRESSION_TIMEOUT = 600  # mini 回归单轮总超时（秒）
+
+# D11: decay 衰减保留高命中正向证据别名
+DECAY_KEEP_THRESHOLD = 3      # hits >= 此值 → 跳过衰减
+
+# 回归测试入口（D10.3）—— 旧 verify_formula_agent 已弃用，改 table_case_eval mini 回归
+_REGRESSION_MODULE = "server.tests.table_case_eval"
+# 项目根（用于 subprocess cwd + sys.path）
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _parse_iso(ts: str) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+    # 兼容历史 naive 时间戳：补本地时区，避免与 aware now 相减报错
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """原子写：temp + os.replace，避免并发读到半截文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    """追加写一条 jsonl。mkdir + append，单条 < 4KB。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+@dataclass
+class AntiPattern:
+    """单条反模式（D8.1 schema 的 Python 投影）。"""
+    id: str
+    type: str          # ambiguous_column | type_constraint | failed_operation | semantic_pattern
+    table_stem: str
+    sheet: str
+    column: str = ""           # ambiguous_column/type_constraint 用
+    operation: str = ""        # failed_operation 用
+    trigger: str = ""          # ambiguous | write_reject | confirm_abandoned | repair_repeated | ai_induced
+    occurrences: int = 0
+    first_seen: str = ""
+    last_seen: str = ""
+    action: str = ""           # force_exact | require_confirm | block_dry_run | warn_only
+    status: str = "active"     # active | pending_review | dormant
+    trigger_pattern: str = ""  # semantic_pattern 用，逗号分隔关键词
+    rationale: str = ""        # AI 归纳理由
+    source: str = "rule"       # rule | ai_induction
+
+    def to_dict(self) -> dict:
+        d = {
+            "id": self.id,
+            "type": self.type,
+            "table_stem": self.table_stem,
+            "sheet": self.sheet,
+        }
+        if self.column:
+            d["column"] = self.column
+        if self.operation:
+            d["operation"] = self.operation
+        d.update({
+            "trigger": self.trigger,
+            "occurrences": self.occurrences,
+            "first_seen": self.first_seen,
+            "last_seen": self.last_seen,
+            "action": self.action,
+            "status": self.status,
+            "source": self.source,
+        })
+        if self.trigger_pattern:
+            d["trigger_pattern"] = self.trigger_pattern
+        if self.rationale:
+            d["rationale"] = self.rationale
+        return d
+
+
+class SkillUpdater:
+    """从 evidence 记录生成 L2 候选并 promote，升级 L3 反模式。
+
+    单例复用（get_skill_updater），所有 TableAgent 实例共用。
+    所有写盘失败只 warn，不抛异常，绝不阻断 agent 主流程。
+    """
+
+    def __init__(self, skills_dir: Path, evidence_dir: Path | None = None):
+        self.skills_dir = Path(skills_dir)
+        self.evidence_dir = Path(evidence_dir) if evidence_dir else None
+        self.runtime_dir = self.skills_dir / "L2_runtime"
+        self.pending_dir = self.skills_dir / "_pending"
+        self.anti_pattern_dir = self.skills_dir / "L3_anti_patterns"
+
+        self.runtime_aliases_path = self.runtime_dir / "column_aliases.runtime.yaml"
+        self.runtime_relations_path = self.runtime_dir / "table_relations.runtime.json"
+        self.candidates_path = self.pending_dir / "column_alias_candidates.jsonl"
+        self.signals_path = self.pending_dir / "anti_pattern_signals.jsonl"
+        self.conflicts_path = self.pending_dir / "conflicts.yaml"
+        self.anti_patterns_path = self.anti_pattern_dir / "anti_patterns.yaml"
+
+        # T10: 快照与隔离区
+        self.snapshots_dir = self.skills_dir / ".snapshots"
+        self.quarantine_dir = self.pending_dir / "quarantine"
+        # D9.4: cascade_rules.yaml 失效标记目标（T12: 迁移到 L1_derived/，回退根目录）
+        l1_cascade = self.skills_dir / "L1_derived" / "cascade_rules.yaml"
+        self.cascade_rules_path = l1_cascade if l1_cascade.exists() else self.skills_dir / "cascade_rules.yaml"
+
+        self._ingest_count = 0
+        # session 内跨表操作序列（内存，进程级），用于 table_relations co_occur
+        self._session_last_table: dict[str, str] = {}
+
+        # D11: 初始化确保 L2 runtime alias 文件存在（空骨架 columns: {}）
+        self._ensure_runtime_aliases_skeleton()
+
+    # ── 入口：每次 evidence 写入后调 ──
+    def ingest_evidence(self, record: dict) -> None:
+        """消费一条 evidence 记录：候选生成 + 反模式信号 + 跨表关系。
+
+        旁路调用，失败只 warn。"""
+        try:
+            self._ingest_column_alias_candidate(record)
+            self._ingest_anti_pattern_signal(record)
+            self._ingest_table_relation(record)
+            self._ingest_count += 1
+            if self._ingest_count % PROMOTE_CHECK_INTERVAL == 0:
+                self.try_promote()
+                self.promote_pending_anti_patterns()
+        except Exception as e:
+            warnings.warn(f"skill_updater ingest failed: {e}", RuntimeWarning)
+
+    # ── D7.4 列别名候选 ──
+    def _ingest_column_alias_candidate(self, record: dict) -> None:
+        col = record.get("col") or {}
+        query = col.get("query")
+        resolved = col.get("resolved")
+        if not query or not resolved or query == resolved:
+            return
+        score = col.get("score")
+        table_stem = record.get("table_stem") or ""
+        sheet = record.get("sheet") or ""
+        user_corrected = bool(record.get("user_corrected"))
+        # 已是 runtime 别名 → bump hits/last_seen（D7 验收）
+        if self._bump_runtime_alias(table_stem, sheet, query, resolved, record.get("ts") or _now_iso()):
+            return
+        # 候选条件：低置信度命中（agent 猜对但没把握）或用户纠正（黄金信号）
+        is_candidate = False
+        if user_corrected:
+            is_candidate = True
+        elif isinstance(score, (int, float)) and PROMOTE_MIN_CONF <= score < PROMOTE_MAX_CONF:
+            is_candidate = True
+        if not is_candidate:
+            return
+        _append_jsonl(self.candidates_path, {
+            "table_stem": table_stem,
+            "sheet": sheet,
+            "query": query,
+            "resolved": resolved,
+            "ts": record.get("ts") or _now_iso(),
+            "confidence": score if isinstance(score, (int, float)) else 0.5,
+            "user_corrected": user_corrected,
+        })
+
+    def _bump_runtime_alias(self, table_stem: str, sheet: str, query: str,
+                            resolved: str, ts: str) -> bool:
+        """若 (table,sheet,query→resolved) 已在 runtime yaml → 更新 hits/last_seen/conf_avg。
+        命中返回 True。"""
+        if not _HAS_YAML or not self.runtime_aliases_path.exists():
+            return False
+        try:
+            data = yaml.safe_load(self.runtime_aliases_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return False
+        cols = data.get("columns") or {}
+        meta = data.get("_meta") or {}
+        sheet_map = cols.get(table_stem, {}).get(sheet) or {}
+        if sheet_map.get(query) != resolved:
+            return False
+        meta_sheet = meta.get(table_stem, {}).get(sheet, {})
+        m = meta_sheet.get(query) or {}
+        m["hits"] = int(m.get("hits", 0)) + 1
+        m["last_seen"] = ts
+        m["source"] = "runtime"
+        old_avg = float(m.get("confidence_avg", 0.0))
+        old_n = int(m.get("hits", 1)) - 1
+        if old_n <= 0:
+            m["confidence_avg"] = m.get("confidence_avg", old_avg)
+        else:
+            # 递推平均（近似，未存原 confidence 序列）
+            m["confidence_avg"] = round((old_avg * old_n + old_avg) / (old_n + 1), 4)
+        meta_sheet[query] = m
+        meta.setdefault(table_stem, {})[sheet] = meta_sheet
+        data["_meta"] = meta
+        self._write_runtime_aliases(data)
+        return True
+
+    def _write_runtime_aliases(self, data: dict) -> None:
+        if not _HAS_YAML:
+            return
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        header = (
+            "# L2 运行时列别名（自动生成，由 skill_updater 从 evidence promote）\n"
+            "# 人工别名请在 column_aliases.yaml 维护；此处只放 runtime 条目。\n"
+            "# _meta 段记录每条别名的 hits/last_seen/confidence_avg 供衰减（T9）。\n\n"
+        )
+        body = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        _atomic_write(self.runtime_aliases_path, header + body)
+
+    def _ensure_runtime_aliases_skeleton(self) -> None:
+        """D11: 初始化时若 runtime alias 文件不存在，创建空骨架 `columns: {}`。
+
+        promote 写入时 merge；不存在会导致 _bump_runtime_alias / _promote_alias 反复
+        走 "文件不存在" 分支。失败只 warn，不阻断。
+        """
+        if not _HAS_YAML:
+            return
+        if self.runtime_aliases_path.exists():
+            return
+        try:
+            self._write_runtime_aliases({"columns": {}})
+        except Exception as e:
+            warnings.warn(f"ensure runtime aliases skeleton failed: {e}", RuntimeWarning)
+
+    # ── D7.3 promote（T10 安全阀包裹）──
+    def try_promote(self) -> list[dict]:
+        """扫候选池，满足阈值则 promote 到 runtime yaml。返回本次 promote 清单。
+
+        T10: 每个 promote 动作走 promote_with_guard（快照→写盘→回归→回滚/隔离）。
+        """
+        if not _HAS_YAML:
+            return []
+        candidates = _read_jsonl(self.candidates_path)
+        if not candidates:
+            return []
+        now = datetime.now().astimezone()
+        window = timedelta(days=PROMOTE_WINDOW_DAYS)
+        # group by (table, sheet, query, resolved)
+        groups: dict[tuple, list[dict]] = {}
+        for c in candidates:
+            key = (c.get("table_stem", ""), c.get("sheet", ""),
+                   c.get("query", ""), c.get("resolved", ""))
+            groups.setdefault(key, []).append(c)
+        # 冲突检测（D7.5）：同 (table,sheet,query) 指向 ≥2 个不同 resolved
+        query_targets: dict[tuple, set[str]] = {}
+        for (t, s, q, r) in groups:
+            query_targets.setdefault((t, s, q), set()).add(r)
+        promoted: list[dict] = []
+        for key, items in groups.items():
+            table_stem, sheet, query, resolved = key
+            targets = query_targets.get((table_stem, sheet, query), set())
+            if len(targets) >= 2:
+                self._record_conflict(table_stem, sheet, query, targets, items)
+                continue
+            # 时间窗 + 置信度
+            recent = [c for c in items
+                      if _parse_iso(c.get("ts", "")) and (now - _parse_iso(c["ts"])) <= window]
+            if len(recent) < PROMOTE_HITS:
+                continue
+            confs = [float(c.get("confidence", 0.0)) for c in recent
+                     if isinstance(c.get("confidence"), (int, float))]
+            avg = sum(confs) / len(confs) if confs else 0.0
+            if not (PROMOTE_MIN_CONF <= avg < PROMOTE_MAX_CONF):
+                continue
+            # T10: 走安全阀（隔离区候选跳过，7 天内不重试）
+            candidate = {
+                "kind": "column_alias",
+                "table_stem": table_stem, "sheet": sheet,
+                "query": query, "resolved": resolved,
+                "items": recent, "avg_conf": avg,
+            }
+            if self.is_quarantined(candidate):
+                continue
+            if self.promote_with_guard(candidate):
+                promoted.append({"table_stem": table_stem, "sheet": sheet,
+                                 "query": query, "resolved": resolved,
+                                 "hits": len(recent), "confidence_avg": round(avg, 4)})
+                # 清候选池对应条目
+                self._remove_candidates(key)
+        return promoted
+
+    def _promote_alias(self, table_stem: str, sheet: str, query: str, resolved: str,
+                       items: list[dict], avg_conf: float) -> None:
+        """实际写盘（由 promote_with_guard 在快照后调用）。"""
+        try:
+            data = {}
+            if self.runtime_aliases_path.exists():
+                data = yaml.safe_load(self.runtime_aliases_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        cols = data.setdefault("columns", {})
+        cols.setdefault(table_stem, {}).setdefault(sheet, {})[query] = resolved
+        meta = data.setdefault("_meta", {})
+        meta_sheet = meta.setdefault(table_stem, {}).setdefault(sheet, {})
+        ts = _now_iso()
+        first_ts = items[0].get("ts") or ts
+        meta_sheet[query] = {
+            "source": "runtime",
+            "hits": len(items),
+            "first_seen": first_ts,
+            "last_seen": items[-1].get("ts") or ts,
+            "confidence_avg": round(avg_conf, 4),
+            "promoted_at": ts,
+        }
+        self._write_runtime_aliases(data)
+
+    def _remove_candidates(self, key: tuple) -> None:
+        """删候选池中匹配 (table,sheet,query,resolved) 的条目。"""
+        candidates = _read_jsonl(self.candidates_path)
+        keep = [c for c in candidates
+                if (c.get("table_stem", ""), c.get("sheet", ""),
+                    c.get("query", ""), c.get("resolved", "")) != key]
+        if len(keep) == len(candidates):
+            return
+        text = "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in keep)
+        _atomic_write(self.candidates_path, text)
+
+    # ── D7.5 冲突 ──
+    def _record_conflict(self, table_stem: str, sheet: str, query: str,
+                         targets: set[str], items: list[dict]) -> None:
+        if not _HAS_YAML:
+            return
+        try:
+            data = yaml.safe_load(self.conflicts_path.read_text(encoding="utf-8")) if \
+                self.conflicts_path.exists() else None
+        except Exception:
+            data = None
+        data = data or {}
+        conflicts = data.setdefault("conflicts", [])
+        entry = {
+            "query": query,
+            "resolved_candidates": sorted(targets),
+            "table_stem": table_stem,
+            "sheet": sheet,
+            "hits": {t: sum(1 for c in items if c.get("resolved") == t) for t in sorted(targets)},
+            "status": "pending_review",
+            "last_seen": _now_iso(),
+        }
+        # 去重：同 (table,sheet,query) 替换
+        conflicts = [c for c in conflicts
+                     if not (c.get("table_stem") == table_stem
+                             and c.get("sheet") == sheet
+                             and c.get("query") == query)]
+        conflicts.append(entry)
+        data["conflicts"] = conflicts
+        _atomic_write(self.conflicts_path,
+                      yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+
+    def detect_conflicts(self) -> list[dict]:
+        """返回当前 _pending/conflicts.yaml 中待 review 的冲突清单。"""
+        if not _HAS_YAML or not self.conflicts_path.exists():
+            return []
+        try:
+            data = yaml.safe_load(self.conflicts_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return []
+        return data.get("conflicts", [])
+
+    # ── D8 反模式信号 + 升级 ──
+    def _ingest_anti_pattern_signal(self, record: dict) -> None:
+        row = record.get("row") or {}
+        col = record.get("col") or {}
+        table_stem = record.get("table_stem") or ""
+        sheet = record.get("sheet") or ""
+        ts = record.get("ts") or _now_iso()
+        # 信号0（capability: error-classification-repair）：repair 路径显式信号类型
+        # frequent_type_mismatch / frequent_column_mapping_error / frequent_row_match_failure / missed_cross_table_dep
+        explicit_type = record.get("signal_type")
+        if explicit_type:
+            _append_jsonl(self.signals_path, {
+                "type": explicit_type,
+                "table_stem": table_stem,
+                "sheet": sheet,
+                "column": col.get("resolved") or col.get("name") or "",
+                "operation": record.get("intent_action") or "",
+                "reason": record.get("reason") or "",
+                "ts": ts,
+            })
+            self._check_frequent_upgrade(explicit_type, table_stem, sheet,
+                                         col.get("resolved") or col.get("name") or "", ts)
+            return
+        # 信号1: 行歧义（ambiguous_column 候选）
+        if row.get("ambiguous") and col.get("resolved"):
+            _append_jsonl(self.signals_path, {
+                "type": "ambiguous_column",
+                "table_stem": table_stem,
+                "sheet": sheet,
+                "column": col.get("resolved"),
+                "ts": ts,
+            })
+            self._check_ambiguous_upgrade(table_stem, sheet, col.get("resolved"), ts)
+        # 信号2: failed_operation（needs_confirm 后未确认，近似：needs_confirm=True + delete）
+        if record.get("needs_confirm") and record.get("intent_action") == "delete":
+            _append_jsonl(self.signals_path, {
+                "type": "failed_operation",
+                "table_stem": table_stem,
+                "sheet": sheet,
+                "operation": "delete_row",
+                "ts": ts,
+            })
+            self._check_failed_op_upgrade(table_stem, sheet, "delete_row", ts)
+
+    def _check_ambiguous_upgrade(self, table_stem: str, sheet: str,
+                                 column: str, ts: str) -> None:
+        signals = _read_jsonl(self.signals_path)
+        now = _parse_iso(ts) or datetime.now().astimezone()
+        window = timedelta(days=AP_AMBIGUOUS_WINDOW_DAYS)
+        count = sum(1 for s in signals
+                    if s.get("type") == "ambiguous_column"
+                    and s.get("table_stem") == table_stem
+                    and s.get("sheet") == sheet
+                    and s.get("column") == column
+                    and _parse_iso(s.get("ts", "")) and (now - _parse_iso(s["ts"])) <= window)
+        if count < AP_AMBIGUOUS_HITS:
+            return
+        self._upsert_anti_pattern(AntiPattern(
+            id=f"ap_amb_{table_stem}_{sheet}_{column}".replace(" ", "_"),
+            type="ambiguous_column",
+            table_stem=table_stem, sheet=sheet, column=column,
+            trigger="ambiguous", occurrences=count,
+            first_seen=ts, last_seen=ts,
+            action="force_exact", status="active",
+        ))
+
+    def _check_failed_op_upgrade(self, table_stem: str, sheet: str,
+                                 operation: str, ts: str) -> None:
+        signals = _read_jsonl(self.signals_path)
+        now = _parse_iso(ts) or datetime.now().astimezone()
+        window = timedelta(days=AP_FAILED_OP_WINDOW_DAYS)
+        count = sum(1 for s in signals
+                    if s.get("type") == "failed_operation"
+                    and s.get("table_stem") == table_stem
+                    and s.get("sheet") == sheet
+                    and s.get("operation") == operation
+                    and _parse_iso(s.get("ts", "")) and (now - _parse_iso(s["ts"])) <= window)
+        if count < AP_FAILED_OP_HITS:
+            return
+        self._upsert_anti_pattern(AntiPattern(
+            id=f"ap_fail_{table_stem}_{sheet}_{operation}".replace(" ", "_"),
+            type="failed_operation",
+            table_stem=table_stem, sheet=sheet, operation=operation,
+            trigger="confirm_abandoned", occurrences=count,
+            first_seen=ts, last_seen=ts,
+            action="block_dry_run", status="pending_review",
+        ))
+
+    def check_anti_pattern_upgrade(self, record: dict) -> Optional[dict]:
+        """D8.6 接口：每次 evidence 后调，返回本次升级的反模式条目（若有）。
+        实际升级在 _ingest_anti_pattern_signal 内联触发，这里返回最近一次升级。"""
+        # 简化：ingest 已内联升级；此方法供外部显式调用方使用，返回最新 active 条目
+        return None
+
+    def _check_frequent_upgrade(self, signal_type: str, table_stem: str, sheet: str,
+                                column: str, ts: str) -> None:
+        """capability: error-classification-repair —— repair 路径频次信号达阈值提升为反模式。
+
+        frequent_type_mismatch / frequent_column_mapping_error / frequent_row_match_failure /
+        missed_cross_table_dep 四类，窗口内同表同列（或同表）命中 ≥ AP_FREQUENT_HITS 次 →
+        按 _FREQUENT_ACTION_MAP 提升 anti_pattern（status=pending_review）。
+        """
+        if signal_type not in _FREQUENT_ACTION_MAP:
+            return
+        signals = _read_jsonl(self.signals_path)
+        now = _parse_iso(ts) or datetime.now().astimezone()
+        window = timedelta(days=AP_FREQUENT_WINDOW_DAYS)
+        count = sum(
+            1 for s in signals
+            if s.get("type") == signal_type
+            and s.get("table_stem") == table_stem
+            and s.get("sheet") == sheet
+            and (not column or s.get("column") == column)
+            and _parse_iso(s.get("ts", "")) and (now - _parse_iso(s["ts"])) <= window
+        )
+        if count < AP_FREQUENT_HITS:
+            return
+        col_part = f"_{column}" if column else ""
+        ap_id = f"ap_freq_{signal_type}_{table_stem}_{sheet}{col_part}".replace(" ", "_")
+        self._upsert_anti_pattern(AntiPattern(
+            id=ap_id,
+            type=signal_type,
+            table_stem=table_stem, sheet=sheet, column=column or "",
+            trigger="repair_repeated",
+            occurrences=count,
+            first_seen=ts, last_seen=ts,
+            action=_FREQUENT_ACTION_MAP[signal_type],
+            status="pending_review",
+        ))
+
+    def _upsert_anti_pattern(self, ap: AntiPattern) -> None:
+        """写入/更新 anti_patterns.yaml。已存在同 id → 更新 occurrences/last_seen/status。
+        T10: 走 promote_with_guard（快照→写盘→回归→回滚/隔离）。"""
+        if not _HAS_YAML:
+            return
+        candidate = {"kind": "anti_pattern", "ap": ap}
+        if self.is_quarantined(candidate):
+            return
+        self.promote_with_guard(candidate)
+
+    def load_anti_patterns(self) -> list[AntiPattern]:
+        """加载 anti_patterns.yaml 为 AntiPattern 列表（供 skill_loader / agent 查询）。"""
+        if not _HAS_YAML or not self.anti_patterns_path.exists():
+            return []
+        try:
+            data = yaml.safe_load(self.anti_patterns_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return []
+        out: list[AntiPattern] = []
+        for it in data.get("anti_patterns") or []:
+            try:
+                out.append(AntiPattern(
+                    id=it.get("id", ""),
+                    type=it.get("type", ""),
+                    table_stem=it.get("table_stem", ""),
+                    sheet=it.get("sheet", ""),
+                    column=it.get("column", ""),
+                    operation=it.get("operation", ""),
+                    trigger=it.get("trigger", ""),
+                    occurrences=int(it.get("occurrences", 0)),
+                    first_seen=it.get("first_seen", ""),
+                    last_seen=it.get("last_seen", ""),
+                    action=it.get("action", ""),
+                    status=it.get("status", "active"),
+                    trigger_pattern=it.get("trigger_pattern", ""),
+                    rationale=it.get("rationale", ""),
+                    source=it.get("source", "rule"),
+                ))
+            except Exception:
+                continue
+        return out
+
+    # ── AI 反模式归纳（#6 skill AI 归纳）──
+    def induce_anti_patterns(self, failed_traces: list[dict],
+                             enhancer: "Optional[StepAIEnhancer]" = None) -> list[AntiPattern]:
+        """AI 从失败 trace 批量归纳反模式，走 promote_with_guard 门控写盘。
+
+        Args:
+            failed_traces: 失败 trace 列表，每条含 input/error_type/error_detail/entries_summary
+            enhancer: StepAIEnhancer 实例（提供 LLM 调用）；None 时降级返回空
+
+        Returns:
+            归纳产出并尝试 upsert 的 AntiPattern 列表；LLM 失败或无归纳返回空。
+            候选 status=pending_review，走 promote_with_guard（eval 后 mini 回归降级，
+            保持 pending_review 等人工/定时升 active；非 eval 环境回归通过则写盘保留）。
+        """
+        if not failed_traces:
+            return []
+        if enhancer is None:
+            warnings.warn("induce_anti_patterns: 无 enhancer，跳过 LLM 归纳", RuntimeWarning)
+            return []
+        try:
+            candidates = enhancer.ai_induce_anti_pattern(failed_traces)
+        except Exception as e:
+            warnings.warn(f"induce_anti_patterns: LLM 调用失败: {e}", RuntimeWarning)
+            return []
+        if not candidates:
+            return []
+        ts = _now_iso()
+        produced: list[AntiPattern] = []
+        for c in candidates:
+            tp = c.get("trigger_pattern", "")
+            tp_hash = hashlib.md5(tp.encode("utf-8")).hexdigest()[:8]
+            table_stem = c.get("table_stem", "") or ""
+            sheet = c.get("sheet", "") or ""
+            id_stem = table_stem or "_global"
+            id_sheet = sheet or "_any"
+            ap_id = f"ap_ind_{id_stem}_{id_sheet}_{tp_hash}".replace(" ", "_")
+            ap = AntiPattern(
+                id=ap_id,
+                type=c.get("type", "semantic_pattern"),
+                table_stem=table_stem,
+                sheet=sheet,
+                trigger="ai_induced",
+                occurrences=1,
+                first_seen=ts,
+                last_seen=ts,
+                action=c.get("action", "warn_only"),
+                status="pending_review",
+                trigger_pattern=tp,
+                rationale=c.get("rationale", ""),
+                source="ai_induction",
+            )
+            # _upsert_anti_pattern 内部走 promote_with_guard（快照→写盘→回归→隔离）
+            # 同 id（同 table/sheet/trigger_pattern）已存在则 _apply_anti_pattern_upsert 的 existing.update 合并
+            self._upsert_anti_pattern(ap)
+            produced.append(ap)
+        # 产出后立即尝试 promote（不等 20 次 ingest），缩短 AI 归纳反模式激活延迟
+        if produced:
+            try:
+                self.promote_pending_anti_patterns()
+            except Exception as e:
+                warnings.warn(f"AI 归纳后 promote 失败（不影响主流程）: {e}", RuntimeWarning)
+        return produced
+
+    # ── D7.7 跨表热路径 ──
+    def _ingest_table_relation(self, record: dict) -> None:
+        """session 内连续操作不同表 → co_occur++。"""
+        table_stem = record.get("table_stem") or ""
+        if not table_stem:
+            return
+        session_id = record.get("session_id") or "_default"
+        last = self._session_last_table.get(session_id)
+        self._session_last_table[session_id] = table_stem
+        if not last or last == table_stem:
+            return
+        self._bump_relation(last, table_stem, record.get("ts") or _now_iso())
+
+    def _bump_relation(self, a: str, b: str, ts: str) -> None:
+        try:
+            data = {}
+            if self.runtime_relations_path.exists():
+                data = json.loads(self.runtime_relations_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        rels: list[dict] = data.get("relations") or []
+        pair = tuple(sorted([a, b]))
+        entry = next((r for r in rels
+                      if tuple(sorted([r.get("a", ""), r.get("b", "")])) == pair), None)
+        if entry is None:
+            entry = {"a": pair[0], "b": pair[1], "co_occur": 0,
+                     "first_seen": ts, "last_seen": ts, "weight": 0.0}
+            rels.append(entry)
+        entry["co_occur"] = int(entry.get("co_occur", 0)) + 1
+        entry["last_seen"] = ts
+        max_co = max((r.get("co_occur", 0) for r in rels), default=1) or 1
+        for r in rels:
+            r["weight"] = round(r.get("co_occur", 0) / max_co, 4)
+        data["relations"] = rels
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.runtime_relations_path,
+                      json.dumps(data, ensure_ascii=False, indent=2))
+
+    def lookup_relation_weight(self, a: str, b: str) -> float:
+        """查两表热路径权重（0~1），供 table_locator 优先候选（T7 验收）。"""
+        if not self.runtime_relations_path.exists():
+            return 0.0
+        try:
+            data = json.loads(self.runtime_relations_path.read_text(encoding="utf-8"))
+        except Exception:
+            return 0.0
+        pair = tuple(sorted([a, b]))
+        for r in data.get("relations") or []:
+            if tuple(sorted([r.get("a", ""), r.get("b", "")])) == pair:
+                return float(r.get("weight", 0.0))
+        return 0.0
+
+    # ── D7.8 merge_runtime_aliases：供 skill_loader 调用 ──
+    def merge_runtime_aliases(self) -> dict[str, dict[str, dict[str, str]]]:
+        """返回 runtime 列别名映射 {table: {sheet: {alias: col}}}（不含 _meta）。"""
+        if not _HAS_YAML or not self.runtime_aliases_path.exists():
+            return {}
+        try:
+            data = yaml.safe_load(self.runtime_aliases_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+        return data.get("columns") or {}
+
+    # ══════════════════════════════════════════════════════════════════
+    # T10 安全阀（D10.1-D10.7）
+    # ══════════════════════════════════════════════════════════════════
+
+    def promote_with_guard(self, candidate: dict) -> bool:
+        """D10.3 / D11 主流程：快照 → promote → 跑 mini 回归 → 失败回滚 + 隔离。
+
+        candidate 结构:
+            {"kind": "column_alias", "table_stem","sheet","query","resolved",
+             "items": [...], "avg_conf": float}
+            {"kind": "anti_pattern", "ap": AntiPattern}
+
+        返回 True=通过并已写盘，False=回归失败已回滚+隔离 / 候选在隔离区跳过。
+        D11 门禁：mini 回归算 lift = pass_on - pass_off，lift >= 0.05 才保留。
+        回归环境不可用（非项目根 / table_case_eval 缺失 / 超时）→ 降级直接写盘（不阻断）。
+        """
+        if not _HAS_YAML:
+            return False
+        # D10.7: 隔离区候选跳过，不重试
+        if self.is_quarantined(candidate):
+            return False
+        # 1. 快照
+        snapshot = self._take_snapshot(trigger=f"promote:{candidate.get('kind')}")
+        # 2. 写盘
+        try:
+            self._apply_promote(candidate)
+        except Exception as e:
+            warnings.warn(f"promote write failed, rollback: {e}", RuntimeWarning)
+            self._rollback(snapshot)
+            self._quarantine(candidate, reason=f"write_error: {e}")
+            return False
+        # 3. mini 回归（on/off 双轮 lift 判定）
+        # env CODEMAKER_SKIP_REGRESSION=1（默认）→ 跳过同步 LLM 回归，直接保留写盘
+        # （生产提速；mini 回归移到 eval/定时触发）。=0 才跑门禁（D11 原行为）。
+        if os.getenv("CODEMAKER_SKIP_REGRESSION", "1") == "1":
+            return True
+        result = self._run_mini_regression()
+        if result is None:
+            # 回归环境不可用 → 降级：保留写盘，不回滚（避免无测试环境时 promote 永远失败）
+            return True
+        lift = result.get("lift", 0.0)
+        if self._passes_lift_gate(lift):
+            return True
+        # 4. 失败 → 回滚 + 隔离
+        warnings.warn(
+            f"promote mini-regression lift={lift:.3f} < {RELATIVE_LIFT_THRESHOLD}, rollback",
+            RuntimeWarning,
+        )
+        self._rollback(snapshot)
+        self._quarantine(candidate, reason=f"lift_failed: lift={lift:.3f} "
+                                           f"pass_off={result.get('pass_off')} pass_on={result.get('pass_on')}")
+        return False
+
+    @staticmethod
+    def _passes_lift_gate(lift: Optional[float]) -> bool:
+        """D11 纯判定：lift >= RELATIVE_LIFT_THRESHOLD → 通过。
+
+        None 视为环境不可用（调用方应先处理 None 分支，此处理解为非 None）。
+        """
+        if lift is None:
+            return True
+        return float(lift) >= RELATIVE_LIFT_THRESHOLD
+
+    def _apply_promote(self, candidate: dict) -> None:
+        """实际写盘分发（快照后调用）。"""
+        kind = candidate.get("kind")
+        if kind == "column_alias":
+            self._promote_alias(
+                candidate["table_stem"], candidate["sheet"],
+                candidate["query"], candidate["resolved"],
+                candidate["items"], candidate["avg_conf"],
+            )
+        elif kind == "anti_pattern":
+            self._apply_anti_pattern_upsert(candidate["ap"])
+        elif kind == "enum_candidate":
+            self._promote_enum_candidates(candidate["candidates"])
+        else:
+            raise ValueError(f"unknown promote kind: {kind}")
+
+    def _promote_enum_candidates(self, candidates: list[dict]) -> None:
+        """D10.3: 把 pending enum 候选合并进 L1_derived/enum_mappings.yaml。
+
+        merge 语义：同 (stem,sheet,col,label) 替换 value，新 label 追加。
+        不修改 pending（clear_pending 由 try_promote_enum 成功后调）。
+        """
+        if not _HAS_YAML or not candidates:
+            return
+        l1_path = self.skills_dir / "L1_derived" / "enum_mappings.yaml"
+        root_path = self.skills_dir / "enum_mappings.yaml"
+        path = l1_path if l1_path.exists() else root_path
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        tables = data.setdefault("tables", {})
+        for c in candidates:
+            stem = c.get("stem"); sheet = c.get("sheet"); col = c.get("col")
+            label = c.get("label"); value = c.get("value")
+            if not all([stem, sheet, col, label, value is not None]):
+                continue
+            col_info = tables.setdefault(stem, {}).setdefault(sheet, {}). \
+                setdefault("columns", {}).setdefault(col, {"type": "int", "values": []})
+            col_info["type"] = "int"
+            values = col_info.setdefault("values", [])
+            values = [v for v in values if v.get("label") != label]
+            values.append({"label": label, "value": int(value)})
+            col_info["values"] = values
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, yaml.safe_dump(data, allow_unicode=True,
+                                           sort_keys=True, default_flow_style=False))
+
+    def try_promote_enum(self) -> list[dict]:
+        """D10.3: 扫 enum pending，经 mini 回归门禁后合并进 L1 enum_mappings.yaml。
+
+        返回本次合并的候选清单（空=无候选或门禁未过）。
+        """
+        if not _HAS_YAML:
+            return []
+        try:
+            from .enum_resolver import EnumResolver
+        except Exception:
+            return []
+        resolver = EnumResolver.load()
+        pending = resolver._load_pending_raw()
+        candidates = pending.get("candidates", [])
+        if not candidates:
+            return []
+        candidate = {"kind": "enum_candidate", "candidates": candidates}
+        if self.is_quarantined(candidate):
+            return []
+        if self.promote_with_guard(candidate):
+            resolver.clear_pending()
+            return candidates
+        return []
+
+    def _apply_anti_pattern_upsert(self, ap: AntiPattern) -> None:
+        """anti_patterns.yaml 实际写盘（从旧 _upsert_anti_pattern 提取）。
+
+        同 id 已存在 → 合并：occurrences 累加（新 ap.occurrences 通常是 1），
+        last_seen 取较新值，status 保留现有（除非新 ap 显式 active）。
+        不累加 occurrences 会导致 induce_anti_patterns 多次产出同 id 永远 occurrences=1，
+        达不到 promote 阈值，AI 归纳反模式永远升不了 active。
+        """
+        try:
+            data = yaml.safe_load(self.anti_patterns_path.read_text(encoding="utf-8")) \
+                if self.anti_patterns_path.exists() else None
+        except Exception:
+            data = None
+        data = data or {"anti_patterns": []}
+        items: list[dict] = data.get("anti_patterns") or []
+        existing = next((it for it in items if it.get("id") == ap.id), None)
+        if existing:
+            # occurrences 累加（新产出通常是 1，表示"又观察到此模式一次"）
+            existing["occurrences"] = int(existing.get("occurrences", 0)) + max(1, int(ap.occurrences))
+            # last_seen 取较新值
+            if ap.last_seen and ap.last_seen >= existing.get("last_seen", ""):
+                existing["last_seen"] = ap.last_seen
+            # status：新 ap 为 active 强制升；否则保留现有（pending 不被单次降级）
+            if ap.status == "active":
+                existing["status"] = "active"
+            elif "status" not in existing:
+                existing["status"] = ap.status
+            # rationale 合并（新归纳补充，不覆盖）
+            if ap.rationale and ap.rationale not in (existing.get("rationale") or ""):
+                existing["rationale"] = f"{existing.get('rationale','')}; {ap.rationale}".strip("; ")
+            # 其余字段用新值更新（trigger_pattern/action 等可能被新归纳修正）
+            for k in ("trigger_pattern", "action", "type", "table_stem", "sheet", "source"):
+                if getattr(ap, k, None):
+                    existing[k] = getattr(ap, k)
+        else:
+            items.append(ap.to_dict())
+        data["anti_patterns"] = items
+        self.anti_pattern_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.anti_patterns_path,
+                      yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+
+    def promote_pending_anti_patterns(self) -> list[dict]:
+        """扫 anti_patterns.yaml 里 status=pending_review，达阈值自动升 active。
+
+        之前 pending_review→active 无代码路径（卡人工/定时），导致 failed_operation /
+        frequent / ai_induced 类反模式长期不生效。本方法补自动升级链。
+
+        阈值按 source 优先 + type 分派：
+          source=ai_induction → AP_AI_HITS（AI 归纳产出，阈值低）
+          ambiguous_column → AP_AMBIGUOUS_HITS
+          failed_operation  → AP_FAILED_OP_HITS
+          type_constraint/semantic_pattern → AP_FREQUENT_HITS
+        升级走 _apply_anti_pattern_upsert 写盘。返回本次升级清单。
+        """
+        if not _HAS_YAML or not self.anti_patterns_path.exists():
+            return []
+        try:
+            data = yaml.safe_load(self.anti_patterns_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return []
+        items: list[dict] = data.get("anti_patterns") or []
+        thresholds = {
+            "ambiguous_column": AP_AMBIGUOUS_HITS,
+            "failed_operation": AP_FAILED_OP_HITS,
+            "type_constraint": AP_FREQUENT_HITS,
+            "semantic_pattern": AP_FREQUENT_HITS,
+        }
+        promoted: list[dict] = []
+        changed = False
+        for it in items:
+            if it.get("status") != "pending_review":
+                continue
+            # source=ai_induction 用低阈值（AI 归纳产出，来源可信）
+            if it.get("source") == "ai_induction":
+                thresh = AP_AI_HITS
+            else:
+                thresh = thresholds.get(it.get("type", ""), AP_FREQUENT_HITS)
+            occ = int(it.get("occurrences", 0))
+            if occ < thresh:
+                continue
+            it["status"] = "active"
+            promoted.append({
+                "id": it.get("id", ""),
+                "type": it.get("type", ""),
+                "occurrences": occ,
+                "threshold": thresh,
+            })
+            changed = True
+        if changed:
+            data["anti_patterns"] = items
+            _atomic_write(self.anti_patterns_path,
+                          yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+        return promoted
+
+    def _take_snapshot(self, trigger: str = "") -> Path:
+        """D10.2 快照：复制 L2_runtime + L3_anti_patterns + _pending 到时间戳目录。
+
+        manifest.json 记录 {ts, trigger, changed_files[], checksums}。
+        保留最近 SNAPSHOT_KEEP 份。
+        """
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        snap_dir = self.snapshots_dir / ts
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        # 要快照的子目录（存在才复制）；D10.3 enum promote 改 L1_derived，需纳入快照
+        subdirs = ["L2_runtime", "L3_anti_patterns", "_pending", "L1_derived"]
+        changed_files: list[str] = []
+        checksums: dict[str, str] = {}
+        for sub in subdirs:
+            src = self.skills_dir / sub
+            if not src.exists():
+                continue
+            dst = snap_dir / sub
+            try:
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            except Exception:
+                continue
+            for p in dst.rglob("*"):
+                if p.is_file():
+                    rel = str(p.relative_to(snap_dir)).replace("\\", "/")
+                    changed_files.append(rel)
+                    try:
+                        import hashlib
+                        checksums[rel] = hashlib.sha1(
+                            p.read_bytes()
+                        ).hexdigest()[:16]
+                    except Exception:
+                        pass
+        manifest = {
+            "ts": _now_iso(),
+            "trigger": trigger,
+            "changed_files": changed_files,
+            "checksums": checksums,
+        }
+        (snap_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        self._prune_snapshots()
+        return snap_dir
+
+    def _prune_snapshots(self) -> None:
+        """D10.5 保留最近 SNAPSHOT_KEEP 份快照。"""
+        if not self.snapshots_dir.exists():
+            return
+        snaps = sorted(
+            [p for p in self.snapshots_dir.iterdir() if p.is_dir()],
+            key=lambda p: p.name, reverse=True,
+        )
+        for old in snaps[SNAPSHOT_KEEP:]:
+            try:
+                shutil.rmtree(old)
+            except OSError:
+                pass
+
+    def _rollback(self, snapshot: Path) -> None:
+        """D10.3 回滚：用快照目录覆盖现有 skills 子目录。"""
+        if not snapshot or not snapshot.exists():
+            return
+        for sub in ["L2_runtime", "L3_anti_patterns", "_pending", "L1_derived"]:
+            dst = self.skills_dir / sub
+            src = snapshot / sub
+            try:
+                if dst.exists():
+                    shutil.rmtree(dst)
+                if src.exists():
+                    shutil.copytree(src, dst)
+            except Exception as e:
+                warnings.warn(f"rollback {sub} failed: {e}", RuntimeWarning)
+
+    def _quarantine(self, candidate: dict, reason: str = "") -> None:
+        """D10.4 失败候选隔离到 _pending/quarantine/，7 天内不再尝试同条目。"""
+        self.quarantine_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": _now_iso(),
+            "reason": reason,
+            "candidate": candidate,
+        }
+        key = self._candidate_key(candidate)
+        path = self.quarantine_dir / f"{key}.json"
+        try:
+            path.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except Exception:
+            pass
+        self._prune_quarantine()
+
+    def _candidate_key(self, candidate: dict) -> str:
+        kind = candidate.get("kind", "unknown")
+        if kind == "column_alias":
+            return f"alias_{candidate.get('table_stem','')}_" \
+                   f"{candidate.get('sheet','')}_{candidate.get('query','')}".replace(" ", "_")
+        if kind == "anti_pattern":
+            return f"ap_{candidate['ap'].id}".replace(" ", "_")
+        if kind == "enum_candidate":
+            return "enum_candidates_batch"
+        return kind
+
+    def _prune_quarantine(self) -> None:
+        """D10.5 隔离区保留 QUARANTINE_KEEP_DAYS 天。"""
+        if not self.quarantine_dir.exists():
+            return
+        cutoff = datetime.now() - timedelta(days=QUARANTINE_KEEP_DAYS)
+        for p in self.quarantine_dir.glob("*.json"):
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime)
+                if mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                continue
+
+    def is_quarantined(self, candidate: dict) -> bool:
+        """检查候选是否在隔离区（未过期）。供 try_promote 前过滤。"""
+        key = self._candidate_key(candidate)
+        path = self.quarantine_dir / f"{key}.json"
+        if not path.exists():
+            return False
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime)
+            return mtime >= (datetime.now() - timedelta(days=QUARANTINE_KEEP_DAYS))
+        except OSError:
+            return False
+
+    def _run_regression(self) -> Optional[dict]:
+        """D10.3 旧 verify_formula_agent 入口（已弃用，保留向后兼容）。
+
+        D11 改用 `_run_mini_regression`（on/off lift 判定）。此方法仅作历史锚点，
+        不再被 promote_with_guard 调用。
+        """
+        return None
+
+    def _run_mini_regression(self, sample_size: int = MINI_REGRESSION_SAMPLE) -> Optional[dict]:
+        """D11 mini 回归抽样器：从 table_case_eval 用例集随机抽 ≥30 条，
+        跑 on/off 两轮，算 lift = pass_on - pass_off。
+
+        返回 None = 回归环境不可用（降级直接通过，不回滚）；
+        返回 {pass_off, pass_on, lift, n, sampled_cids}。
+
+        降级条件:
+          - skills_dir 不在项目根下（临时测试环境，无真实样本/resources）
+          - table_case_eval 模块不可 import / cases 文件缺失
+          - subprocess 不可用 / 超时 / 模块缺失
+          - 无 LLM API key（run_one_case 全异常 → pass=0，误判，故要求 at_least 一条 ok）
+        """
+        import random
+        # D11: eval 运行中禁止 mini 回归（否则 run_one_case 嵌套 AgentService + LLM，
+        # 30 case × 双轮 × LLM → 递归爆炸卡死）。eval main 启动时 set 此变量。
+        if os.environ.get("TABLE_CASE_EVAL_RUNNING"):
+            return None
+        # 临时 skills_dir（如 tempfile.mkdtemp）不在项目根下 → 跳过回归
+        try:
+            skills_real = self.skills_dir.resolve()
+            project_real = _PROJECT_ROOT.resolve()
+            if not str(skills_real).startswith(str(project_real)):
+                return None
+        except Exception:
+            return None
+        # 延迟 import（table_case_eval 重依赖 AgentService，模块级 import 风险大）
+        try:
+            # 项目根在 sys.path 才能绝对 import server.tests.table_case_eval
+            root_str = str(_PROJECT_ROOT)
+            if root_str not in sys.path:
+                sys.path.insert(0, root_str)
+            from server.tests.table_case_eval import load_cases, run_one_case  # type: ignore
+        except Exception as e:
+            warnings.warn(f"mini-regression module unavailable, degrade: {e}", RuntimeWarning)
+            return None
+        # 定位 cases 文件（与 table_case_eval 默认一致）
+        cases_file = _PROJECT_ROOT / "server" / "tests" / "table_case_test_cases.json"
+        if not cases_file.exists():
+            # 回退到 table_case_eval 模块里声明的 DEFAULT_CASES_FILE
+            try:
+                from server.tests import table_case_eval as _tce  # type: ignore
+                cases_file = Path(getattr(_tce, "DEFAULT_CASES_FILE", cases_file))
+            except Exception:
+                pass
+        if not cases_file.exists():
+            warnings.warn(f"mini-regression cases file missing, degrade: {cases_file}",
+                          RuntimeWarning)
+            return None
+        try:
+            cases_all = load_cases(cases_file)
+        except Exception as e:
+            warnings.warn(f"mini-regression load_cases failed, degrade: {e}", RuntimeWarning)
+            return None
+        if not cases_all:
+            return None
+        n = min(sample_size, len(cases_all))
+        if n < sample_size:
+            warnings.warn(f"mini-regression sample shrink to {n} (cases total {len(cases_all)})",
+                          RuntimeWarning)
+        # 稳定可复现抽样（按时间戳种子），避免 promote 间结果漂移过大
+        seed = int(datetime.now().strftime("%Y%m%d"))
+        rng = random.Random(seed)
+        sampled_idx = rng.sample(range(len(cases_all)), n)
+        sampled = [(i + 1, cases_all[i]) for i in sampled_idx]  # cid = 1-based
+
+        def _run_round(enable_skill: bool) -> tuple[float, int]:
+            ok_count = 0
+            ran = 0
+            t0 = datetime.now()
+            for cid, case in sampled:
+                if (datetime.now() - t0).total_seconds() > MINI_REGRESSION_TIMEOUT:
+                    warnings.warn(f"mini-regression {'on' if enable_skill else 'off'} "
+                                  f"timeout after {ran} cases", RuntimeWarning)
+                    break
+                try:
+                    r = run_one_case(cid, case, enable_skill=enable_skill)
+                    ran += 1
+                    if r.ok:
+                        ok_count += 1
+                except Exception as e:
+                    warnings.warn(f"mini-regression case {cid} error: {e}", RuntimeWarning)
+                    ran += 1
+            return (ok_count / ran if ran else 0.0), ran
+
+        pass_off, ran_off = _run_round(False)
+        pass_on, ran_on = _run_round(True)
+        # 两轮都没真正跑成（环境异常）→ 降级
+        if ran_off == 0 or ran_on == 0:
+            warnings.warn("mini-regression no case completed, degrade", RuntimeWarning)
+            return None
+        lift = round(pass_on - pass_off, 4)
+        return {
+            "pass_off": round(pass_off, 4),
+            "pass_on": round(pass_on, 4),
+            "lift": lift,
+            "n_off": ran_off,
+            "ran_on": ran_on,
+            "sampled_cids": [cid for cid, _ in sampled],
+        }
+
+    # ══════════════════════════════════════════════════════════════════
+    # T9 衰减 + 冲突 + 失效清理（D9.1-D9.6）
+    # ══════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _compute_weight(hits: int, last_seen: str, now: datetime) -> float:
+        """D9.1 衰减公式:
+            base = min(hits/10, 1.0)
+            days = now - last_seen
+            recency = 1.0(<30d) / 0.5(30-60d) / 0(>=60d)
+            weight = base * recency
+        """
+        base = min(int(hits) / DECAY_HITS_CAP, 1.0)
+        last = _parse_iso(last_seen)
+        if last is None:
+            return 0.0
+        # last 可能无时区 → 补 now 的时区
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=now.tzinfo)
+        days = (now - last).days
+        if days < DECAY_DORMANT_DAYS:
+            recency = 1.0
+        elif days < DECAY_REMOVE_DAYS:
+            recency = 0.5
+        else:
+            recency = 0.0
+        return round(base * recency, 4)
+
+    @staticmethod
+    def _days_since(last_seen: str, now: datetime) -> int:
+        """算 last_seen 到 now 的天数，无/坏时间戳返回 DECAY_REMOVE_DAYS（视为已过期）。"""
+        last = _parse_iso(last_seen)
+        if last is None:
+            return DECAY_REMOVE_DAYS
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=now.tzinfo)
+        return (now - last).days
+
+    def decay_scan(self, now: datetime | None = None) -> dict:
+        """D9.5 衰减扫描：扫所有 runtime yaml，按 D9.1 公式更新 weight/status。
+
+        - column_aliases.runtime.yaml: _meta 段每条按 weight 决定保留/dormant/移除
+        - table_relations.runtime.json: 同样按 last_seen 衰减，weight==0 移除
+        - anti_patterns.yaml: 30 天无新触发 → dormant（D8.2 降级）
+
+        返回 {"removed": N, "dormant": M, "active": K}。
+        """
+        if now is None:
+            now = datetime.now().astimezone()
+        stats = {"removed": 0, "dormant": 0, "active": 0}
+        try:
+            self._decay_runtime_aliases(now, stats)
+        except Exception as e:
+            warnings.warn(f"decay runtime aliases failed: {e}", RuntimeWarning)
+        try:
+            self._decay_table_relations(now, stats)
+        except Exception as e:
+            warnings.warn(f"decay table relations failed: {e}", RuntimeWarning)
+        try:
+            self._decay_anti_patterns(now, stats)
+        except Exception as e:
+            warnings.warn(f"decay anti patterns failed: {e}", RuntimeWarning)
+        return stats
+
+    def _decay_runtime_aliases(self, now: datetime, stats: dict) -> None:
+        """衰减 column_aliases.runtime.yaml。"""
+        if not _HAS_YAML or not self.runtime_aliases_path.exists():
+            return
+        try:
+            data = yaml.safe_load(self.runtime_aliases_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return
+        cols = data.get("columns") or {}
+        meta = data.get("_meta") or {}
+        removed = 0
+        dormant = 0
+        active = 0
+        for table_stem, sheets in list(cols.items()):
+            for sheet, aliases in list(sheets.items()):
+                meta_sheet = meta.get(table_stem, {}).get(sheet, {})
+                for query in list(aliases.keys()):
+                    m = meta_sheet.get(query) or {}
+                    hits = int(m.get("hits", 0))
+                    # D11: 高命中正向证据别名跳过衰减（hits >= DECAY_KEEP_THRESHOLD）
+                    if hits >= DECAY_KEEP_THRESHOLD:
+                        m["status"] = "active"
+                        m["weight"] = 1.0
+                        meta_sheet[query] = m
+                        active += 1
+                        continue
+                    last = m.get("last_seen", "")
+                    weight = self._compute_weight(hits, last, now)
+                    days = self._days_since(last, now)
+                    if weight == 0.0 and days >= DECAY_REMOVE_DAYS:
+                        # 移除
+                        del aliases[query]
+                        meta_sheet.pop(query, None)
+                        removed += 1
+                    elif weight < DECAY_DORMANT_WEIGHT:
+                        # dormant：skill_loader 跳过但仍保留记录
+                        # 这里不直接改 yaml 的 alias 映射（避免 skill_loader 误用），
+                        # 而是在 _meta 标 status=dormant，skill_loader 加载时过滤
+                        m["status"] = "dormant"
+                        meta_sheet[query] = m
+                        dormant += 1
+                    else:
+                        m["status"] = "active"
+                        m["weight"] = weight
+                        meta_sheet[query] = m
+                        active += 1
+                # 清空 sheet 级 dict
+                if not aliases:
+                    del sheets[sheet]
+            if not sheets:
+                del cols[table_stem]
+        data["columns"] = cols
+        data["_meta"] = meta
+        self._write_runtime_aliases(data)
+        stats["removed"] += removed
+        stats["dormant"] += dormant
+        stats["active"] += active
+
+    def _decay_table_relations(self, now: datetime, stats: dict) -> None:
+        """衰减 table_relations.runtime.json。"""
+        if not self.runtime_relations_path.exists():
+            return
+        try:
+            data = json.loads(self.runtime_relations_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        rels = data.get("relations") or []
+        keep: list[dict] = []
+        for r in rels:
+            last = r.get("last_seen", "")
+            weight = self._compute_weight(int(r.get("co_occur", 0)), last, now)
+            days = self._days_since(last, now)
+            if weight == 0.0 and days >= DECAY_REMOVE_DAYS:
+                stats["removed"] += 1
+                continue
+            r["weight"] = weight
+            keep.append(r)
+            if weight < DECAY_DORMANT_WEIGHT:
+                r["status"] = "dormant"
+                stats["dormant"] += 1
+            else:
+                r["status"] = "active"
+                stats["active"] += 1
+        data["relations"] = keep
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.runtime_relations_path,
+                      json.dumps(data, ensure_ascii=False, indent=2))
+
+    def _decay_anti_patterns(self, now: datetime, stats: dict) -> None:
+        """衰减 anti_patterns.yaml：30 天无新触发 → dormant（D8.2）。"""
+        if not _HAS_YAML or not self.anti_patterns_path.exists():
+            return
+        try:
+            data = yaml.safe_load(self.anti_patterns_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return
+        items = data.get("anti_patterns") or []
+        changed = False
+        for it in items:
+            last = it.get("last_seen", "")
+            days = self._days_since(last, now)
+            if days >= DECAY_DORMANT_DAYS and it.get("status") == "active":
+                it["status"] = "dormant"
+                stats["dormant"] += 1
+                changed = True
+            elif days < DECAY_DORMANT_DAYS and it.get("status") == "dormant":
+                # 恢复
+                it["status"] = "active"
+                stats["active"] += 1
+                changed = True
+            elif it.get("status") == "active":
+                stats["active"] += 1
+        if changed:
+            self.anti_pattern_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(self.anti_patterns_path,
+                          yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+
+    def detect_stale_rules(self, scan_result: list[str]) -> list[dict]:
+        """D9.4 失效标记：对照 index_builder 的 removed 表列表，
+        标记 cascade_rules.yaml。
+
+        scan_result: refresh_if_changed 返回的 removed stem 列表。
+        返回被标记 stale 的规则清单。
+        """
+        if not _HAS_YAML or not self.cascade_rules_path.exists():
+            return []
+        if not scan_result:
+            return []
+        try:
+            data = yaml.safe_load(self.cascade_rules_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return []
+        rules = data.get("rules") or []
+        stale: list[dict] = []
+        for r in rules:
+            src_table = r.get("source_table", "")
+            if src_table in scan_result:
+                if not r.get("stale"):
+                    r["stale"] = True
+                    r["deprecated_at"] = _now_iso()
+                    stale.append({"source_table": src_table, "reason": "table_removed"})
+            # 也检查 cascade_on_delete 中引用的 target_table
+            for cd in r.get("cascade_on_delete") or []:
+                if cd.get("target_table") in scan_result and not cd.get("stale"):
+                    cd["stale"] = True
+                    cd["deprecated_at"] = _now_iso()
+                    stale.append({"target_table": cd.get("target_table"),
+                                  "source_table": src_table,
+                                  "reason": "target_table_removed"})
+        if stale:
+            data["rules"] = rules
+            _atomic_write(self.cascade_rules_path,
+                          yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+        return stale
+
+    def resolve_conflicts(self) -> list[dict]:
+        """D9.3 扫 _pending/conflicts.yaml，返回需人工 review 的冲突清单。
+
+        冲突未解决前，skill_loader 应把对应 query 临时降级 dormant（见 skill_loader 合并逻辑）。
+        """
+        if not _HAS_YAML or not self.conflicts_path.exists():
+            return []
+        try:
+            data = yaml.safe_load(self.conflicts_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return []
+        return [c for c in (data.get("conflicts") or [])
+                if c.get("status") == "pending_review"]
+
+
+# ── 单例 ──
+_updater: SkillUpdater | None = None
+
+
+def get_skill_updater() -> SkillUpdater:
+    """模块级单例。首次调用惰性初始化。"""
+    global _updater
+    if _updater is None:
+        skills_dir = Path(__file__).parent / "skills"
+        evidence_dir = Path(__file__).parent / "evidence"
+        _updater = SkillUpdater(skills_dir, evidence_dir)
+    return _updater

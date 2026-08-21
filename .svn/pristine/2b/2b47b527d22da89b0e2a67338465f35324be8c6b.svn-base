@@ -1,0 +1,1131 @@
+"""差异比对路由：Excel 多版本比对与合并。"""
+import json
+import os
+import re
+import shutil
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Dict, List, Optional
+from urllib.parse import quote
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi.responses import FileResponse
+from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
+from pydantic import BaseModel
+
+from config import MERGE_DIR, MERGE_SAMPLES_DIR, MERGE_LEGACY_DIR, DOWNLOADS_DIR, RESOURCES_DIR
+from engine.models import CompareResponse, FileGroup, SheetDiff, MergeRequest, SetBaseRequest, AutoMergeRequest
+from engine.parser import read_excel, read_formulas, read_comments, read_group_files, group_files, get_common_sheets, is_base_file, extract_prefix, find_trunk_baseline, get_sheet_diff
+from engine.compare import compare_sheet
+from engine.merge_engine import auto_merge_sheet, recommend_sheet, resolve_and_validate_sheet
+from engine.ref_integrity import collect_cross_sheet_pks
+from agent.excel.formula_cache_validator import FormulaCacheValidator
+from agent.excel.style_utils import copy_row_style
+from engine import merge_history
+
+router = APIRouter(prefix="/api", tags=["diff"])
+
+# 持久会话目录：保存上传文件供 merge 时克隆基准文件保留样式
+SESSION_DIR = Path(__file__).resolve().parent.parent / "merge_sessions"
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
+
+# 标记从 merge 文件夹加载的会话（导出时回写该文件夹）
+MERGE_FOLDER_SESSION = "__merge_folder__"
+
+# M3: trunk 基准查找目录优先级（merge/trunk 优先，resources 兜底）
+TRUNK_DIRS = [str(MERGE_DIR / "trunk"), str(RESOURCES_DIR)]
+
+
+class FolderCompareRequest(BaseModel):
+    """从 merge 文件夹加载时，可指定要参与比对的文件名子集及各分组基准文件。"""
+    selected: Optional[List[str]] = None
+    base_files: Optional[Dict[str, str]] = None
+
+
+class RestoreRowRequest(BaseModel):
+    """M3: 从 trunk 基准补回漏行到衍生版的请求体。"""
+    group_name: str                  # 分组前缀（用于定位 trunk 基准）
+    base_file: str                   # trunk 基准文件名
+    sheet: str                       # sheet 名
+    pk: str                          # 主键值（第一列）
+
+
+def _list_merge_folder_files():
+    """返回 merge 文件夹下所有可比对的 Excel 文件路径（排除临时文件）。
+
+    整理后散文件归入 samples/（基准）与 legacy/（编号/漏行样本），
+    顶层不再堆放 xlsx，故扫描这两个子目录而非 MERGE_DIR 根。
+    """
+    out = []
+    for d in (MERGE_SAMPLES_DIR, MERGE_LEGACY_DIR):
+        if not d.is_dir():
+            continue
+        out.extend(
+            fp for fp in d.iterdir()
+            if fp.is_file() and fp.name.endswith(('.xlsx', '.xls', '.xlsm'))
+            and not fp.name.startswith('~$')
+        )
+    return out
+
+
+def get_next_version_filename(session_path: Path, group_name: str) -> str:
+    """返回下一个带版本号的导出文件名。"""
+    pattern = re.compile(rf"^merged_{re.escape(group_name)}_(\d+)\.xlsx$")
+    max_ver = 0
+    if session_path.is_dir():
+        for fp in session_path.iterdir():
+            if not fp.is_file():
+                continue
+            m = pattern.match(fp.name)
+            if m:
+                ver = int(m.group(1))
+                if ver > max_ver:
+                    max_ver = ver
+    return f"merged_{group_name}_{max_ver + 1}.xlsx"
+
+
+def get_next_merge_version(merge_dir: Path, group_name: str) -> str:
+    """扫描 merge 目录，返回 {group}_{最大版本+1}.xlsx。
+
+    例如目录下最大为 item_3.xlsx → 返回 item_4.xlsx；无衍生版本时返回 {group}_1.xlsx。
+    """
+    pattern = re.compile(rf"^{re.escape(group_name)}_(\d+)\.xlsx$")
+    max_ver = 0
+    if merge_dir.is_dir():
+        for fp in merge_dir.iterdir():
+            if not fp.is_file():
+                continue
+            m = pattern.match(fp.name)
+            if m:
+                ver = int(m.group(1))
+                if ver > max_ver:
+                    max_ver = ver
+    return f"{group_name}_{max_ver + 1}.xlsx"
+
+
+def _build_groups_from_paths(paths, base_map=None, detect_missing=False):
+    """由路径列表构建比对结果分组（供上传与文件夹加载复用）。
+
+    base_map: 可选 {prefix: 基准文件名}，覆盖自动检测的基准文件。
+    detect_missing: M3 漏行检测模式，base 有但衍生全缺的行标 missing_row。
+    """
+    base_map = base_map or {}
+    groups = group_files(paths)
+    if not groups:
+        raise HTTPException(400, "未找到可分组的多版本文件（需要同名前缀的 ≥2 个文件）")
+
+    result_groups: dict = {}
+    for prefix, file_list in groups.items():
+        _read = read_group_files(file_list)
+        file_sheets = {fn: d[0] for fn, d in _read.items()}
+        file_formulas = {fn: d[1] for fn, d in _read.items()}
+        file_comments = {fn: d[2] for fn, d in _read.items()}
+
+        common_sheets = get_common_sheets(file_sheets)
+
+        base_name = None
+        if prefix in base_map and base_map[prefix] in file_sheets:
+            base_name = base_map[prefix]
+        if base_name is None:
+            for fname in file_sheets:
+                if is_base_file(fname):
+                    base_name = fname
+                    break
+        if base_name is None:
+            raise HTTPException(400, f"分组 '{prefix}' 中未找到基准文件")
+
+        sheets_diff = {}
+        for sheet_name in common_sheets:
+            merged = compare_sheet(file_sheets, base_name, sheet_name, file_formulas, detect_missing=detect_missing, file_comments=file_comments)
+            sheets_diff[sheet_name] = SheetDiff(
+                name=sheet_name,
+                rows=merged['rows'],
+                headers=merged['headers'],
+                stats=merged['stats'],
+                missing_rows=merged.get('missing_rows', []),
+                structure_diff=merged.get('structure_diff'),
+            )
+
+        # M6: sheet 集合差异（base 有衍生无 → missing_sheet 告警）
+        sheet_diff_info = get_sheet_diff(file_sheets, base_name)
+
+        result_groups[prefix] = FileGroup(
+            group_name=prefix,
+            files=[os.path.basename(f) for f in file_list],
+            base_file=base_name,
+            sheets=sheets_diff,
+            missing_sheets=sheet_diff_info["missing_in_derived"],
+        )
+    return result_groups
+
+
+@router.post("/compare")
+async def upload_and_compare(
+    files: List[UploadFile] = File(...),
+    base_files: str = Form(default=None),
+    base: str = Form(default=None),
+):
+    """上传多个 Excel 文件，执行多版本比对。
+
+    base=trunk: M3 漏行检测模式，自动从 merge/trunk/（或 resources/）注入同名 trunk 基准
+    参与三方比对，base 有但衍生全缺的行标 missing_row（P0）。
+    """
+    if not files or len(files) < 2:
+        raise HTTPException(400, "请上传至少2个文件")
+
+    base_map: dict = {}
+    if base_files:
+        try:
+            base_map = json.loads(base_files)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "base_files 参数格式错误，需要 JSON 字符串")
+
+    detect_missing = (base == "trunk")
+
+    session_id = str(uuid.uuid4())
+    session_path = SESSION_DIR / session_id
+    session_path.mkdir(parents=True, exist_ok=True)
+
+    tmp_dir = tempfile.mkdtemp()
+    saved_paths = []
+
+    try:
+        for f in files:
+            safe_name = os.path.basename(f.filename or "")
+            if not safe_name or safe_name != (f.filename or ""):
+                raise HTTPException(400, f"非法文件名: {f.filename}")
+            content = await f.read()
+            fp = os.path.join(tmp_dir, safe_name)
+            with open(fp, 'wb') as wf:
+                wf.write(content)
+            saved_paths.append(fp)
+            # 复制到持久会话目录，供 merge 时克隆基准文件
+            shutil.copy2(fp, session_path / safe_name)
+
+        # M3: trunk 模式 → 为每个分组注入 trunk 基准到会话目录
+        if detect_missing:
+            seen_prefix = set()
+            for fp in list(saved_paths):
+                prefix = extract_prefix(os.path.basename(fp))
+                if prefix in seen_prefix:
+                    continue
+                seen_prefix.add(prefix)
+                trunk = find_trunk_baseline(os.path.basename(fp), TRUNK_DIRS)
+                if not trunk:
+                    continue
+                trunk_name = os.path.basename(trunk)
+                dest = session_path / trunk_name
+                if not dest.is_file():
+                    shutil.copy2(trunk, dest)
+                saved_paths.append(str(dest))
+                base_map[prefix] = trunk_name
+
+        groups = group_files(saved_paths, base_map)
+        if not groups:
+            raise HTTPException(400, "未找到可分组的多版本文件（需要同名前缀的 ≥2 个文件）")
+
+        result_groups: dict = {}
+        for prefix, file_list in groups.items():
+            _read = read_group_files(file_list)
+            file_sheets = {fn: d[0] for fn, d in _read.items()}
+            file_formulas = {fn: d[1] for fn, d in _read.items()}
+            file_comments = {fn: d[2] for fn, d in _read.items()}
+
+            common_sheets = get_common_sheets(file_sheets)
+
+            base_name = None
+            if prefix in base_map:
+                target = base_map[prefix]
+                if target in file_sheets:
+                    base_name = target
+            if base_name is None:
+                for fname in file_sheets:
+                    if is_base_file(fname):
+                        base_name = fname
+                        break
+            if base_name is None:
+                raise HTTPException(400, f"分组 '{prefix}' 中未找到基准文件")
+
+            sheets_diff = {}
+            for sheet_name in common_sheets:
+                merged = compare_sheet(file_sheets, base_name, sheet_name, file_formulas, detect_missing=detect_missing, file_comments=file_comments)
+                sheets_diff[sheet_name] = SheetDiff(
+                    name=sheet_name,
+                    rows=merged['rows'],
+                    headers=merged['headers'],
+                    stats=merged['stats'],
+                    missing_rows=merged.get('missing_rows', []),
+                    structure_diff=merged.get('structure_diff'),
+                )
+
+            # M6: sheet 集合差异
+            sheet_diff_info = get_sheet_diff(file_sheets, base_name)
+
+            result_groups[prefix] = FileGroup(
+                group_name=prefix,
+                files=[os.path.basename(f) for f in file_list],
+                base_file=base_name,
+                sheets=sheets_diff,
+                missing_sheets=sheet_diff_info["missing_in_derived"],
+            )
+
+        # R13: 记录比对历史（保留 1 天）
+        try:
+            all_files = sorted({os.path.basename(fp) for fp in saved_paths})
+            base_files_list = sorted({g.base_file for g in result_groups.values() if g.base_file})
+            derived = [f for f in all_files if f not in base_files_list]
+            merge_history.record_compare(
+                session_id, result_groups,
+                base_file=";".join(base_files_list) if base_files_list else "",
+                derived_files=derived,
+            )
+        except Exception:
+            pass
+
+        return CompareResponse(groups=result_groups, session_id=session_id)
+    finally:
+        pass
+
+
+def _pk_sort_key(pk):
+    """R18: 主键自然排序键——数值优先按数值比较，字符串按数字段零填充做自然排序。
+
+    返回统一三元组 (type_flag, num, str)：数值类 (0, num, '')，字符串类 (1, 0.0, padded)。
+    数值排在字符串前；同类型比较不会触发 int/str 混比 TypeError。
+    """
+    s = '' if pk is None else str(pk).strip()
+    try:
+        return (0, float(s), '')
+    except (ValueError, TypeError):
+        pass
+    padded = re.sub(r'(\d+)', lambda m: m.group(1).zfill(10), s)
+    return (1, 0.0, padded)
+
+
+def _plan_inserted_row_positions(ws, inserted_rows, key_to_row):
+    """R18: 为每条 inserted 行计算目标插入位置（原始 sheet 坐标，未做任何插入前）。
+
+    按主键自然排序，找 inserted 行应插入到哪一行之前（即首个 sort_key 更大的已存在行的原始行号）；
+    若 inserted 主键比所有已存在主键都大 → 追加到表末（target_row = ws.max_row + 1）。
+
+    字段类型行（PK 含 ":"，如 "item_id:int"）排除在定位参考外——这类行是元数据而非数据行，
+    其字符串 PK 在自然排序中落在数字 PK 之后会导致数字 inserted 行误插到类型行之前。
+
+    Returns:
+        list of (target_row, ins_row) — target_row 为原始 sheet 行号或 ws.max_row+1
+    """
+    # 排除字段类型行（PK 含 ":"），只用品实数据行定位
+    data_existing = [
+        (pk, row_num) for pk, row_num in key_to_row.items()
+        if ":" not in str(pk)
+    ]
+    existing = sorted(data_existing, key=lambda x: _pk_sort_key(x[0]))
+    # 目标已存在该主键的行（如分支自身追加的行）不再重复插入，避免重复 PK
+    inserted_sorted = sorted(
+        (r for r in inserted_rows if str(r.key).strip() not in key_to_row),
+        key=lambda r: _pk_sort_key(r.key),
+    )
+
+    targets = []
+    existing_idx = 0
+    for ins_row in inserted_sorted:
+        ins_key = _pk_sort_key(ins_row.key)
+        while existing_idx < len(existing) and _pk_sort_key(existing[existing_idx][0]) <= ins_key:
+            existing_idx += 1
+        if existing_idx < len(existing):
+            target_row = existing[existing_idx][1]
+        else:
+            target_row = ws.max_row + 1
+        targets.append((target_row, ins_row))
+    return targets
+
+
+def _shift_existing_formula_refs(ws, insertion_points, inserted_positions):
+    """R18: 重写已存在（非 inserted）公式单元格的行引用，补偿 ws.insert_rows 引起的行下移。
+
+    openpyxl 的 insert_rows 把 idx 及以下的单元格下移，但不更新公式内的行号引用。
+    本函数遍历所有非 inserted 行的公式单元格，把每个引用 X<row> 的 row 替换为
+    row + count(insertion_points <= row)（即该行被多少次插入推下）。
+
+    Args:
+        ws: 已完成所有插入的 worksheet
+        insertion_points: 实际发生 insert_rows 的原始行号列表（不含追加到末尾的情形）
+        inserted_positions: 当前 sheet 中 inserted 行所在的行号集合（这些行的公式已由
+                           _rewrite_formula_row 写定为自身行号，不再 shift）
+    """
+    if not insertion_points:
+        return
+    import bisect
+    sorted_ips = sorted(insertion_points)
+    # 匹配单元格引用（含可选 $ 绝对标记）：$A$1 / A$1 / $A1 / A1
+    # 整列引用 A:B（无行号）不受影响
+    cell_ref_re = re.compile(r"(\$?)([A-Za-z]+)(\$?)(\d+)")
+
+    def _shift_row(ref_row: int) -> int:
+        return ref_row + bisect.bisect_right(sorted_ips, ref_row)
+
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.row in inserted_positions:
+                continue
+            v = cell.value
+            if not isinstance(v, str) or not v.startswith("="):
+                continue
+            new_val = cell_ref_re.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{_shift_row(int(m.group(4)))}", v
+            )
+            if new_val != v:
+                cell.value = new_val
+
+
+def _write_inserted_row(ws, actual_row, ins_row, style_src_row):
+    """R18: 在 actual_row 写入 inserted 行单元格 + 继承样式 + 主键批注。"""
+    pk_cell = None
+    for cell in ins_row.cells:
+        if cell.value is None and not cell.formula_text:
+            continue
+        if cell.diff_type == 'formula' and cell.formula_text:
+            write_val = _rewrite_formula_row(cell.formula_text, actual_row)
+        else:
+            write_val = cell.value
+        if write_val is None:
+            continue
+        c = ws.cell(row=actual_row, column=cell.col + 1, value=write_val)
+        if cell.col == 0:
+            pk_cell = c
+
+    # 从相邻行继承样式（避免 inserted 行无样式突兀）
+    if 1 <= style_src_row <= ws.max_row and style_src_row != actual_row:
+        try:
+            copy_row_style(ws, style_src_row, actual_row, ws.max_column)
+        except Exception:
+            pass
+
+    # R18: 主键单元格批注——合并"编号重映射"与"新增来源"两类信息
+    notes = []
+    if getattr(ins_row, 'id_remapped', False) and getattr(ins_row, 'original_pk', ''):
+        notes.append(f"原先编号：{ins_row.original_pk}\nmerge冲突修改为：{ins_row.key}")
+    src_file = getattr(ins_row, 'source_file', '') or ''
+    src_ver = getattr(ins_row, 'source_version', '') or ''
+    if src_file:
+        src_label = f"v{src_ver}" if src_ver else src_file
+        notes.append(f"新增来源：{src_label}（{src_file}）")
+    if pk_cell is not None and notes:
+        pk_cell.comment = Comment("\n".join(notes), "merge")
+
+
+def _apply_edits_to_workbook(wb, req):
+    """把前端编辑结果写入 workbook。
+
+    保持源文件结构：不新建/删除 Sheet、不改表头。
+    - matched 行：就地更新"值发生变化"的单元格，保留公式/样式/列宽。
+    - inserted 行：R18 按主键排序插入到正确位置（而非追加到表末），并 shift 已存在
+      公式单元格的行引用补偿 insert_rows 引起的行下移，保留公式正确性。
+    - deleted 行：不写入，删除生效。
+    """
+    base_file = req.base_file or ""
+    for sheet_data in req.sheets:
+        sheet_name = sheet_data.name[:31]
+        # 源文件中不存在该 Sheet → 跳过，不新建，避免破坏结构
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+
+        # 构建基准 sheet 第一列 key -> 行号 映射（跳过表头第1行）
+        key_to_row: dict = {}
+        for row in ws.iter_rows(min_row=2, max_col=1):
+            c = row[0]
+            if c.value is not None:
+                key_to_row[str(c.value).strip()] = c.row
+
+        # 1. matched 行就地更新（保留公式/样式/列宽）
+        for row in sheet_data.rows:
+            # deleted 行不写入 → 删除生效
+            if row.row_type == 'deleted':
+                continue
+            if row.row_type == 'matched':
+                # 匹配行：就地更新已存在行，保留公式/样式/列宽
+                target_row = key_to_row.get(str(row.key).strip())
+                if target_row is None:
+                    continue
+                for cell in row.cells:
+                    if cell.col == 0:
+                        continue  # 第1列为主键，不写
+                    # 公式列：保留公式文本，不覆写为缓存值（重算交由 libreoffice）
+                    # 公式冲突选版本(formula_resolved=True)→ 写回用户选定的公式文本(formula_text)
+                    if cell.diff_type == 'formula':
+                        if getattr(cell, 'formula_resolved', False) and getattr(cell, 'formula_text', ''):
+                            ws.cell(row=target_row, column=cell.col + 1, value=cell.formula_text)
+                        continue
+                    # 仅当解析后的值与基准值不同时才写入，避免覆盖公式/样式/原值
+                    base_val = cell.versions.get(base_file) if cell.versions else None
+                    if str(cell.value) == str(base_val):
+                        continue
+                    ws.cell(row=target_row, column=cell.col + 1, value=cell.value)
+
+        # 2. R18: inserted 行按主键排序插入到正确位置（而非追加表末）
+        inserted_rows = [r for r in sheet_data.rows if r.row_type == 'inserted']
+        if not inserted_rows:
+            continue
+
+        max_row_orig = ws.max_row
+        targets = _plan_inserted_row_positions(ws, inserted_rows, key_to_row)
+
+        # 拆分：中间插入 vs 追加到末尾
+        middle_targets = []
+        end_targets = []
+        for target_row, ins_row in targets:
+            if target_row > max_row_orig:
+                end_targets.append((target_row, ins_row))
+            else:
+                middle_targets.append((target_row, ins_row))
+
+        # 中间插入：按 (target_row, sort_key) 降序处理
+        # — 高位置先插（不推下低位置）；tied target_row 时大主键先插（小主键后插→落上方→顺序正确）
+        middle_targets.sort(key=lambda x: (x[0], _pk_sort_key(x[1].key)), reverse=True)
+        # 追加末尾：按 sort_key 升序处理 — 小主键先写（落上方），大主键后写（落下方）
+        end_targets.sort(key=lambda x: _pk_sort_key(x[1].key))
+
+        inserted_positions: set = set()  # 当前 sheet 中 inserted 行的行号
+        insertion_points: list = []      # 触发 insert_rows 的原始行号（用于公式引用 shift）
+
+        # 2a. 中间插入
+        for target_row, ins_row in middle_targets:
+            ws.insert_rows(target_row)
+            insertion_points.append(target_row)
+            # 已插入的行若在 target_row 及以下 → 被推下一格
+            inserted_positions = {p + 1 if p >= target_row else p for p in inserted_positions}
+            inserted_positions.add(target_row)
+            # 样式来源：下一行（原 target_row 位置的行下移后）
+            _write_inserted_row(ws, target_row, ins_row, target_row + 1)
+
+        # 2b. 追加末尾（无需 insert_rows，直接写下一空行）
+        for _, ins_row in end_targets:
+            actual_row = ws.max_row + 1
+            inserted_positions.add(actual_row)
+            # 样式来源：上一行（最后一个已存在或已插入的行）
+            _write_inserted_row(ws, actual_row, ins_row, actual_row - 1)
+
+        # 3. R18: shift 已存在公式单元格的行引用，补偿 insert_rows 引起的行下移
+        _shift_existing_formula_refs(ws, insertion_points, inserted_positions)
+
+
+def _find_base_file_in_dir(dir_path: Path, group_name: str):
+    """在目录中查找指定分组前缀的基准文件（不带 _数字 后缀）。"""
+    if not dir_path.is_dir():
+        return None
+    for fp in dir_path.iterdir():
+        if not fp.is_file():
+            continue
+        if extract_prefix(fp.name) != group_name:
+            continue
+        if is_base_file(fp.name):
+            return fp.name
+    return None
+
+
+def _rewrite_formula_row(formula: str, target_row: int) -> str:
+    """把公式内所有行引用重写为目标行号（inserted 行 append 后行号对齐）。
+
+    匹配 A1/B3:E3 形式的单元格引用，把行号替换为 target_row。
+    整列引用 A:B 不受影响（无行号）。
+    """
+    import re as _re
+    def _repl(m):
+        col = m.group(1)
+        return f"{col}{target_row}"
+    # 匹配列字母+数字（单元格坐标），不匹配整列引用
+    return _re.sub(r"([A-Za-z]+)(\d+)", lambda m: f"{m.group(1)}{target_row}", formula)
+
+
+def _save_with_formula_cache(wb, src_path: Path, dest_path: Path) -> dict:
+    """带公式缓存保护的 save：save 前快照 → save → 校验 → 丢失则 libreoffice 重算。
+
+    解决 openpyxl save 清空公式缓存值问题（ca-overview §2.5）：
+    非公式表 fast-path 零开销跳过；含公式表 roundtrip 校验 + 必要时重算。
+
+    Args:
+        wb: openpyxl Workbook（已应用编辑，未 save）
+        src_path: 基准文件路径（save 前快照来源）
+        dest_path: 导出目标路径
+
+    Returns:
+        {needs_manual_fix: bool, cache_message: str}
+    """
+    validator = FormulaCacheValidator()
+    # save 前快照（fast-path 内部判断无公式返回空 dict，零开销）
+    before = validator.snapshot_before(src_path)
+    wb.save(dest_path)
+    wb.close()
+    # 无公式 → fast-path 通过
+    if not before:
+        return {"needs_manual_fix": False, "cache_message": "无公式单元格，fast-path 通过"}
+    # 含公式 → 校验 + 必要时重算
+    result = validator.validate_and_fix(dest_path, before)
+    return {
+        "needs_manual_fix": result.needs_manual_fix,
+        "cache_message": result.message,
+    }
+
+
+def _apply_edits_and_save(ours_path, dest, mr):
+    """应用合并编辑并保存：大数据表走 XML 快路径（10w 行 ~19s → ~3s），
+    不满足条件回退 openpyxl + 公式缓存保护。
+
+    返回 {needs_manual_fix, cache_message}（与 _save_with_formula_cache 一致）。
+    """
+    from engine.fast_apply import fast_apply_xml
+    info = fast_apply_xml(Path(ours_path), Path(dest), mr)
+    if info is not None:
+        return info
+    wb = load_workbook(ours_path, data_only=False)
+    _apply_edits_to_workbook(wb, mr)
+    return _save_with_formula_cache(wb, ours_path, dest)
+
+
+def _export_from_merge_folder(req: MergeRequest):
+    """merge 文件夹模式：克隆基准文件，导出回 legacy 目录，命名 {group}_{最大版本+1}.xlsx。
+
+    基准文件位于 samples/（无 _数字 后缀）；编号导出产物落 legacy/。
+    """
+    if not MERGE_DIR.is_dir():
+        raise HTTPException(400, f"merge 文件夹不存在：{MERGE_DIR}")
+    # 优先使用前端指定的基准文件（在 samples/ 或 legacy/ 中查找），否则自动检测
+    base_path: Optional[Path] = None
+    if req.base_file:
+        for d in (MERGE_SAMPLES_DIR, MERGE_LEGACY_DIR):
+            candidate = d / req.base_file
+            if candidate.is_file() and extract_prefix(req.base_file) == req.group_name:
+                base_path = candidate
+                break
+    if base_path is None:
+        base_file_name = _find_base_file_in_dir(MERGE_SAMPLES_DIR, req.group_name)
+        if base_file_name is None:
+            raise HTTPException(400, f"merge 文件夹中未找到分组 '{req.group_name}' 的基准文件")
+        base_path = MERGE_SAMPLES_DIR / base_file_name
+    try:
+        wb = load_workbook(base_path, data_only=False)
+    except Exception as e:
+        raise HTTPException(500, f"读取基准文件失败：{e}")
+
+    _apply_edits_to_workbook(wb, req)
+
+    MERGE_LEGACY_DIR.mkdir(parents=True, exist_ok=True)
+    versioned_name = get_next_merge_version(MERGE_LEGACY_DIR, req.group_name)
+    export_dest = MERGE_LEGACY_DIR / versioned_name
+    cache_info = _save_with_formula_cache(wb, base_path, export_dest)
+
+    # R13: 记录导出历史（merge 文件夹模式）
+    try:
+        merge_history.record_merge(MERGE_FOLDER_SESSION, req.group_name, req.sheets, exported=True)
+    except Exception:
+        pass
+
+    return FileResponse(
+        export_dest,
+        filename=versioned_name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "X-Export-Path": str(export_dest),
+            "X-Export-Name": versioned_name,
+            "X-Formula-Cache-Needs-Fix": "1" if cache_info["needs_manual_fix"] else "0",
+            "X-Formula-Cache-Message": quote(cache_info["cache_message"], safe=""),
+        },
+    )
+
+
+@router.get("/merge-folder-files")
+async def merge_folder_files():
+    """列出 merge 文件夹下可比对的 Excel 文件名，供前端手动勾选。"""
+    files = sorted(fp.name for fp in _list_merge_folder_files())
+    return {"files": files, "dir": str(MERGE_DIR)}
+
+
+@router.post("/compare-folder")
+async def compare_folder(req: Optional[FolderCompareRequest] = None, base: str = Query(default=None)):
+    """扫描 merge 文件夹，对其中（或选中的）Excel 多版本文件执行比对。
+
+    输入与导出均在 merge 文件夹下；session_id 标记为 merge 文件夹模式，
+    导出时由 /api/merge 据此回写该文件夹并按 {group}_{最大版本+1} 命名。
+    可在 body 传 {selected: [文件名...]} 仅比对勾选的文件；不传则比对全部。
+
+    base=trunk: M3 漏行检测模式，自动从 merge/trunk/（或 resources/）注入同名 trunk 基准
+    参与三方比对，base 有但衍生全缺的行标 missing_row（P0）。
+    """
+    if not MERGE_DIR.is_dir():
+        raise HTTPException(400, f"merge 文件夹不存在：{MERGE_DIR}")
+    all_files = _list_merge_folder_files()
+    if req and req.selected:
+        sel = set(req.selected)
+        paths = [str(fp) for fp in all_files if fp.name in sel]
+    else:
+        paths = [str(fp) for fp in all_files]
+
+    detect_missing = False
+    base_map = req.base_files if req else None
+    if base == "trunk":
+        detect_missing = True
+        base_map = dict(base_map) if base_map else {}
+        # 为每个分组前缀注入 trunk 基准
+        seen_prefix = set()
+        for fp in paths:
+            prefix = extract_prefix(os.path.basename(fp))
+            if prefix in seen_prefix:
+                continue
+            seen_prefix.add(prefix)
+            trunk = find_trunk_baseline(os.path.basename(fp), TRUNK_DIRS)
+            if not trunk:
+                continue
+            trunk_name = os.path.basename(trunk)
+            if str(trunk) not in paths:
+                paths.append(str(trunk))
+            base_map[prefix] = trunk_name
+
+    if len(paths) < 2:
+        raise HTTPException(400, "merge 文件夹中可比对文件不足2个（需同名前缀的 ≥2 个版本）")
+    result_groups = _build_groups_from_paths(paths, base_map, detect_missing=detect_missing)
+    return CompareResponse(groups=result_groups, session_id=MERGE_FOLDER_SESSION)
+
+
+@router.post("/diff/merge-session/{session_id}/restore-row")
+async def restore_row(session_id: str, req: RestoreRowRequest):
+    """M3: 从 trunk 基准读取漏行数据，供前端补回。
+
+    前端收到 missing_row 告警后调此接口获取 trunk 基准该行的完整单元格值，
+    将本地 row_type 从 'missing_row' 改为 'matched' 并填入 trunk 值，标记 restored=True。
+    导出时该行按 matched 处理（基准克隆已含此行，无需额外插入）。
+    """
+    # 定位 trunk 基准文件路径
+    trunk_path: Optional[Path] = None
+    if session_id == MERGE_FOLDER_SESSION:
+        # merge 文件夹模式：优先 merge/trunk/，其次 merge/samples/，最后 resources/
+        for d in [MERGE_DIR / "trunk", MERGE_SAMPLES_DIR, RESOURCES_DIR]:
+            cand = d / req.base_file
+            if cand.is_file():
+                trunk_path = cand
+                break
+    else:
+        spath = SESSION_DIR / session_id
+        cand = spath / req.base_file
+        if cand.is_file():
+            trunk_path = cand
+    if trunk_path is None:
+        raise HTTPException(404, f"未找到 trunk 基准文件：{req.base_file}（请手动指定 base 路径）")
+
+    try:
+        sheets = read_excel(str(trunk_path))
+    except Exception as e:
+        raise HTTPException(500, f"读取 trunk 基准失败：{e}")
+
+    if req.sheet not in sheets:
+        raise HTTPException(400, f"trunk 基准中无 sheet：{req.sheet}")
+    data = sheets[req.sheet]
+    if not data or len(data) < 2:
+        raise HTTPException(400, f"sheet '{req.sheet}' 无数据行")
+
+    # 表头 + 定位 pk 行
+    headers = [str(c) if c is not None else '' for c in data[0]]
+    target_row: Optional[List] = None
+    for row in data[1:]:
+        if row and row[0] is not None and str(row[0]).strip() == str(req.pk).strip():
+            target_row = row
+            break
+    if target_row is None:
+        raise HTTPException(404, f"trunk 基准 sheet '{req.sheet}' 中未找到主键：{req.pk}")
+
+    from engine.compare import _col_letter
+    cells = []
+    for ci, val in enumerate(target_row):
+        cells.append({
+            'col': ci,
+            'col_letter': _col_letter(ci),
+            'value': val,
+            'versions': {req.base_file: val},
+        })
+    return {
+        'ok': True,
+        'pk': str(req.pk).strip(),
+        'sheet': req.sheet,
+        'base_file': req.base_file,
+        'headers': headers,
+        'cells': cells,
+    }
+
+
+@router.post("/merge")
+async def merge_excel(req: MergeRequest):
+    """将前端编辑后的比对结果导出为合并后的 Excel 文件。
+
+    - merge 文件夹模式（session_id == __merge_folder__）：克隆 merge 目录基准文件，
+      导出回 merge 目录，命名 {group}_{最大版本+1}.xlsx。
+    - 会话模式（上传）：克隆会话目录基准文件，导出 merged_{group}_{N}.xlsx 到会话目录。
+    - 回退：新建空白 Workbook。
+    """
+    # M3: 漏行阻断导出 — 存在未补回的 missing_row → 拒绝导出
+    unresolved_missing = []
+    for sheet_data in req.sheets:
+        for row in sheet_data.rows:
+            if row.row_type == 'missing_row' and not getattr(row, 'restored', False):
+                unresolved_missing.append({
+                    'sheet': sheet_data.name,
+                    'pk': row.key,
+                })
+    if unresolved_missing:
+        raise HTTPException(
+            400,
+            f"存在 {len(unresolved_missing)} 行漏行未补回，禁止导出："
+            + json.dumps(unresolved_missing, ensure_ascii=False)
+        )
+
+    # merge 文件夹模式
+    if req.session_id == MERGE_FOLDER_SESSION:
+        return _export_from_merge_folder(req)
+
+    tmp_path = DOWNLOADS_DIR / f"merged_{req.group_name}.xlsx"
+
+    # 尝试克隆基准文件保留样式
+    base_wb = None
+    base_file_name = None
+    if req.session_id:
+        session_path = SESSION_DIR / req.session_id
+        if session_path.is_dir():
+            # 优先用前端指定基准文件
+            if req.base_file and (session_path / req.base_file).is_file():
+                base_file_name = req.base_file
+            if base_file_name is None:
+                base_file_name = _find_base_file_in_dir(session_path, req.group_name)
+            if base_file_name is not None:
+                try:
+                    base_wb = load_workbook(session_path / base_file_name, data_only=False)
+                except Exception:
+                    base_wb = None
+
+    if base_wb is not None:
+        wb = base_wb
+        base_path = session_path / base_file_name
+        _apply_edits_to_workbook(wb, req)
+        cache_info = _save_with_formula_cache(wb, base_path, Path(tmp_path))
+
+        if req.session_id:
+            spath = SESSION_DIR / req.session_id
+            versioned_name = get_next_version_filename(spath, req.group_name)
+            export_dest = spath / versioned_name
+            shutil.copy2(tmp_path, export_dest)
+        else:
+            versioned_name = f"merged_{req.group_name}_1.xlsx"
+            export_dest = None
+
+        # R13: 记录导出历史
+        try:
+            merge_history.record_merge(req.session_id, req.group_name, req.sheets, exported=True)
+        except Exception:
+            pass
+
+        return FileResponse(
+            tmp_path,
+            filename=versioned_name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "X-Export-Path": str(export_dest) if export_dest else "",
+                "X-Export-Name": versioned_name,
+                "X-Formula-Cache-Needs-Fix": "1" if cache_info["needs_manual_fix"] else "0",
+                "X-Formula-Cache-Message": quote(cache_info["cache_message"], safe=""),
+            },
+        )
+
+    # 回退：新建空白 Workbook（排除 deleted 行，包含 inserted 行）
+    wb = Workbook()
+    wb.remove(wb.active)
+    for sheet_data in req.sheets:
+        ws = wb.create_sheet(title=sheet_data.name[:31])
+        headers = sheet_data.headers
+        # R18: 回退路径全量按主键排序（matched + inserted 统一排序后写入）
+        rows = [row for row in sheet_data.rows if row.row_type != 'deleted']
+        rows.sort(key=lambda r: _pk_sort_key(r.key))
+        if not headers:
+            ws.cell(row=1, column=1, value="(空)")
+            continue
+        ws.cell(row=1, column=1, value="Key")
+        for ci, h in enumerate(headers):
+            ws.cell(row=1, column=ci + 2, value=h if h is not None else '')
+        for ri, row in enumerate(rows):
+            pkc = ws.cell(row=ri + 2, column=1, value=row.key)
+            # R18: 主键批注合并"编号重映射"与"新增来源"
+            notes = []
+            if getattr(row, 'id_remapped', False) and getattr(row, 'original_pk', ''):
+                notes.append(f"原先编号：{row.original_pk}\nmerge冲突修改为：{row.key}")
+            src_file = getattr(row, 'source_file', '') or ''
+            src_ver = getattr(row, 'source_version', '') or ''
+            if src_file:
+                src_label = f"v{src_ver}" if src_ver else src_file
+                notes.append(f"新增来源：{src_label}（{src_file}）")
+            if notes:
+                pkc.comment = Comment("\n".join(notes), "merge")
+            for ci, cell in enumerate(row.cells):
+                if ci < len(headers):
+                    ws.cell(row=ri + 2, column=ci + 2, value=cell.value)
+
+    wb.save(tmp_path)
+
+    if req.session_id:
+        spath = SESSION_DIR / req.session_id
+        versioned_name = get_next_version_filename(spath, req.group_name)
+        shutil.copy2(tmp_path, spath / versioned_name)
+    else:
+        versioned_name = f"merged_{req.group_name}_1.xlsx"
+
+    # R13: 记录导出历史（回退路径）
+    try:
+        merge_history.record_merge(req.session_id, req.group_name, req.sheets, exported=True)
+    except Exception:
+        pass
+
+    return FileResponse(
+        tmp_path,
+        filename=versioned_name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@router.post("/compare-local")
+async def compare_local(paths: List[str]):
+    """用文件路径直接比对（无需上传）。"""
+    if len(paths) < 2:
+        raise HTTPException(400, "请提供至少2个文件路径")
+
+    for p in paths:
+        if not os.path.exists(p):
+            raise HTTPException(400, f"文件不存在: {p}")
+
+    session_id = str(uuid.uuid4())
+    session_path = SESSION_DIR / session_id
+    session_path.mkdir(parents=True, exist_ok=True)
+    # 复制文件到持久会话目录，供 merge 时克隆基准文件保留样式
+    for p in paths:
+        shutil.copy2(p, session_path / os.path.basename(p))
+
+    groups = group_files(paths)
+    if not groups:
+        raise HTTPException(400, "未找到可分组的多版本文件")
+
+    result_groups: dict = {}
+    for prefix, file_list in groups.items():
+        _read = read_group_files(file_list)
+        file_sheets = {fn: d[0] for fn, d in _read.items()}
+        file_formulas = {fn: d[1] for fn, d in _read.items()}
+        file_comments = {fn: d[2] for fn, d in _read.items()}
+
+        common_sheets = get_common_sheets(file_sheets)
+
+        base_name = None
+        for fname in file_sheets:
+            if is_base_file(fname):
+                base_name = fname
+                break
+        if base_name is None:
+            raise HTTPException(400, f"分组 '{prefix}' 中未找到基准文件")
+
+        sheets_diff = {}
+        for sheet_name in common_sheets:
+            merged = compare_sheet(file_sheets, base_name, sheet_name, file_formulas, file_comments=file_comments)
+            sheets_diff[sheet_name] = SheetDiff(
+                name=sheet_name,
+                rows=merged['rows'],
+                headers=merged['headers'],
+                stats=merged['stats'],
+            )
+
+        result_groups[prefix] = FileGroup(
+            group_name=prefix,
+            files=[os.path.basename(f) for f in file_list],
+            base_file=base_name,
+            sheets=sheets_diff,
+        )
+
+    # R13: 记录比对历史（保留 1 天）
+    try:
+        base_files_list = sorted({g.base_file for g in result_groups.values() if g.base_file})
+        all_files = sorted({f for g in result_groups.values() for f in g.files})
+        derived = [f for f in all_files if f not in base_files_list]
+        merge_history.record_compare(
+            session_id, result_groups,
+            base_file=";".join(base_files_list) if base_files_list else "",
+            derived_files=derived,
+        )
+    except Exception:
+        pass
+
+    return CompareResponse(groups=result_groups, session_id=session_id)
+
+
+@router.post("/set-base")
+async def set_base(req: SetBaseRequest):
+    """记录用户指定的基准文件。"""
+    return {"status": "ok", "group_name": req.group_name, "base_file": req.base_file}
+
+
+@router.post("/auto-merge")
+async def auto_merge(req: AutoMergeRequest):
+    """按 merge_strategies.yaml 列策略对当前比对结果执行智能合并。
+
+    流程：ID 冲突重映射（拆分错误合并的 inserted 行 + 主键撞车重编号）
+    → 自动合并单元格 → 引用完整性校验（同步重映射后的外键值，检测悬空）。
+
+    返回每个 sheet 的自动合并项、ID 重映射报告、引用校验报告与重映射后的行。
+    前端据此更新单元格值、展示冲突解决与悬空引用提示。
+    """
+    # 聚合跨表主键集合（按主键列名索引），供跨表外键校验
+    sheets_raw = [
+        {
+            "name": s.name,
+            "headers": s.headers,
+            "rows": [r.model_dump() if hasattr(r, "model_dump") else r for r in s.rows],
+        }
+        for s in req.sheets
+    ]
+    cross_sheet_pks = collect_cross_sheet_pks(sheets_raw)
+
+    result = {}
+    for sheet_data in req.sheets:
+        rows = [r.model_dump() if hasattr(r, "model_dump") else r for r in sheet_data.rows]
+        res = resolve_and_validate_sheet(
+            table_stem=req.group_name,
+            sheet_name=sheet_data.name,
+            headers=sheet_data.headers,
+            rows=rows,
+            base_name=req.base_file,
+            all_files=req.files,
+            cross_sheet_pks=cross_sheet_pks,
+            conflict_mode=req.conflict_mode,
+        )
+        result[sheet_data.name] = res
+    return {"group_name": req.group_name, "sheets": result}
+
+
+@router.post("/recommend")
+async def recommend(req: AutoMergeRequest):
+    """为每个冲突/变更单元格生成推荐版本（基于列策略 + 多数表决）。
+
+    不修改数据，仅返回推荐供前端在版本选择弹窗标注"⭐推荐"。未来 AI 基座接入后替换推荐逻辑即可。
+    """
+    result = {}
+    for sheet_data in req.sheets:
+        rows = [r.model_dump() if hasattr(r, "model_dump") else r for r in sheet_data.rows]
+        res = recommend_sheet(
+            table_stem=req.group_name,
+            sheet_name=sheet_data.name,
+            headers=sheet_data.headers,
+            rows=rows,
+            base_name=req.base_file,
+            all_files=req.files,
+        )
+        result[sheet_data.name] = res
+    return {"group_name": req.group_name, "sheets": result}
+
+
+class PreviewRowFormulaRequest(BaseModel):
+    """行公式预览请求：给定一行的单元格值，重算所有公式列的结果。"""
+    cells: List[dict]   # [{col, value, formula_text, diff_type}]
+
+
+@router.post("/preview-row-formula")
+async def preview_row_formula(req: PreviewRowFormulaRequest):
+    """按当前行单元格值重算公式列结果（用户冲突选版本后实时预览）。
+
+    前端在 resolveCell 改了输入列值后调本接口，后端用轻量求值器
+    （SUM/AVERAGE/MAX/MIN/COUNT 行内公式）重算同行所有公式列，返回新值。
+    非行内公式（跨行/跨表）无法求值，返回 null（导出时由 libreoffice 重算补值）。
+    """
+    from engine.compare import _eval_row_formula
+    # 构建该行各列值数组（按 col 索引）
+    max_col = max((c.get("col", 0) for c in req.cells), default=0)
+    row_values: List = [None] * (max_col + 1)
+    for c in req.cells:
+        ci = c.get("col", 0)
+        if 0 <= ci <= max_col:
+            row_values[ci] = c.get("value")
+    # 重算每个公式列
+    results = []
+    for c in req.cells:
+        if c.get("diff_type") == "formula" and c.get("formula_text"):
+            new_val = _eval_row_formula(c["formula_text"], row_values)
+            results.append({"col": c.get("col", 0), "value": new_val})
+    return {"cells": results}
+
+
+@router.get("/merge/history")
+async def merge_history_list(since: int = Query(default=24, ge=1, le=168, description="近 N 小时")):
+    """R13: 返回近 N 小时的 merge 比对历史列表（按时间倒序）。"""
+    items = merge_history.list_history(since_hours=since)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/merge/history/{session_id}")
+async def merge_history_detail(session_id: str):
+    """R13: 返回指定 session 的完整历史记录详情。"""
+    entry = merge_history.get_history(session_id)
+    if entry is None:
+        raise HTTPException(404, f"未找到 session 历史记录：{session_id}")
+    return entry
+
+
+@router.post("/merge/history/{session_id}/restore")
+async def merge_history_restore(session_id: str):
+    """R13: 用 session 目录下保留的原始文件重新比对，返回只读比对结果。
+
+    回填的 session 不生成新 session_id，沿用原 id，便于前端复用导出链路。
+    """
+    session_path = SESSION_DIR / session_id
+    if not session_path.is_dir():
+        raise HTTPException(404, f"会话目录不存在：{session_id}（可能已过期清理）")
+
+    saved_paths = [str(p) for p in session_path.iterdir() if p.is_file() and p.suffix.lower() in ('.xlsx', '.xls', '.xlsm')]
+    if len(saved_paths) < 2:
+        raise HTTPException(400, f"会话目录文件不足 2 个，无法重新比对")
+
+    # 无 base_map → 自动检测基准
+    groups = group_files(saved_paths, {})
+    if not groups:
+        raise HTTPException(400, "未找到可分组的多版本文件")
+
+    result_groups: dict = {}
+    for prefix, file_list in groups.items():
+        _read = read_group_files(file_list)
+        file_sheets = {fn: d[0] for fn, d in _read.items()}
+        file_formulas = {fn: d[1] for fn, d in _read.items()}
+        file_comments = {fn: d[2] for fn, d in _read.items()}
+        common_sheets = get_common_sheets(file_sheets)
+        base_name = None
+        for fname in file_sheets:
+            if is_base_file(fname):
+                base_name = fname
+                break
+        if base_name is None:
+            raise HTTPException(400, f"分组 '{prefix}' 中未找到基准文件")
+        sheets_diff = {}
+        for sheet_name in common_sheets:
+            merged = compare_sheet(file_sheets, base_name, sheet_name, file_formulas, file_comments=file_comments)
+            sheets_diff[sheet_name] = SheetDiff(
+                name=sheet_name,
+                rows=merged['rows'],
+                headers=merged['headers'],
+                stats=merged['stats'],
+                missing_rows=merged.get('missing_rows', []),
+                structure_diff=merged.get('structure_diff'),
+            )
+        sheet_diff_info = get_sheet_diff(file_sheets, base_name)
+        result_groups[prefix] = FileGroup(
+            group_name=prefix,
+            files=[os.path.basename(f) for f in file_list],
+            base_file=base_name,
+            sheets=sheets_diff,
+            missing_sheets=sheet_diff_info["missing_in_derived"],
+        )
+    return CompareResponse(groups=result_groups, session_id=session_id)
+
+
+@router.get("/health")
+async def health():
+    return {"status": "ok"}

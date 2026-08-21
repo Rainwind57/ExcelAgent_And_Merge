@@ -1,0 +1,39 @@
+{
+  "group": "eval_seed",
+  "base_file": "eval_seed.xlsx",
+  "derived_files": [
+    "eval_seed_1.xlsx",
+    "eval_seed_2.xlsx"
+  ],
+  "sheets": {
+    "TestData": {
+      "headers": [
+        "id",
+        "name",
+        "value",
+        "desc",
+        "flag"
+      ],
+      "expected_conflict_cells": 2,
+      "expected_changed_cells": 2,
+      "false_conflict_cells": [
+        [
+          "2",
+          "value"
+        ]
+      ],
+      "id_conflicts": [
+        {
+          "pk": "2000",
+          "files": [
+            "eval_seed_1.xlsx",
+            "eval_seed_2.xlsx"
+          ]
+        }
+      ],
+      "expected_inserted_unique": 2,
+      "expected_deleted": 0,
+      "expected_id_remap_count": 1
+    }
+  }
+}

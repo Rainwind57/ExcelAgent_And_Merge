@@ -1,0 +1,70 @@
+"""构造 merge 公式缓存演示样本：前缀分组公式表（match_stat 系列）。
+
+模拟 match_dan.xlsx 等公式表的多版本合并场景（见 ca-overview.md §2.5）：
+- match_stat.xlsx      基准（无 _数字 后缀），SeasonStat sheet，SUM/AVERAGE/MAX 公式
+- match_stat_1.xlsx    衍生版本1：改 season1 的 c1（内容变更）
+- match_stat_2.xlsx    衍生版本2：新增 season6（行插入）
+
+三文件共享前缀 match_stat → 按文件名前缀判同源分组；merge 导出生成 match_stat_3.xlsx
+亦同前缀。openpyxl 写公式文本无缓存，缓存值靠 libreoffice 重算补（见 test_merge_formula_cache）。
+"""
+import openpyxl
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+TEST_RES = ROOT / "resources/qa_test/formula_merge_samples"
+TEST_RES.mkdir(parents=True, exist_ok=True)
+
+HEADERS = ["赛季编号", "场次1", "场次2", "场次3", "场次4", "总场次", "平均场次", "最高单场"]
+FIELDS = ["season_id:int", "c1:int", "c2:int", "c3:int", "c4:int", "total:int", "avg:float", "max:int"]
+
+
+def _write_row(ws, r, season, c1, c2, c3, c4):
+    ws.cell(r, 1, season)
+    ws.cell(r, 2, c1)
+    ws.cell(r, 3, c2)
+    ws.cell(r, 4, c3)
+    ws.cell(r, 5, c4)
+    ws.cell(r, 6, f"=SUM(B{r}:E{r})")
+    ws.cell(r, 7, f"=AVERAGE(B{r}:E{r})")
+    ws.cell(r, 8, f"=MAX(B{r}:E{r})")
+
+
+def _new_wb():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SeasonStat"
+    ws.append(HEADERS)
+    ws.append(FIELDS)
+    return wb, ws
+
+
+def build_match_stat_group():
+    """基准 match_stat.xlsx + 两衍生版本，共享前缀 match_stat。"""
+    # 基准：season 1-5
+    wb, ws = _new_wb()
+    for i in range(1, 6):
+        _write_row(ws, 2 + i, i, i * 10, i * 10 + 5, i * 10 + 3, i * 10 + 8)
+    wb.save(TEST_RES / "match_stat.xlsx")
+    wb.close()
+
+    # 衍生1：season1 c1 10 -> 99（内容变更）
+    wb, ws = _new_wb()
+    for i in range(1, 6):
+        c1 = 99 if i == 1 else i * 10
+        _write_row(ws, 2 + i, i, c1, i * 10 + 5, i * 10 + 3, i * 10 + 8)
+    wb.save(TEST_RES / "match_stat_1.xlsx")
+    wb.close()
+
+    # 衍生2：新增 season6（行插入）
+    wb, ws = _new_wb()
+    for i in range(1, 7):
+        _write_row(ws, 2 + i, i, i * 10, i * 10 + 5, i * 10 + 3, i * 10 + 8)
+    wb.save(TEST_RES / "match_stat_2.xlsx")
+    wb.close()
+    print(f"[OK] match_stat 前缀分组 -> {TEST_RES}/match_stat*.xlsx")
+
+
+if __name__ == "__main__":
+    build_match_stat_group()
+    print("=== match_stat 前缀分组公式样本构造完成 ===")

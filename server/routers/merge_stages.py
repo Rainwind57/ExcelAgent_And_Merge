@@ -1,0 +1,1258 @@
+"""三阶段合并路由：单生产者合并 → 跨生产者综合 → 合回 trunk。
+
+.. deprecated::
+    本模块的 `/api/merge/stage1|2|3/*` 端点为 legacy 手工三阶段流程，依赖
+    文件名后缀 `{group}_N.xlsx` 模拟提交历史与手工 `merge/mergebase/` 拷贝
+    作 merge-base。新流程改由真实 SVN copyfrom 版本号自动定位 merge-base：
+      - 跨分支合并（absorb / merge_back）→ `POST /api/merge/branch/compare`
+        与 `POST /api/merge/branch/apply`（见 `routers/merge_branch.py`）
+      - 同分支子目录合回目标目录 → `POST /api/merge/subdir/compare` 与
+        `POST /api/merge/subdir/apply`（见 `routers/merge_subdir.py`）
+    本模块仅保留、不改行为，供无 SVN 环境的手工三阶段流程与现有测试继续使用，
+    待前端切换至新端点后再评估下线（见 openspec change merge-svn-dual-mode）。
+
+阶段1（合并多次提交，单生产者）：生产者子目录 merge/src/{branch}/ 内把多次提交
+  {table}_1..N.xlsx 合并成中间版本 {table}_merged_{branch}.xlsx，产出到
+  merge/src/devbranch/ 缓冲区。base=最小版本号提交（或指定）。内部未决冲突阻断产出。
+
+阶段2（跨生产者综合）：把各生产者阶段1 产出的中间版本综合成单一综合版本
+  {table}_consolidated.xlsx。base=公共 fork 快照（merge-base），多方比对；
+  单生产者退化为直接拷贝。跨生产者未决冲突阻断产出综合版本。
+
+阶段3（合回 trunk）：取 merge/trunk/{table}.xlsx 作基准（ours）、综合版本作 theirs、
+  fork 快照作 merge-base，三方合回 trunk，版本化产出 {table}_{N+1}.xlsx 到
+  merge/trunk/。合回未决冲突阻断写回。
+
+阶段隔离：阶段2 只消费阶段1 成功产出（_stage1_manifest.json 记录）；阶段3 只消费
+  阶段2 成功产出的综合版本（_stage2_manifest.json 记录）；跳过前置阶段被拒。
+  三阶段复用 compare_sheet / _apply_edits_to_workbook / _save_with_formula_cache，
+  不重写核心算法。
+"""
+import json
+import logging
+import os
+import re
+import shutil
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+from fastapi import APIRouter, HTTPException
+from openpyxl import load_workbook
+from pydantic import BaseModel
+
+from config import MERGE_DIR
+from engine.models import CompareResponse, FileGroup, SheetDiff, MergeRequest, SheetMergeData
+from engine.parser import read_excel, read_formulas, read_comments, read_formulas_and_comments, read_group_files, get_common_sheets, get_sheet_diff
+from engine.compare import compare_sheet
+from engine.ref_integrity import validate_sheet_references, collect_cross_sheet_pks, _load_fk_columns
+from engine.id_resolver import PK_COL
+from routers.diff import (
+    _apply_edits_to_workbook,
+    _save_with_formula_cache,
+    get_next_merge_version,
+    _pk_sort_key,
+)
+
+router = APIRouter(prefix="/api/merge", tags=["merge-stages"])
+
+# 目录约定（见 merge/src/README.md）
+SRC_DIR = MERGE_DIR / "src"                 # 生产区：各生产者子目录
+DEVBRANCH_DIR = SRC_DIR / "devbranch"       # 中间版本缓冲区（阶段1 产出）
+TRUNK_DIR = MERGE_DIR / "trunk"             # 目标区（阶段3 合回）
+STAGE1_MANIFEST = DEVBRANCH_DIR / "_stage1_manifest.json"
+STAGE2_MANIFEST = DEVBRANCH_DIR / "_stage2_manifest.json"   # 阶段2 综合版本产出记录
+AUDIT_LOG = TRUNK_DIR / "_merge_audit.json"   # 阶段3 合回审计日志（可回溯每次改了什么）
+ARCHIVE_DIR = DEVBRANCH_DIR / "_merged_archive"  # 合回成功后归档的中间/综合版本（消费后不再复用）
+APPLY_SNAPSHOT_DIR = DEVBRANCH_DIR / "_apply_snapshots"  # 阶段3 apply 前快照(崩溃可恢复,3.5)
+
+
+def _apply_snapshot_path(group_name: str) -> Path:
+    return APPLY_SNAPSHOT_DIR / f"{group_name}.apply.json"
+
+
+def _persist_apply_snapshot(group_name: str, req: MergeRequest) -> None:
+    """apply 前持久化用户解决结果,保证崩溃可恢复(3.5 先快照落盘)。
+
+    重型 save 前先把已解决的冲突决议写盘;若 save/重算崩溃,决议不丢失,
+    可据快照重放 apply。失败不阻断主流程(仅记日志)。
+    """
+    try:
+        APPLY_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        _apply_snapshot_path(group_name).write_text(
+            req.model_dump_json(), encoding="utf-8")
+    except Exception:
+        logger.warning("apply 快照落盘失败(不影响主流程)", exc_info=True)
+
+
+def _clear_apply_snapshot(group_name: str) -> None:
+    """apply 成功后清理快照。"""
+    try:
+        p = _apply_snapshot_path(group_name)
+        if p.is_file():
+            p.unlink()
+    except Exception:
+        pass
+
+
+# ── 请求模型 ──
+
+class Stage1CompareRequest(BaseModel):
+    branch: str                             # 生产者子目录名（如 devbranch1）
+    group_name: str                         # 表分组前缀（如 item）
+    base_file: Optional[str] = None         # 指定基准提交（默认最小版本号）
+    incremental: bool = False               # 增量合入：base=已产出中间版本，仅合并新提交
+    derived_files: Optional[List[str]] = None  # 参与合并的衍生文件（不含 base；None=除 base 外全部）
+
+
+class Stage2CrossCompareRequest(BaseModel):
+    group_name: str                         # 表分组前缀（跨生产者维度，不传 branch）
+
+
+class Stage3CompareRequest(BaseModel):
+    group_name: str                         # 表分组前缀（合回不依赖 branch）
+
+
+# ── 辅助 ──
+
+def _list_commit_files(branch: str, group: str) -> List[Path]:
+    """列出生产者子目录下某 group 的多次提交 {group}_数字.xlsx，按版本号升序。
+
+    仅取 _数字 提交，排除 _missing 样本与临时文件。
+    """
+    branch_dir = SRC_DIR / branch
+    if not branch_dir.is_dir():
+        return []
+    pattern = re.compile(rf"^{re.escape(group)}_(\d+)\.xlsx$")
+    matched: List[tuple] = []
+    for fp in branch_dir.iterdir():
+        if not fp.is_file() or fp.name.startswith("~$"):
+            continue
+        m = pattern.match(fp.name)
+        if m:
+            matched.append((int(m.group(1)), fp))
+    matched.sort(key=lambda t: t[0])
+    return [fp for _, fp in matched]
+
+
+def _pick_base_name(files: List[Path], base_file: Optional[str]) -> str:
+    """选阶段1 基准文件名：指定优先，否则最小版本号（files 已升序，取首个）。"""
+    if base_file:
+        for fp in files:
+            if fp.name == base_file:
+                return base_file
+        raise HTTPException(400, f"指定的基准提交不存在：{base_file}")
+    return files[0].name
+
+
+def _intermediate_name(group: str, branch: str) -> str:
+    """中间版本文件名：编码生产者名避免多生产者互相覆盖。"""
+    return f"{group}_merged_{branch}.xlsx"
+
+
+# fork 快照（merge-base）目录：生产者拷 ca 时落盘的公共祖先，阶段2 三方合并基准
+MERGEBASE_DIR = MERGE_DIR / "mergebase"
+
+
+def _mergebase_path(branch: str, group: str) -> Path:
+    """推导某生产者某分组的 fork 快照路径。"""
+    return MERGEBASE_DIR / f"{branch}_{group}.xlsx"
+
+
+def _trunk_head_path(group: str) -> Path:
+    """trunk 目录该 group 的最新版本文件（{table}_{maxver}.xlsx），无则 {table}.xlsx。
+
+    多生产者顺序合回：后到者以前者合回后的最新 trunk 版本为 ours。
+    """
+    base = TRUNK_DIR / f"{group}.xlsx"
+    if not TRUNK_DIR.is_dir():
+        return base
+    pat = re.compile(rf"^{re.escape(group)}_(\d+)\.xlsx$")
+    versions: List[tuple] = []
+    for fp in TRUNK_DIR.iterdir():
+        m = pat.match(fp.name)
+        if m:
+            versions.append((int(m.group(1)), fp))
+    if not versions:
+        return base
+    versions.sort(key=lambda t: t[0])
+    return versions[-1][1]
+
+
+def _merged_commits(inter_name: str) -> List[str]:
+    """读取该中间版本已折入的提交文件名清单（增量判定依据）。"""
+    entry = _read_manifest().get(inter_name) or {}
+    return entry.get("merged_commits", [])
+
+
+def _new_commits(files: List[Path], merged: List[str]) -> List[Path]:
+    """未折入中间版本的新提交（按版本号升序）。"""
+    merged_set = set(merged)
+    return [fp for fp in files if fp.name not in merged_set]
+
+
+def _build_group(
+    paths: List[str],
+    base_name: str,
+    group_name: str,
+    detect_missing: bool = False,
+    merge_base_file: Optional[str] = None,
+    commit_authors: Optional[Dict[str, str]] = None,
+    version_meta: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> FileGroup:
+    """由显式 base + 派生路径构建比对分组，不依赖文件名前缀归并。
+
+    阶段2 中间版本名（item_merged_devbranch1）与 trunk（item）前缀不同，
+    无法用 group_files 分组，故显式指定 base_name 直接调 compare_sheet。
+
+    commit_authors: {文件名: 作者名}，透传给 compare_sheet 用于"同作者自动合并"判定
+        （3.1/3.2，D3）。默认 None，不传时行为与现状完全一致（后续任务5/6 会由调用方
+        基于 svn log 结果传入）。
+    """
+    file_sheets = {}
+    file_formulas = {}
+    file_comments = {}
+    # 方案 ③ P0-1: 无变更提前跳过——read_group_files 之前判 rev 全等，
+    # 命中则只读 base 单文件取 headers + total_rows，跳过衍生文件解析（砍 IO 段大头）。
+    # SVN rev 不可变 → 同 rev 必同内容，base 文件代表整组；read_excel 走 calamine Rust
+    # 引擎 10w 行 0.05s，跳过 N-1 个衍生文件解析才是大头节省。任一异常回退原路径。
+    if version_meta and os.environ.get("MERGE_DISABLE_NO_CHANGE_SKIP") != "1":
+        base_rev = version_meta.get(base_name, {}).get("rev", "")
+        all_files = [Path(p).name for p in paths]
+        derived_files = [fn for fn in all_files if fn != base_name]
+        derived_revs = [version_meta.get(fn, {}).get("rev", "") for fn in derived_files]
+        if base_rev and derived_revs and all(r == base_rev for r in derived_revs):
+            try:
+                base_path = next((p for p in paths if Path(p).name == base_name), None)
+                base_sheets = read_excel(base_path) if base_path else {}
+                sheets_diff: Dict[str, SheetDiff] = {}
+                for sheet_name in base_sheets:
+                    base_rows_raw = base_sheets.get(sheet_name, [])
+                    # headers 字符串化（与 compare_sheet 一致：表头单元格可能为 int/None）
+                    headers = [str(h) if h is not None else ""
+                               for h in base_rows_raw[0]] if base_rows_raw else []
+                    total_rows = max(0, len(base_rows_raw) - 1)
+                    sheets_diff[sheet_name] = SheetDiff(
+                        name=sheet_name,
+                        headers=headers,
+                        rows=[],
+                        stats={"total_rows": total_rows, "conflicts": 0, "changed": 0,
+                               "inserted": 0, "deleted": 0, "missing_rows": 0,
+                               "formula": 0, "formula_changed": 0,
+                               "formula_conflicts": 0, "comment_conflicts": 0},
+                        structural_status="no_change",
+                    )
+                logger.info("group %s 所有衍生 rev==base rev(%s)，跳过 read_group_files（no_change）",
+                            group_name, base_rev)
+                return FileGroup(
+                    group_name=group_name,
+                    files=all_files,
+                    base_file=base_name,
+                    sheets=sheets_diff,
+                    missing_sheets=[],
+                    structural_status="no_change",
+                    version_meta=version_meta or {},
+                )
+            except Exception:
+                logger.warning("group %s no_change 快速跳过失败，回退 read_group_files",
+                               group_name, exc_info=True)
+    # M7-2: 公式+批注合并加载 + 多文件 ThreadPool 并发（read_group_files）。
+    # 每文件一次 read_only 取值 + 一次取公式/批注，多文件并发解析（lxml 释放 GIL）。
+    _read = read_group_files(paths)
+    for fp in paths:
+        fname = Path(fp).name
+        d = _read[fname]
+        file_sheets[fname] = d[0]
+        file_formulas[fname] = d[1]
+        file_comments[fname] = d[2]
+
+    common_sheets = get_common_sheets(file_sheets)
+    all_files = [Path(p).name for p in paths]
+
+    # #33: 未变更表快速跳过——若所有衍生文件 rev 都等于 base rev（svn 未改动），
+    # 跳过 compare_sheet 全量比对，直接产出空 SheetDiff（structural_status="no_change"）。
+    # 仅当 version_meta 齐全且 rev 严格相等时触发；rev 缺失/不一致一律走原比对，避免误跳。
+    # MERGE_DISABLE_NO_CHANGE_SKIP=1 可强制禁用（A/B bench 测 before #33 用）。
+    if version_meta and os.environ.get("MERGE_DISABLE_NO_CHANGE_SKIP") != "1":
+        base_rev = version_meta.get(base_name, {}).get("rev", "")
+        if base_rev:
+            derived_files = [fn for fn in all_files if fn != base_name]
+            derived_revs = [version_meta.get(fn, {}).get("rev", "") for fn in derived_files]
+            if derived_revs and all(r and r == base_rev for r in derived_revs):
+                logger.info("group %s 所有衍生 rev==base rev(%s)，跳过 compare（no_change）",
+                            group_name, base_rev)
+                sheets_diff: Dict[str, SheetDiff] = {}
+                for sheet_name in common_sheets:
+                    base_rows_raw = file_sheets.get(base_name, {}).get(sheet_name, [])
+                    # headers 字符串化（与 compare_sheet 一致：表头单元格可能为 int/None）
+                    headers = [str(h) if h is not None else ""
+                               for h in base_rows_raw[0]] if base_rows_raw else []
+                    total_rows = max(0, len(base_rows_raw) - 1)
+                    sheets_diff[sheet_name] = SheetDiff(
+                        name=sheet_name,
+                        headers=headers,
+                        rows=[],
+                        stats={"total_rows": total_rows, "conflicts": 0, "changed": 0,
+                               "inserted": 0, "deleted": 0, "missing_rows": 0,
+                               "formula": 0, "formula_changed": 0,
+                               "formula_conflicts": 0, "comment_conflicts": 0},
+                        structural_status="no_change",
+                    )
+                sheet_diff_info = get_sheet_diff(file_sheets, base_name)
+                return FileGroup(
+                    group_name=group_name,
+                    files=all_files,
+                    base_file=base_name,
+                    sheets=sheets_diff,
+                    missing_sheets=sheet_diff_info["missing_in_derived"],
+                    structural_status="no_change",
+                    version_meta=version_meta or {},
+                )
+
+    # 第一遍：逐 sheet 比对（compare_sheet 内部已跑 resolve_id_conflicts mode=split 重编号，
+    # 并在行上打 id_remapped/original_pk，返回 id_resolution 报告）
+    # M20: sheet 级并行——compare_sheet 是纯函数（只读入参、返回独立 dict，无共享可变状态），
+    # 多 sheet 可并发；跨表聚合（collect_cross_sheet_pks）在第一遍之后串行做，依赖全部 sheet 结果。
+    merged_by_sheet: Dict[str, dict] = {}
+    sheet_list = list(common_sheets)
+    workers = min(len(sheet_list), 4) if len(sheet_list) > 1 else 1
+    if workers > 1:
+        def _cmp_sheet(sn):
+            return sn, compare_sheet(file_sheets, base_name, sn, file_formulas, detect_missing=detect_missing, file_comments=file_comments, merge_base_file=merge_base_file, commit_authors=commit_authors, version_meta=version_meta, sparse=True)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for sn, merged in ex.map(_cmp_sheet, sheet_list):
+                merged_by_sheet[sn] = merged
+    else:
+        for sheet_name in sheet_list:
+            merged_by_sheet[sheet_name] = compare_sheet(file_sheets, base_name, sheet_name, file_formulas, detect_missing=detect_missing, file_comments=file_comments, merge_base_file=merge_base_file, commit_authors=commit_authors, version_meta=version_meta, sparse=True)
+
+    # 跨表主键聚合（用重映射后的合并行，供跨表外键悬空检测）。
+    # 全表均无外键列时跳过：collect_cross_sheet_pks 需遍历全部行构建主键集合，
+    # validate_sheet_references 遇空 fk_cols 早返回不会用到，跳过省全量行扫描。
+    has_any_fk = any(
+        _load_fk_columns(m["headers"], group_name, sn)
+        for sn, m in merged_by_sheet.items()
+    )
+    cross_sheet_pks = collect_cross_sheet_pks([
+        {"name": sn, "headers": m["headers"], "rows": m["rows"]}
+        for sn, m in merged_by_sheet.items()
+    ]) if has_any_fk else {}
+
+    # 第二遍：引用完整性校验，组装 SheetDiff（透传 id_resolution 供前端展示重编号徽标）
+    # 注：合并场景下 base 仅供参考，只有继承的两个版本可供选择，不提供"采纳推荐 base"
+    #   的策略推荐（避免误把 base 当可选结果）；冲突解决交由 AI 建议（调接口综合推荐）。
+    sheets_diff = {}
+    for sheet_name, merged in merged_by_sheet.items():
+        headers = merged["headers"]
+        rows = merged["rows"]
+        id_resolution = merged.get("id_resolution")
+        id_mapping = (id_resolution or {}).get("id_mapping", [])
+        # 引用校验：消费 id_mapping 同步外键值 + 检测悬空（rows 为 compare 产出的 dict，就地同步生效）
+        ref_res = validate_sheet_references(
+            rows, headers, group_name, sheet_name, id_mapping, cross_sheet_pks,
+        )
+        # 重编号后按主键自然排序，同步重映射 conflicts/dangling 的 ri（前端按 ri 定位行）
+        rows = _sort_rows_by_pk(rows, id_resolution, ref_res)
+        sheets_diff[sheet_name] = SheetDiff(
+            name=sheet_name,
+            rows=rows,
+            headers=headers,
+            stats=merged['stats'],
+            missing_rows=merged.get('missing_rows', []),
+            structure_diff=merged.get('structure_diff'),
+            id_resolution=id_resolution,
+            ref_integrity=ref_res,
+        )
+    sheet_diff_info = get_sheet_diff(file_sheets, base_name)
+    # R9：跨 sheet 聚合冲突/变更计数，供前端按冲突密度排序与增量渲染（免本地全扫）
+    grp_conflicts = grp_changed = 0
+    for _sd in sheets_diff.values():
+        _st = _sd.stats or {}
+        grp_conflicts += int(_st.get("conflicts", 0)) + int(_st.get("formula_conflicts", 0)) + int(_st.get("comment_conflicts", 0))
+        grp_changed += int(_st.get("changed", 0))
+    return FileGroup(
+        group_name=group_name,
+        files=all_files,
+        base_file=base_name,
+        sheets=sheets_diff,
+        missing_sheets=sheet_diff_info["missing_in_derived"],
+        extra_sheets=sheet_diff_info.get("extra_in_derived", []),
+        version_meta=version_meta or {},
+        conflict_count=grp_conflicts,
+        changed_count=grp_changed,
+    )
+
+
+def _unresolved_conflicts(req: MergeRequest) -> List[dict]:
+    """扫描前端解决后的行，任一 cell 仍 conflict=True 视为未决（前端解决后清标记）。"""
+    unresolved: List[dict] = []
+    for sheet_data in req.sheets:
+        for row in sheet_data.rows:
+            for cell in row.cells:
+                if getattr(cell, "conflict", False):
+                    unresolved.append({
+                        "sheet": sheet_data.name,
+                        "key": row.key,
+                        "col": cell.col,
+                    })
+    return unresolved
+
+
+def _validate_apply_refs(mr: MergeRequest, extra_pks: Optional[Dict[str, set]] = None) -> Dict[str, Any]:
+    """apply 前对用户解决后的行做引用完整性兜底校验（只读悬空检测，不重映射）。
+
+    用空白 id_mapping 调 validate_sheet_references → 仅检测悬空外键，不改动用户数据。
+    apply 照常放行（警告策略），返回 warning 文案供前端提示。
+
+    extra_pks: {sheet_name: 落盘表全量主键集合}——前端只传差异行，跨表/本表主键集合
+    须并入落盘数据，避免对未参与合并的行误报悬空。
+
+    返回: {dangling_total, sheets: {sheet_name: {dangling, remapped_refs, checked}}, warning}
+    """
+    # 转 plain dict 副本，避免校验逻辑触碰 pydantic RowData/CellData
+    plain: List[dict] = []
+    for s in mr.sheets:
+        rows: List[dict] = []
+        for r in s.rows:
+            cells = []
+            for c in r.cells:
+                cells.append({
+                    "col": c.col, "value": c.value,
+                    "versions": dict(c.versions) if c.versions else {},
+                    "conflict": c.conflict, "changed": c.changed,
+                    "diff_type": c.diff_type,
+                })
+            rows.append({"key": r.key, "row_type": r.row_type, "cells": cells})
+        plain.append({"name": s.name, "headers": list(s.headers), "rows": rows})
+
+    cross_sheet_pks = collect_cross_sheet_pks(plain)
+    if extra_pks:
+        for sd in plain:
+            headers = sd["headers"] or []
+            if len(headers) <= PK_COL or not headers[PK_COL]:
+                continue
+            disk = extra_pks.get(sd["name"])
+            if disk:
+                cross_sheet_pks.setdefault(str(headers[PK_COL]), set()).update(disk)
+    sheets_report: Dict[str, Any] = {}
+    dangling_total = 0
+    for sd in plain:
+        ref_res = validate_sheet_references(
+            sd["rows"], sd["headers"], mr.group_name, sd["name"], [], cross_sheet_pks,
+            extra_local_pks=(extra_pks or {}).get(sd["name"]),
+        )
+        sheets_report[sd["name"]] = ref_res
+        dangling_total += len(ref_res["dangling"])
+    warning = ""
+    if dangling_total:
+        warning = f"检测到 {dangling_total} 处悬空外键引用，请核对（已照常写回）"
+    return {"dangling_total": dangling_total, "sheets": sheets_report, "warning": warning}
+
+
+def _sort_rows_by_pk(rows: List[dict], id_resolution: Optional[dict], ref_integrity: Optional[dict]) -> List[dict]:
+    """重编号后按主键自然排序行，同步重映射 id_resolution.conflicts 与 ref_integrity.dangling 的 ri。
+
+    重映射可能把后到者主键改大（如 10500→10502），原顺序被打乱；按主键重排后行索引 ri 变化，
+    需同步更新所有引用 ri 的报告字段，否则前端按 ri 定位错位。
+
+    deleted/missing_row 行 key 可能为空，排到末尾（保持原相对顺序）。
+    """
+    # 无重映射时行序不变（compare_sheet 已按主键顺序产出），ri 无需重映射，直接返回省 O(n log n) 全量排序
+    if not id_resolution or not id_resolution.get("id_mapping"):
+        return rows
+    # old_ri -> new_ri
+    old_to_new: Dict[int, int] = {}
+    # 稳定排序：空 key 行排末尾并保持原序
+    def _row_key(r):
+        return r.get("key") if isinstance(r, dict) else getattr(r, "key", "")
+    indexed = list(enumerate(rows))
+    keyed = [x for x in indexed if _row_key(x[1])]
+    empty = [x for x in indexed if not _row_key(x[1])]
+    keyed.sort(key=lambda x: _pk_sort_key(_row_key(x[1])))
+    sorted_rows = [r for _, r in keyed] + [r for _, r in empty]
+    for new_ri, (old_ri, _) in enumerate(keyed + empty):
+        old_to_new[old_ri] = new_ri
+
+    # 同步 id_resolution.conflicts.ri
+    if id_resolution:
+        for c in (id_resolution.get("conflicts") or []):
+            if "ri" in c:
+                c["ri"] = old_to_new.get(c["ri"], c["ri"])
+    # 同步 ref_integrity.dangling.ri
+    if ref_integrity:
+        for d in (ref_integrity.get("dangling") or []):
+            if "ri" in d:
+                d["ri"] = old_to_new.get(d["ri"], d["ri"])
+    return sorted_rows
+
+
+def _read_manifest() -> dict:
+    if STAGE1_MANIFEST.is_file():
+        try:
+            return json.loads(STAGE1_MANIFEST.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("阶段1 manifest %s 解析失败，返回空: %s", STAGE1_MANIFEST, e, exc_info=True)
+            return {}
+    return {}
+
+
+def _write_manifest(data: dict) -> None:
+    DEVBRANCH_DIR.mkdir(parents=True, exist_ok=True)
+    STAGE1_MANIFEST.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _require_stage1_ok(inter_name: str) -> None:
+    """阶段门禁：中间版本必须由阶段1 成功产出且文件存在，否则拒绝进入阶段2。"""
+    entry = _read_manifest().get(inter_name)
+    if not entry or not entry.get("stage1_ok"):
+        raise HTTPException(
+            400,
+            f"中间版本 '{inter_name}' 未通过阶段1，请先完成阶段1 合并并解决所有提交间冲突",
+        )
+    if not (DEVBRANCH_DIR / inter_name).is_file():
+        raise HTTPException(400, f"中间版本文件不存在：{inter_name}，请重新执行阶段1")
+
+
+def _staleness_warning(inter_name: str, trunk_path: Path) -> str:
+    """中间版本产出后 trunk 若被改动，返回过期提示；否则空串。
+
+    以 manifest 记录的 created 时间为阶段1 产出时刻，与 trunk 当前 mtime 比较；
+    trunk 更晚则提示间隔，供前端提醒用户重新评估合回冲突。
+    """
+    entry = _read_manifest().get(inter_name) or {}
+    created_raw = entry.get("created")
+    if not created_raw:
+        return ""
+    try:
+        created = datetime.fromisoformat(created_raw)
+        trunk_mtime = datetime.fromtimestamp(trunk_path.stat().st_mtime)
+    except Exception:
+        return ""
+    if trunk_mtime <= created:
+        return ""
+    gap = trunk_mtime - created
+    hours = gap.total_seconds() / 3600
+    gap_str = f"{hours:.1f} 小时" if hours < 48 else f"{gap.days} 天"
+    return (
+        f"中间版本产出于 {created.strftime('%Y-%m-%d %H:%M')}，"
+        f"trunk 基准已于其后 {gap_str} 被改动（{trunk_mtime.strftime('%Y-%m-%d %H:%M')}），"
+        f"合回以当前 trunk 为基准，请重新评估冲突"
+    )
+
+
+def _consume_intermediate(inter_name: str) -> str:
+    """阶段2 合回成功后消费中间版本：归档文件 + 移除 manifest 记录。
+
+    合回后该中间版本已完成使命，不应再显示为『已产出中间版本』，否则下次进入
+    会误把旧中间版本当作最新可合回状态。这里把文件移入归档目录（带时间戳，可回溯），
+    并从 manifest 删除对应条目。返回归档后的文件名（失败或不存在返回空串）。
+    """
+    manifest = _read_manifest()
+    if inter_name in manifest:
+        del manifest[inter_name]
+        _write_manifest(manifest)
+    src = DEVBRANCH_DIR / inter_name
+    if not src.is_file():
+        return ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archived = f"{src.stem}_{ts}{src.suffix}"
+    try:
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        src.replace(ARCHIVE_DIR / archived)
+        return archived
+    except Exception:
+        return ""
+
+
+def _consume_consolidated(cons_name: str) -> str:
+    """阶段3 合回成功后消费综合版本：归档文件 + 移除 stage2 manifest 记录。
+
+    合回后该综合版本已完成使命，不应再显示为『可合回状态』。归档文件并从
+    stage2 manifest 删除对应条目。返回归档后的文件名（失败或不存在返回空串）。
+    """
+    manifest = _read_stage2_manifest()
+    if cons_name in manifest:
+        del manifest[cons_name]
+        _write_stage2_manifest(manifest)
+    src = DEVBRANCH_DIR / cons_name
+    if not src.is_file():
+        return ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archived = f"{src.stem}_{ts}{src.suffix}"
+    try:
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        src.replace(ARCHIVE_DIR / archived)
+        return archived
+    except Exception:
+        return ""
+
+
+# ── 阶段2（跨生产者综合）辅助 ──
+
+def _read_stage2_manifest() -> dict:
+    if STAGE2_MANIFEST.is_file():
+        try:
+            return json.loads(STAGE2_MANIFEST.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("阶段2 manifest %s 解析失败，返回空: %s", STAGE2_MANIFEST, e, exc_info=True)
+            return {}
+    return {}
+
+
+def _write_stage2_manifest(data: dict) -> None:
+    DEVBRANCH_DIR.mkdir(parents=True, exist_ok=True)
+    STAGE2_MANIFEST.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _consolidated_name(group: str) -> str:
+    """跨生产者综合版本文件名（各生产者中间版本综合后单一产出）。"""
+    return f"{group}_consolidated.xlsx"
+
+
+def _list_stage1_intermediates(group: str) -> List[tuple]:
+    """扫描 devbranch 缓冲区下该 group 所有已 stage1_ok 的中间版本。
+
+    返回 [(branch, path), ...]。无任何已完成的中间版本 → 400 阻断进入阶段2。
+    """
+    pattern = re.compile(rf"^{re.escape(group)}_merged_(.+)\.xlsx$")
+    found: List[tuple] = []
+    if not DEVBRANCH_DIR.is_dir():
+        pass
+    else:
+        for fp in DEVBRANCH_DIR.iterdir():
+            if not fp.is_file() or fp.name.startswith("~$"):
+                continue
+            m = pattern.match(fp.name)
+            if not m:
+                continue
+            branch = m.group(1)
+            _require_stage1_ok(_intermediate_name(group, branch))  # 校验 stage1_ok
+            found.append((branch, fp))
+    if not found:
+        raise HTTPException(400, "没有已完成的 stage1 中间版本，请先完成阶段1")
+    return found
+
+
+def _require_stage2_ok(group: str) -> None:
+    """阶段门禁：综合版本必须由阶段2 成功产出且文件存在，否则拒绝进入阶段3。"""
+    cons_name = _consolidated_name(group)
+    entry = _read_stage2_manifest().get(cons_name)
+    if not entry or not entry.get("stage2_ok"):
+        raise HTTPException(
+            400,
+            "缺少跨生产者综合版本，请先完成阶段2 综合并解决所有跨生产者冲突",
+        )
+    if not (DEVBRANCH_DIR / cons_name).is_file():
+        raise HTTPException(400, f"综合版本文件不存在：{cons_name}，请重新执行阶段2")
+
+
+def _cross_fork_path(group: str, producers: List[str]) -> Path:
+    """跨生产者综合的 fork 基准：取首个生产者的 fork 快照（模拟环境各 branch fork 同源）。"""
+    if not producers:
+        raise HTTPException(400, "无生产者，无法取 fork 快照")
+    fork = _mergebase_path(producers[0], group)
+    if not fork.is_file():
+        raise HTTPException(400, f"缺少 fork 快照 {fork.name}，无法跨生产者综合，请重新 fork")
+    return fork
+
+
+def _staleness_warning_stage2(cons_name: str, trunk_path: Path) -> str:
+    """综合版本产出后 trunk 若被改动，返回过期提示；否则空串。
+
+    以 stage2 manifest 记录的 created 时间为综合版本产出时刻，与 trunk 当前 mtime 比较。
+    """
+    entry = _read_stage2_manifest().get(cons_name) or {}
+    created_raw = entry.get("created")
+    if not created_raw:
+        return ""
+    try:
+        created = datetime.fromisoformat(created_raw)
+        trunk_mtime = datetime.fromtimestamp(trunk_path.stat().st_mtime)
+    except Exception:
+        return ""
+    if trunk_mtime <= created:
+        return ""
+    gap = trunk_mtime - created
+    hours = gap.total_seconds() / 3600
+    gap_str = f"{hours:.1f} 小时" if hours < 48 else f"{gap.days} 天"
+    return (
+        f"综合版本产出于 {created.strftime('%Y-%m-%d %H:%M')}，"
+        f"trunk 基准已于其后 {gap_str} 被改动（{trunk_mtime.strftime('%Y-%m-%d %H:%M')}），"
+        f"合回以当前 trunk 为基准，请重新评估冲突"
+    )
+
+
+# ── 阶段1：合并多次提交 ──
+# Deprecated: /api/merge/stage1/* 走手工 mergebase，新流程用 /api/merge/branch/*
+# 或 /api/merge/subdir/*（SVN copyfrom 自动定位 merge-base）。见模块 docstring。
+
+@router.get("/stage1/branches")
+async def list_branches():
+    """列出生产者子目录及各自的表分组，供前端选择阶段1 输入。"""
+    if not SRC_DIR.is_dir():
+        return {"branches": []}
+    branches = []
+    for d in sorted(SRC_DIR.iterdir()):
+        if not d.is_dir() or d.name == "devbranch":
+            continue
+        groups = set()
+        for fp in d.iterdir():
+            if fp.is_file():
+                m = re.match(r"^(.+?)_\d+\.xlsx$", fp.name)
+                if m:
+                    groups.add(m.group(1))
+        branches.append({"branch": d.name, "groups": sorted(groups)})
+    return {"branches": branches}
+
+
+@router.get("/stage1/status")
+async def stage1_status(branch: str, group_name: str):
+    """返回某生产者某分组的合并状态，供前端选择基准/增量模式。
+
+    - commits：全部提交文件（升序）
+    - intermediate_exists / merged_commits：是否已产出中间版本及其已折入的提交
+    - new_commits：中间版本产出后新增、尚未折入的提交
+    """
+    files = _list_commit_files(branch, group_name)
+    inter_name = _intermediate_name(group_name, branch)
+    entry = _read_manifest().get(inter_name)
+    exists = bool(entry and entry.get("stage1_ok") and (DEVBRANCH_DIR / inter_name).is_file())
+    merged = _merged_commits(inter_name) if exists else []
+    new_files = _new_commits(files, merged) if exists else files
+    return {
+        "commits": [f.name for f in files],
+        "intermediate": inter_name,
+        "intermediate_exists": exists,
+        "merged_commits": merged,
+        "new_commits": [f.name for f in new_files],
+    }
+
+
+@router.post("/stage1/compare")
+async def stage1_compare(req: Stage1CompareRequest):
+    """阶段1 比对：单生产者子目录内多次提交，以最小版本号（或指定）为基准。
+
+    增量模式（incremental）：以已产出中间版本为基准，仅比对未折入的新提交，
+    避免重复解决已解决过的提交间冲突。
+    """
+    files = _list_commit_files(req.branch, req.group_name)
+    inter_name = _intermediate_name(req.group_name, req.branch)
+
+    if req.incremental:
+        _require_stage1_ok(inter_name)
+        new_files = _new_commits(files, _merged_commits(inter_name))
+        if not new_files:
+            raise HTTPException(400, "没有未折入中间版本的新提交，无需增量合并")
+        inter_path = DEVBRANCH_DIR / inter_name
+        paths = [str(inter_path)] + [str(f) for f in new_files]
+        group = _build_group(paths, inter_name, req.group_name)
+    else:
+        if len(files) < 2:
+            raise HTTPException(400, f"生产者 '{req.branch}' 下 group '{req.group_name}' 的提交不足2次，无法合并")
+        base_name = _pick_base_name(files, req.base_file)
+        if req.derived_files:
+            chosen = set(req.derived_files) - {base_name}
+            sel = [f for f in files if f.name == base_name or f.name in chosen]
+            if len(sel) < 2:
+                raise HTTPException(400, "请至少选择一个衍生文件与基准合并")
+            group = _build_group([str(f) for f in sel], base_name, req.group_name)
+        else:
+            group = _build_group([str(f) for f in files], base_name, req.group_name)
+
+    return CompareResponse(
+        groups={req.group_name: group},
+        session_id="",
+        conflict_origin="inter_commit",
+    )
+
+
+@router.post("/stage1/consolidate")
+async def stage1_consolidate(req: MergeRequest):
+    """阶段1 产出中间版本：应用解决结果 → 未决冲突阻断 → 产出到 devbranch 缓冲区。
+
+    增量模式：以已有中间版本为基准应用新提交的解决结果，更新同名中间版本，
+    manifest 累积记录已折入的提交清单。
+    """
+    files = _list_commit_files(req.branch, req.group_name)
+    out_name = _intermediate_name(req.group_name, req.branch)
+
+    unresolved = _unresolved_conflicts(req)
+    if unresolved:
+        raise HTTPException(
+            400,
+            f"存在 {len(unresolved)} 处未解决的提交间冲突，禁止产出中间版本："
+            + json.dumps(unresolved, ensure_ascii=False),
+        )
+
+    if req.incremental:
+        _require_stage1_ok(out_name)
+        prev_merged = _merged_commits(out_name)
+        new_files = _new_commits(files, prev_merged)
+        if not new_files:
+            raise HTTPException(400, "没有未折入中间版本的新提交，无需增量合并")
+        base_path = DEVBRANCH_DIR / out_name
+        base_name = out_name
+        merged_commits = prev_merged + [f.name for f in new_files]
+    else:
+        if len(files) < 2:
+            raise HTTPException(400, f"生产者 '{req.branch}' 下 group '{req.group_name}' 的提交不足2次")
+        base_name = _pick_base_name(files, req.base_file or None)
+        base_path = SRC_DIR / req.branch / base_name
+        if req.derived_files:
+            chosen = set(req.derived_files) - {base_name}
+            merged_commits = [base_name] + [f.name for f in files if f.name in chosen]
+        else:
+            merged_commits = [f.name for f in files]
+    if not base_path.is_file():
+        raise HTTPException(400, f"基准文件不存在：{base_path}")
+
+    req.base_file = base_name  # 供 _apply_edits_to_workbook 判断基准值
+    try:
+        wb = load_workbook(base_path, data_only=False)
+    except Exception as e:
+        raise HTTPException(500, f"读取基准失败：{e}")
+    _apply_edits_to_workbook(wb, req)
+
+    DEVBRANCH_DIR.mkdir(parents=True, exist_ok=True)
+    dest = DEVBRANCH_DIR / out_name
+    cache_info = _save_with_formula_cache(wb, base_path, dest)
+
+    manifest = _read_manifest()
+    manifest[out_name] = {
+        "branch": req.branch,
+        "group": req.group_name,
+        "base_file": base_name,
+        "merge_base": f"{req.branch}_{req.group_name}.xlsx",
+        "merged_commits": merged_commits,
+        "created": datetime.now().isoformat(),
+        "stage1_ok": True,
+    }
+    _write_manifest(manifest)
+
+    return {
+        "ok": True,
+        "intermediate": out_name,
+        "path": str(dest),
+        "merged_commits": merged_commits,
+        "needs_manual_fix": cache_info["needs_manual_fix"],
+        "cache_message": cache_info["cache_message"],
+    }
+
+
+# ── 阶段2：跨生产者综合 ──
+# Deprecated: /api/merge/stage2/* 走手工 mergebase，新流程用 /api/merge/branch/*
+# 或 /api/merge/subdir/*（SVN copyfrom 自动定位 merge-base）。见模块 docstring。
+
+@router.post("/stage2/compare")
+async def stage2_compare(req: Stage2CrossCompareRequest):
+    """阶段2 比对：公共 fork 快照(base) + 各生产者中间版本(多方)，跨生产者综合。
+
+    模拟环境各 branch fork 同源，故取 producers[0] 的 fork 快照为 merge-base 基准。
+    所有中间版本必须已通过阶段1（_list_stage1_intermediates 校验 stage1_ok）。
+    """
+    producers = _list_stage1_intermediates(req.group_name)
+    fork = _cross_fork_path(req.group_name, [b for b, _ in producers])
+    paths = [str(fork)] + [str(p) for _, p in producers]
+    group = _build_group(
+        paths,
+        base_name=fork.name,
+        group_name=req.group_name,
+        merge_base_file=fork.name,
+    )
+    return CompareResponse(
+        groups={req.group_name: group},
+        session_id="",
+        conflict_origin="cross_producer",
+    )
+
+
+@router.post("/stage2/consolidate")
+async def stage2_consolidate(req: MergeRequest):
+    """阶段2 产出综合版本：跨生产者中间版本综合为单一 {group}_consolidated.xlsx。
+
+    单生产者退化：直接拷中间版本为综合版本，跳过比对/冲突检查。
+    多生产者：未决冲突阻断；base=fork 快照，应用编辑后产出到 devbranch 缓冲区。
+    """
+    producers = _list_stage1_intermediates(req.group_name)
+    cons_name = _consolidated_name(req.group_name)
+    dest = DEVBRANCH_DIR / cons_name
+
+    if len(producers) == 1:
+        shutil.copy2(producers[0][1], dest)
+        needs_manual_fix = False
+        cache_message = "单生产者退化：直接复用中间版本作为综合版本"
+    else:
+        unresolved = _unresolved_conflicts(req)
+        if unresolved:
+            raise HTTPException(
+                400,
+                f"存在 {len(unresolved)} 处未解决的跨生产者冲突，禁止产出综合版本："
+                + json.dumps(unresolved, ensure_ascii=False),
+            )
+        fork = _cross_fork_path(req.group_name, [b for b, _ in producers])
+        req.base_file = fork.name
+        try:
+            wb = load_workbook(fork, data_only=False)
+        except Exception as e:
+            raise HTTPException(500, f"读取 fork 快照失败：{e}")
+        _apply_edits_to_workbook(wb, req)
+        cache_info = _save_with_formula_cache(wb, fork, dest)
+        needs_manual_fix = cache_info["needs_manual_fix"]
+        cache_message = cache_info["cache_message"]
+
+    manifest = _read_stage2_manifest()
+    manifest[cons_name] = {
+        "group": req.group_name,
+        "producers": [b for b, _ in producers],
+        "created": datetime.now().isoformat(),
+        "stage2_ok": True,
+    }
+    _write_stage2_manifest(manifest)
+
+    return {
+        "ok": True,
+        "consolidated": cons_name,
+        "path": str(dest),
+        "needs_manual_fix": needs_manual_fix,
+        "cache_message": cache_message,
+    }
+
+
+# ── 阶段3：合回 trunk ──
+# Deprecated: /api/merge/stage3/* 走手工 mergebase，新流程用 /api/merge/branch/*
+# 或 /api/merge/subdir/*（SVN copyfrom 自动定位 merge-base）。见模块 docstring。
+
+@router.post("/stage3/compare")
+async def stage3_compare(req: Stage3CompareRequest):
+    """阶段3 比对：merge-base(fork) + trunk head(ours) + 综合版本(theirs)，三方合回。
+
+    阶段隔离：必须先完成阶段2 综合版本。merge-base 从 stage2 manifest 记录的
+    producers[0] 取（同源 fork）。间隔期间 trunk 若被他人改动，附过期提示。
+    """
+    _require_stage2_ok(req.group_name)
+    cons_name = _consolidated_name(req.group_name)
+    s2 = _read_stage2_manifest().get(cons_name) or {}
+    producers = s2.get("producers") or []
+    if not producers:
+        raise HTTPException(400, "综合版本记录缺少生产者信息，请重新执行阶段2")
+    mergebase = _mergebase_path(producers[0], req.group_name)
+    if not mergebase.is_file():
+        raise HTTPException(400, f"缺少 fork 快照 {mergebase.name}，无法三方合并，请重新 fork")
+    trunk_head = _trunk_head_path(req.group_name)
+    if not trunk_head.is_file():
+        raise HTTPException(400, f"trunk 基准不存在：{trunk_head}")
+    cons_path = DEVBRANCH_DIR / cons_name
+    if not cons_path.is_file():
+        raise HTTPException(400, f"综合版本文件不存在：{cons_name}，请重新执行阶段2")
+
+    group = _build_group(
+        [str(mergebase), str(trunk_head), str(cons_path)],
+        base_name=mergebase.name,
+        group_name=req.group_name,
+        merge_base_file=mergebase.name,
+    )
+    return CompareResponse(
+        groups={req.group_name: group},
+        session_id="",
+        conflict_origin="merge_back",
+        staleness_warning=_staleness_warning_stage2(cons_name, trunk_head),
+    )
+
+
+@router.post("/stage3/apply")
+async def stage3_apply(req: MergeRequest):
+    """阶段3 合回：应用解决结果 → 未决冲突阻断 → 版本化产出 {group}_{N+1}.xlsx 到 trunk。
+
+    以最新 trunk 版本文件为 ours 基准应用编辑。合回成功后消费综合版本（归档 +
+    清 stage2 manifest 条目），使其不再显示为可合回状态。
+    """
+    _require_stage2_ok(req.group_name)
+    cons_name = _consolidated_name(req.group_name)
+    s2 = _read_stage2_manifest().get(cons_name) or {}
+    producers = s2.get("producers") or []
+    if not producers:
+        raise HTTPException(400, "综合版本记录缺少生产者信息，请重新执行阶段2")
+    mergebase = _mergebase_path(producers[0], req.group_name)
+    if not mergebase.is_file():
+        raise HTTPException(400, f"缺少 fork 快照 {mergebase.name}，无法三方合并，请重新 fork")
+    trunk_head = _trunk_head_path(req.group_name)
+    if not trunk_head.is_file():
+        raise HTTPException(400, f"trunk 基准不存在：{trunk_head}")
+
+    unresolved = _unresolved_conflicts(req)
+    if unresolved:
+        raise HTTPException(
+            400,
+            f"存在 {len(unresolved)} 处未解决的合回冲突，禁止写回 trunk："
+            + json.dumps(unresolved, ensure_ascii=False),
+        )
+
+    req.base_file = trunk_head.name
+    try:
+        wb = load_workbook(trunk_head, data_only=False)
+    except Exception as e:
+        raise HTTPException(500, f"读取 trunk 基准失败：{e}")
+    _apply_edits_to_workbook(wb, req)
+    # 3.5 先快照落盘:重型 save 前持久化解决结果,崩溃可恢复
+    _persist_apply_snapshot(req.group_name, req)
+
+    out_name = get_next_merge_version(TRUNK_DIR, req.group_name)
+    dest = TRUNK_DIR / out_name
+    cache_info = _save_with_formula_cache(wb, trunk_head, dest)
+
+    stats = _sheets_stats(req.sheets)
+    changes, truncated = _collect_changes(req.sheets, trunk_head.name)
+    archived = _consume_consolidated(cons_name)
+    _append_audit({
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "group": req.group_name,
+        "producers": producers,
+        "consolidated": cons_name, "base": trunk_head.name, "output": out_name,
+        "mode": "single", "stats": stats,
+        "changes": changes, "changes_truncated": truncated,
+        "cache_message": cache_info["cache_message"],
+        "archived": archived,
+    })
+
+    result = {
+        "ok": True,
+        "output": out_name,
+        "path": str(dest),
+        "needs_manual_fix": cache_info["needs_manual_fix"],
+        "cache_message": cache_info["cache_message"],
+        "archived": archived,
+    }
+    # 3.5 apply 成功 → 清理快照
+    _clear_apply_snapshot(req.group_name)
+    return result
+
+
+# ── 阶段3：批量合回 ──
+
+class Stage3BatchItem(BaseModel):
+    group_name: str                     # 合回维度按 group，不依赖 branch
+
+
+class Stage3BatchRequest(BaseModel):
+    items: List[Stage3BatchItem]
+
+
+def _sheets_stats(sheets) -> dict:
+    """统计一组 sheet 的冲突/变更/新增/删除/漏行数（供批量预览与门禁）。
+
+    sheets 可为 FileGroup.sheets.values() 或 MergeRequest.sheets（元素含 rows）。
+    """
+    conflicts = changed = inserted = deleted = missing = 0
+    for sheet in sheets:
+        for row in sheet.rows:
+            if row.row_type == "inserted":
+                inserted += 1
+            elif row.row_type == "deleted":
+                deleted += 1
+            elif row.row_type == "missing_row":
+                missing += 1
+            matched = row.row_type == "matched"
+            row_changed = False
+            for c in row.cells:
+                if c.conflict:
+                    conflicts += 1
+                elif matched and c.changed:
+                    row_changed = True
+            if row_changed:
+                changed += 1
+    return {"conflicts": conflicts, "changed": changed, "inserted": inserted,
+            "deleted": deleted, "missing": missing}
+
+
+def _group_stats(group: FileGroup) -> dict:
+    return _sheets_stats(group.sheets.values())
+
+
+_AUDIT_CAP = 200
+
+
+def _collect_changes(sheets, base_file: str):
+    """采集将写入 trunk 的具体改动明细（供审计回溯）。返回 (list, truncated)。"""
+    out = []
+    for sheet in sheets:
+        for row in sheet.rows:
+            if row.row_type == "inserted":
+                out.append({"sheet": sheet.name, "key": row.key, "kind": "insert", "col": "", "from": "", "to": "整行新增"})
+            elif row.row_type == "deleted":
+                out.append({"sheet": sheet.name, "key": row.key, "kind": "delete", "col": "", "from": "整行删除", "to": ""})
+            elif row.row_type == "matched":
+                for ci, c in enumerate(row.cells):
+                    resolved = getattr(c, "resolved", False)
+                    if c.col == 0 or not (c.changed or resolved):
+                        continue
+                    from_val = (c.versions or {}).get(base_file)
+                    if str(c.value) == str(from_val):
+                        continue
+                    header = sheet.headers[ci] if ci < len(sheet.headers) else f"列{ci + 1}"
+                    out.append({
+                        "sheet": sheet.name, "key": row.key,
+                        "kind": "resolved" if resolved else "change",
+                        "col": header,
+                        "from": "" if from_val is None else from_val,
+                        "to": "" if c.value is None else c.value,
+                    })
+    truncated = len(out) > _AUDIT_CAP
+    return out[:_AUDIT_CAP], truncated
+
+
+def _append_audit(entry: dict) -> None:
+    """追加一条合回审计记录到 trunk 审计日志（最新在前）。"""
+    log = _read_audit()
+    log.insert(0, entry)
+    TRUNK_DIR.mkdir(parents=True, exist_ok=True)
+    AUDIT_LOG.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_audit() -> list:
+    if not AUDIT_LOG.is_file():
+        return []
+    try:
+        return json.loads(AUDIT_LOG.read_text(encoding="utf-8"))
+    except Exception as e:
+        # M20: 审计日志损坏不再静默丢弃，告警便于排查合并历史丢失。
+        logger.warning("审计日志 %s 解析失败，合并历史返回空: %s", AUDIT_LOG, e, exc_info=True)
+        return []
+
+
+def _build_stage3_group(group_name: str) -> FileGroup:
+    """内部构建阶段3 三方比对分组（merge-base + trunk head + 综合版本），复用门禁校验。
+
+    与 stage3_compare 同构，但返回 FileGroup 供批量预览统计，不发 CompareResponse。
+    """
+    _require_stage2_ok(group_name)
+    cons_name = _consolidated_name(group_name)
+    s2 = _read_stage2_manifest().get(cons_name) or {}
+    producers = s2.get("producers") or []
+    if not producers:
+        raise HTTPException(400, "综合版本记录缺少生产者信息，请重新执行阶段2")
+    mergebase = _mergebase_path(producers[0], group_name)
+    if not mergebase.is_file():
+        raise HTTPException(400, f"缺少 fork 快照 {mergebase.name}，无法三方合并，请重新 fork")
+    trunk_head = _trunk_head_path(group_name)
+    if not trunk_head.is_file():
+        raise HTTPException(400, f"trunk 基准不存在：{trunk_head}")
+    cons_path = DEVBRANCH_DIR / cons_name
+    if not cons_path.is_file():
+        raise HTTPException(400, f"综合版本文件不存在：{cons_name}，请重新执行阶段2")
+    return _build_group(
+        [str(mergebase), str(trunk_head), str(cons_path)],
+        base_name=mergebase.name,
+        group_name=group_name,
+        merge_base_file=mergebase.name,
+    )
+
+
+@router.get("/stage3/pending")
+async def stage3_pending():
+    """列出所有待合回 trunk 的综合版本及其合回预览（冲突/变更统计）。
+
+    冲突数=0 且无漏行 → 可一键批量合回；否则需人工先解决。
+    数据源为 stage2 manifest（综合版本记录），而非 stage1 中间版本。
+    """
+    items = []
+    for cons_name, entry in _read_stage2_manifest().items():
+        if not entry.get("stage2_ok"):
+            continue
+        group = entry.get("group", "")
+        producers = entry.get("producers") or []
+        cons_path = DEVBRANCH_DIR / cons_name
+        trunk_path = _trunk_head_path(group)
+        if not cons_path.is_file():
+            continue
+        row = {
+            "group_name": group, "producers": producers, "consolidated": cons_name,
+            "trunk_exists": trunk_path.is_file(),
+            "conflicts": 0, "changed": 0, "inserted": 0, "deleted": 0, "missing": 0,
+            "staleness": "", "ready": False,
+        }
+        if trunk_path.is_file() and producers:
+            try:
+                mergebase = _mergebase_path(producers[0], group)
+                if mergebase.is_file():
+                    group_diff = _build_group(
+                        [str(mergebase), str(trunk_path), str(cons_path)],
+                        base_name=mergebase.name, group_name=group, merge_base_file=mergebase.name,
+                    )
+                    row.update(_group_stats(group_diff))
+                    row["staleness"] = _staleness_warning_stage2(cons_name, trunk_path)
+                    row["ready"] = row["conflicts"] == 0 and row["missing"] == 0
+            except Exception:
+                pass
+        items.append(row)
+    return {"items": items}
+
+
+@router.post("/stage3/apply-batch")
+async def stage3_apply_batch(req: Stage3BatchRequest):
+    """批量合回：对每个无冲突的分组自动采纳变更并版本化写回 trunk。
+
+    有冲突/漏行的分组跳过（返回 skipped），需用户单独进入阶段3 人工解决。
+    合回后消费综合版本（归档 + 清 stage2 manifest 条目）。
+    """
+    results = []
+    for it in req.items:
+        group_name = it.group_name
+        try:
+            group = _build_stage3_group(group_name)
+        except HTTPException as e:
+            results.append({"group_name": group_name, "ok": False, "reason": str(e.detail)})
+            continue
+
+        cons_name = _consolidated_name(group_name)
+        s2 = _read_stage2_manifest().get(cons_name) or {}
+        producers = s2.get("producers") or []
+        trunk_head = _trunk_head_path(group_name)
+        if not trunk_head.is_file():
+            results.append({"group_name": group_name, "ok": False, "reason": f"trunk 基准不存在：{trunk_head}"})
+            continue
+
+        stats = _group_stats(group)
+        if stats["conflicts"] or stats["missing"]:
+            results.append({"group_name": group_name,
+                            "ok": False, "skipped": True, "reason": "存在未解决冲突/漏行，需人工处理", **stats})
+            continue
+
+        merge_req = MergeRequest(
+            group_name=group_name, base_file=trunk_head.name,
+            sheets=[SheetMergeData(name=s.name, headers=s.headers, rows=s.rows)
+                    for s in group.sheets.values()],
+        )
+        try:
+            wb = load_workbook(trunk_head, data_only=False)
+        except Exception as e:
+            results.append({"group_name": group_name, "ok": False, "reason": f"读取 trunk 失败：{e}"})
+            continue
+        _apply_edits_to_workbook(wb, merge_req)
+        out_name = get_next_merge_version(TRUNK_DIR, group_name)
+        cache_info = _save_with_formula_cache(wb, trunk_head, TRUNK_DIR / out_name)
+        changes, truncated = _collect_changes(group.sheets.values(), trunk_head.name)
+        archived = _consume_consolidated(cons_name)
+        _append_audit({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "group": group_name, "producers": producers,
+            "consolidated": cons_name,
+            "base": trunk_head.name, "output": out_name,
+            "mode": "batch", "stats": stats,
+            "changes": changes, "changes_truncated": truncated,
+            "cache_message": cache_info["cache_message"],
+            "archived": archived,
+        })
+        results.append({"group_name": group_name, "ok": True,
+                        "output": out_name, "cache_message": cache_info["cache_message"], **stats})
+
+    applied = sum(1 for r in results if r.get("ok"))
+    return {"applied": applied, "total": len(results), "results": results}
+
+
+@router.get("/stage3/audit")
+async def stage3_audit(limit: int = 50):
+    """返回最近的合回审计记录（最新在前）。"""
+    return {"entries": _read_audit()[:max(1, min(limit, 200))]}

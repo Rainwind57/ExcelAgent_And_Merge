@@ -1,0 +1,133 @@
+"""任务6.5 端到端：subdir compare。
+
+覆盖两条路径、两种子目录创建方式：
+  A. 文件夹模拟（merge/demo，时间点后缀模型，方式一）：trunk_r4/subdir_copied（有 copyfrom，
+     含 3 次提交→同作者自动合并）/ trunk_r4/subdir_new（inferred，单次提交）→ trunk_r4。
+     目标内 match_stat_s1=继承点(base)、match_stat_s3=HEAD；断言 base 来自 s1、3 处 conflict
+     （行3/4 真冲突 + 行7 公式文本冲突，引擎均计为 cell.conflict）。
+  B. 真实 SVN fixture（merge/svn/fixture/wc，方式二）：subdir_x_copied（r9 copy, copyfrom-rev=8）
+     / subdir_x_new（r12 纯新建, inferred rev=11）→ trunk，断言 base 反查到正确 revision、
+     0 冲突 + marker 行被识别为 inserted。
+"""
+import sys
+from pathlib import Path
+
+SERVER_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SERVER_DIR))
+
+from routers.merge_subdir import subdir_compare, SubdirCompareRequest
+
+DEMO_DIR = SERVER_DIR.parent / "merge" / "demo"
+FIXTURE_WC = SERVER_DIR.parent / "merge" / "svn" / "fixture" / "wc"
+
+
+def count(group, kind):
+    """统计 group 内 conflict / inserted / author_resolved 数。"""
+    if kind == "conflict":
+        return sum(1 for s in group.sheets.values() for r in s.rows for c in r.cells if c.conflict)
+    if kind == "author_resolved":
+        return sum(1 for s in group.sheets.values() for r in s.rows for c in r.cells if c.author_resolved)
+    return sum(1 for s in group.sheets.values() for r in s.rows if r.row_type == "inserted")
+
+
+def check_demo_copied():
+    req = SubdirCompareRequest(
+        source_dir="trunk_r4/subdir_copied", target_dir="trunk_r4", group_names=["match_stat"],
+    )
+    resp = subdir_compare(req)
+    g = resp.groups["match_stat"]
+    conflicts = count(g, "conflict")
+    resolved = count(g, "author_resolved")
+    print(f"[demo copied] base={g.base_file} files={g.files} conflicts={conflicts} author_resolved={resolved}")
+    assert resp.conflict_origin == "subdir", resp.conflict_origin
+    assert g.base_file, "base_file empty"
+    assert "_base_s1" in g.base_file, f"base 应来自目标 match_stat_s1 时间点，实际 {g.base_file}"
+    # base + 子目录 3 次提交 + 目标 HEAD(s3) = 5 文件
+    assert len(g.files) == 5, f"应 5 方文件（base+src×3+tgt_s3），实际 {g.files}"
+    assert conflicts == 3, f"应 3 处 conflict（行3/4 c1 + 行7 公式），实际 {conflicts}"
+    assert resolved == 1, f"子目录 3 次提交同作者应触发自动合并，实际 {resolved}"
+    print("  PASS demo copied: 3 conflicts, base=s1, 同作者自动合并")
+    # 结构增删标注
+    sc = [(c.kind, c.table, c.sheet, c.status, c.origin) for c in resp.structural_changes]
+    print(f"  structural_changes={sc}")
+    assert ("table", "new_feature", "", "source_added", "source") in sc, f"缺源新增表 new_feature：{sc}"
+    assert ("table", "event", "", "target_added", "target") in sc, f"缺目标新增表 event：{sc}"
+    assert ("sheet", "match_stat", "SubdirOnly", "source_added", "source") in sc, f"缺源新增 sheet SubdirOnly：{sc}"
+    print("  PASS 结构标注: new_feature(source_added) / event(target_added) / SubdirOnly(source_added sheet)")
+    # 结构增删表/sheet 以只读展示分组挂进 groups：可点击查看内容
+    nf = resp.groups.get("new_feature")
+    assert nf is not None and nf.structural_status == "source_added" and nf.origin == "source", \
+        f"new_feature 应为 source_added 展示分组：{nf and nf.structural_status}"
+    assert len(nf.files) == 1 and nf.sheets, "new_feature 展示分组应有单侧文件与 sheet 内容"
+    nf_rows = sum(len(s.rows) for s in nf.sheets.values())
+    assert nf_rows > 0, "new_feature 展示分组应有数据行"
+    ev = resp.groups.get("event")
+    assert ev is not None and ev.structural_status == "target_added" and ev.origin == "target", \
+        f"event 应为 target_added 展示分组：{ev and ev.structural_status}"
+    assert len(ev.files) == 1 and ev.files[0] == "event_s2.xlsx", f"event 展示内容应来自目标 HEAD：{ev.files}"
+    so = resp.groups["match_stat"].sheets.get("SubdirOnly")
+    assert so is not None and so.structural_status == "source_added" and so.origin == "source", \
+        f"SubdirOnly 应为 source_added 展示 sheet：{so and so.structural_status}"
+    assert len(so.rows) > 0, "SubdirOnly 展示 sheet 应有数据行"
+    print(f"  PASS 展示分组: new_feature({nf_rows}行) / event({sum(len(s.rows) for s in ev.sheets.values())}行) / SubdirOnly({len(so.rows)}行)")
+
+
+def check_demo_new():
+    req = SubdirCompareRequest(
+        source_dir="trunk_r4/subdir_new", target_dir="trunk_r4", group_names=["match_stat"],
+    )
+    resp = subdir_compare(req)
+    g = resp.groups["match_stat"]
+    conflicts = count(g, "conflict")
+    resolved = count(g, "author_resolved")
+    print(f"[demo new] base={g.base_file} files={g.files} conflicts={conflicts} author_resolved={resolved}")
+    assert "_base_s1" in g.base_file, f"base 应推断为 s1，实际 {g.base_file}"
+    assert len(g.files) == 3, f"应 3 方文件（base+src+tgt_s3），实际 {g.files}"
+    assert conflicts == 3, f"应 3 处 conflict（行3/4 c1 + 行7 公式），实际 {conflicts}"
+    print("  PASS demo new: 3 conflicts, base inferred=s1")
+
+
+def check_fixture_copied():
+    src = str(FIXTURE_WC / "trunk" / "subdir_x_copied")
+    tgt = str(FIXTURE_WC / "trunk")
+    req = SubdirCompareRequest(source_dir=src, target_dir=tgt, group_names=["match_stat"])
+    resp = subdir_compare(req)
+    g = resp.groups["match_stat"]
+    conflicts = count(g, "conflict")
+    inserted = count(g, "inserted_rows")
+    print(f"[fixture copied] base={g.base_file} conflicts={conflicts} inserted={inserted}")
+    assert "_base_r8." in g.base_file, f"copyfrom-rev 应反查到 r8，实际 {g.base_file}"
+    assert conflicts == 0, f"fixture target 未改 match_stat，应 0 冲突，实际 {conflicts}"
+    assert inserted >= 2, f"应至少 2 行 marker inserted，实际 {inserted}"
+    print("  PASS fixture copied: base=r8, 0 conflicts, marker inserted")
+
+
+def check_fixture_new():
+    src = str(FIXTURE_WC / "trunk" / "subdir_x_new")
+    tgt = str(FIXTURE_WC / "trunk")
+    req = SubdirCompareRequest(source_dir=src, target_dir=tgt, group_names=["building"])
+    resp = subdir_compare(req)
+    g = resp.groups["building"]
+    conflicts = count(g, "conflict")
+    inserted = count(g, "inserted_rows")
+    print(f"[fixture new] base={g.base_file} conflicts={conflicts} inserted={inserted}")
+    assert "_base_r11." in g.base_file, f"inferred rev 应为 r11（r12-1），实际 {g.base_file}"
+    assert conflicts == 0, f"fixture target 未改 building，应 0 冲突，实际 {conflicts}"
+    assert inserted >= 2, f"应至少 2 行 marker inserted，实际 {inserted}"
+    print("  PASS fixture new: base inferred=r11, 0 conflicts, marker inserted")
+
+
+def main():
+    check_demo_copied()
+    check_demo_new()
+    # 依赖 svn CLI + 已初始化的 svn/fixture repo；缺失时跳过而非失败
+    if not (FIXTURE_WC / "trunk" / "subdir_x_copied").exists():
+        print("[skip] svn/fixture 未初始化，跳过真实 SVN 路径检查")
+        return
+    check_fixture_copied()
+    check_fixture_new()
+    print("=== ALL PASS subdir_compare ===")
+
+
+if __name__ == "__main__":
+    main()

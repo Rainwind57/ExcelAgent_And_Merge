@@ -1,0 +1,327 @@
+"""T2-T5 + T4/M4 验证测试套件。
+
+覆盖本次改动：
+  - T2: 表格浏览搜索路由顺序（/search 不被 /{stem} 吞噬）
+  - T3: write_cell/append_row/insert_row 保留样式（alignment/number_format/font）
+  - T5: date_normalizer 多形式解析 + agent _coerce_value date 分支
+  - T4/M4: IdScopeValidator 段校验 + 跨表查重 + agent _validate_id_scope
+
+用法：
+    cd server
+    python -m tests.verify_t2_t5
+"""
+from __future__ import annotations
+
+import sys
+import os
+import tempfile
+import shutil
+from pathlib import Path
+from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, cond: bool, detail: str = ""):
+    results.append((name, cond, detail))
+    mark = "PASS" if cond else "FAIL"
+    print(f"{mark}  {name}" + (f"  [{detail}]" if detail and not cond else ""))
+
+
+# ── T2: 路由顺序 ──────────────────────────────────────────
+def test_t2_route_order():
+    """检查 tables 路由里 /search 在 /{stem} 之前定义。"""
+    from routers import tables
+    paths = [getattr(r, "path", "") for r in tables.router.routes]
+    search_idx = next((i for i, p in enumerate(paths) if p.endswith("/search")), -1)
+    stem_idx = next((i for i, p in enumerate(paths) if "{stem}" in p), -1)
+    check("T2 /search 路由存在", search_idx >= 0)
+    check("T2 /{stem} 路由存在", stem_idx >= 0)
+    check("T2 /search 在 /{stem} 之前", 0 <= search_idx < stem_idx,
+          f"search@{search_idx} stem@{stem_idx}")
+
+
+# ── T3: 样式保留 ──────────────────────────────────────────
+def test_t3_write_cell_keeps_style():
+    """write_cell 写值后保留原 font/alignment/number_format。"""
+    from agent.excel.cli_interface import StubCodeMakerCLI
+    tmp = tempfile.mkdtemp()
+    try:
+        ws_dir = Path(tmp)
+        wb = Workbook()
+        s = wb.active
+        s.title = "Data"
+        s.cell(1, 1, "id")
+        s.cell(1, 2, "名称")
+        s.cell(5, 1, 100)
+        s.cell(5, 2, "test")
+        s.cell(5, 1).alignment = Alignment(horizontal="center", vertical="center")
+        s.cell(5, 1).number_format = "0.00"
+        s.cell(5, 2).font = Font(bold=True)
+        p = ws_dir / "sty.xlsx"
+        wb.save(p)
+
+        cli = StubCodeMakerCLI(workspace=ws_dir, header_row=1, data_start_row=5)
+        r = cli.write_cell(p, "Data", 5, 2, "newval")
+        check("T3 write_cell 返回 ok", r.ok, r.error or "")
+        wb2 = cli._load(p)
+        c = wb2["Data"].cell(5, 2)
+        check("T3 write_cell 值更新", c.value == "newval")
+        check("T3 write_cell 保留 font bold", c.font.bold is True,
+              f"font.bold={c.font.bold}")
+        # 第 1 列样式不受影响
+        c1 = wb2["Data"].cell(5, 1)
+        check("T3 write_cell 不破坏同行其他列",
+              c1.alignment.horizontal == "center" and c1.number_format == "0.00")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t3_append_row_copies_style():
+    """append_row 新行从基准行复制 alignment + number_format。"""
+    from agent.excel.cli_interface import StubCodeMakerCLI
+    tmp = tempfile.mkdtemp()
+    try:
+        ws_dir = Path(tmp)
+        wb = Workbook()
+        s = wb.active
+        s.title = "Data"
+        s.cell(1, 1, "id")
+        s.cell(1, 2, "名称")
+        s.cell(5, 1, 100)
+        s.cell(5, 2, "a")
+        s.cell(5, 1).alignment = Alignment(horizontal="center")
+        s.cell(5, 1).number_format = "0.00"
+        p = ws_dir / "app.xlsx"
+        wb.save(p)
+
+        cli = StubCodeMakerCLI(workspace=ws_dir, header_row=1, data_start_row=5)
+        r = cli.append_row(p, "Data", {1: 101, 2: "b"})
+        check("T3 append_row ok", r.ok, r.error or "")
+        new_row = r.data["row"]
+        wb2 = cli._load(p)
+        new_c = wb2["Data"].cell(new_row, 1)
+        check("T3 append_row 复制 alignment", new_c.alignment.horizontal == "center",
+              f"horizontal={new_c.alignment.horizontal}")
+        check("T3 append_row 复制 number_format", new_c.number_format == "0.00",
+              f"format={new_c.number_format}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_t3_insert_row_copies_style():
+    """insert_row 新行从上一行复制 alignment。"""
+    from agent.excel.cli_interface import StubCodeMakerCLI
+    tmp = tempfile.mkdtemp()
+    try:
+        ws_dir = Path(tmp)
+        wb = Workbook()
+        s = wb.active
+        s.title = "Data"
+        s.cell(1, 1, "id")
+        s.cell(1, 2, "名称")
+        s.cell(5, 1, 100)
+        s.cell(5, 2, "a")
+        s.cell(5, 1).alignment = Alignment(horizontal="right")
+        p = ws_dir / "ins.xlsx"
+        wb.save(p)
+
+        cli = StubCodeMakerCLI(workspace=ws_dir, header_row=1, data_start_row=5)
+        r = cli.insert_row(p, "Data", 6, {1: 101, 2: "b"})
+        check("T3 insert_row ok", r.ok, r.error or "")
+        wb2 = cli._load(p)
+        new_c = wb2["Data"].cell(6, 1)
+        check("T3 insert_row 复制 alignment", new_c.alignment.horizontal == "right",
+              f"horizontal={new_c.alignment.horizontal}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── T5: 日期归一化 ────────────────────────────────────────
+def test_t5_parse_date():
+    """date_normalizer.parse_date 多形式解析。"""
+    from agent.excel.date_normalizer import parse_date
+    cases = [
+        ("2024年1月1日", datetime(2024, 1, 1)),
+        ("2024/1/1", datetime(2024, 1, 1)),
+        ("2024-01-01", datetime(2024, 1, 1)),
+        ("2024-01-01 12:00:00", datetime(2024, 1, 1, 12, 0, 0)),
+        ("2024/1/1 12:00:00", datetime(2024, 1, 1, 12, 0, 0)),
+        ("2024年1月1日 12:00:00", datetime(2024, 1, 1, 12, 0, 0)),
+        (1704067200, datetime(2024, 1, 1, 8, 0, 0)),  # 北京时区
+        (1704067200000, datetime(2024, 1, 1, 8, 0, 0)),  # 毫秒
+    ]
+    for text, expected in cases:
+        got = parse_date(text)
+        check(f"T5 parse_date({text!r})", got == expected,
+              f"got={got} expected={expected}")
+    check("T5 parse_date 非日期返回 None", parse_date("not a date") is None)
+    check("T5 parse_date None 输入", parse_date(None) is None)
+    check("T5 parse_date datetime 透传",
+          parse_date(datetime(2024, 1, 1)) == datetime(2024, 1, 1))
+
+
+def test_t5_coerce_value_date():
+    """agent._coerce_value date/datetime 分支。"""
+    from agent.excel.agent import TableAgent
+    agent = TableAgent.__new__(TableAgent)
+    coerced, warn, error = agent._coerce_value("date", "2024年1月1日")
+    check("T5 _coerce_value date 成功", error is None and coerced == datetime(2024, 1, 1),
+          f"coerced={coerced} error={error}")
+    coerced, warn, error = agent._coerce_value("datetime", "2024-01-01 12:00:00")
+    check("T5 _coerce_value datetime 成功",
+          error is None and coerced == datetime(2024, 1, 1, 12, 0, 0),
+          f"coerced={coerced} error={error}")
+    coerced, warn, error = agent._coerce_value("date", "not a date")
+    check("T5 _coerce_value 非法日期阻止", error is not None, f"error={error}")
+
+
+def test_t5_value_constraints_datetime():
+    """value_constraints.yaml 含 date/datetime 类型列。"""
+    import yaml
+    # T12: value_constraints.yaml 迁移到 L1_derived/，回退根目录兼容
+    base = Path(__file__).parent.parent / "agent" / "excel" / "skills"
+    p_l1 = base / "L1_derived" / "value_constraints.yaml"
+    p = p_l1 if p_l1.exists() else base / "value_constraints.yaml"
+    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    tables = raw.get("tables", {})
+    activity = tables.get("activity", {}).get("Activity", {}).get("columns", {})
+    check("T5 活动开始时间为 datetime",
+          (activity.get("活动开始时间", {}) or {}).get("type") == "datetime")
+    check("T5 活动结束时间为 datetime",
+          (activity.get("活动结束时间", {}) or {}).get("type") == "datetime")
+    check("T5 活动开始时间含 format",
+          bool((activity.get("活动开始时间", {}) or {}).get("format")))
+
+
+def test_t5_agent_get_col_number_format():
+    """agent._get_col_number_format 返回 date 列 format。"""
+    from agent.excel.agent import TableAgent
+    agent = TableAgent.__new__(TableAgent)
+    nf = agent._get_col_number_format("activity", "Activity", "活动开始时间")
+    check("T5 _get_col_number_format 返回 datetime format", bool(nf) and "yyyy" in nf,
+          f"nf={nf}")
+    nf2 = agent._get_col_number_format("activity", "Activity", "活动名称")
+    check("T5 _get_col_number_format 非日期列返回空", nf2 == "")
+
+
+# ── T4/M4: IdScopeValidator ───────────────────────────────
+def test_t4_id_mgr_load_and_segment_violations():
+    """load_id_mgr + check_segments 检出 3 个越界模块。"""
+    from engine.id_scope import IdScopeValidator
+    id_mgr = Path(__file__).parent.parent.parent / "resources" / "id_mgr.xlsx"
+    if not id_mgr.exists():
+        check("T4 id_mgr.xlsx 存在", False, str(id_mgr))
+        return
+    v = IdScopeValidator()
+    loaded = v.load_id_mgr(id_mgr)
+    check("T4 id_mgr 加载成功", loaded)
+    violations = v.check_segments()
+    modules = {x.module for x in violations}
+    check("T4 段校验检出 3 个越界", len(violations) == 3,
+          f"got {len(violations)}: {modules}")
+    check("T4 pet.Pet 越界", "pet.Pet" in modules)
+    check("T4 hero.Hero 越界", "hero.Hero" in modules)
+    check("T4 combat.spell 越界", "combat.spell" in modules)
+
+
+def test_t4_validate_value_in_scope():
+    """validate_value 段内通过，越界拒绝。"""
+    from engine.id_scope import IdScopeValidator
+    id_mgr = Path(__file__).parent.parent.parent / "resources" / "id_mgr.xlsx"
+    v = IdScopeValidator()
+    v.load_id_mgr(id_mgr)
+    # item.ItemBase 段 10000-29999
+    ok, _ = v.validate_value("item.ItemBase", 15000)
+    check("T4 validate_value 段内通过", ok)
+    ok, reason = v.validate_value("item.ItemBase", 99999)
+    check("T4 validate_value 越界拒绝", not ok and "越界" in reason,
+          f"reason={reason}")
+    ok, _ = v.validate_value("unknown.module", 123)
+    check("T4 validate_value 未注册模块不校验", ok)
+
+
+def test_t4_validate_all():
+    """validate_all 全目录扫描 + 跨表查重可用。"""
+    from engine.id_scope import IdScopeValidator, CrossTableReport
+    res_dir = Path(__file__).parent.parent.parent / "resources"
+    v = IdScopeValidator()
+    report = v.validate_all(res_dir)
+    check("T4 validate_all 返回报告", isinstance(report, CrossTableReport))
+    check("T4 validate_all scanned_tables > 0", report.scanned_tables > 0,
+          f"scanned={report.scanned_tables}")
+    check("T4 validate_all id_mgr 加载", report.id_mgr_loaded)
+    check("T4 validate_all 跨表查重返回列表",
+          isinstance(report.cross_table_conflicts, list))
+    check("T4 validate_all 段越界 = 3", len(report.segment_violations) == 3,
+          f"got {len(report.segment_violations)}")
+
+
+def test_t4_agent_helpers():
+    """agent._is_id_column + _validate_id_scope helper。"""
+    from agent.excel.agent import TableAgent
+    agent = TableAgent.__new__(TableAgent)
+    # id_mgr 未加载 → 不校验（ok=True）
+    ok, _ = agent._validate_id_scope("item", "ItemBase", "道具id", 99999)
+    check("T4 agent _validate_id_scope 未加载不校验", ok)
+    check("T4 _is_id_column '神通id'", TableAgent._is_id_column("神通id"))
+    check("T4 _is_id_column '编号'", TableAgent._is_id_column("编号"))
+    check("T4 _is_id_column '名称' 非 id", not TableAgent._is_id_column("名称"))
+    check("T4 _is_id_column '技能id:int'", TableAgent._is_id_column("技能id:int"))
+
+
+def test_t4_validate_router_registered():
+    """validate_router 在 main app 注册。"""
+    import main
+    paths = [getattr(r, "path", "") for r in main.app.routes]
+    check("T4 /api/validate/id-scope 路由注册",
+          any(p == "/api/validate/id-scope" for p in paths),
+          f"paths sample={[p for p in paths if 'validate' in p]}")
+
+
+def main():
+    print("=" * 60)
+    print("T2-T5 + T4/M4 验证测试套件")
+    print("=" * 60)
+    print()
+    print("── T2 路由顺序 ──")
+    test_t2_route_order()
+    print()
+    print("── T3 写表样式保留 ──")
+    test_t3_write_cell_keeps_style()
+    test_t3_append_row_copies_style()
+    test_t3_insert_row_copies_style()
+    print()
+    print("── T5 日期归一化 ──")
+    test_t5_parse_date()
+    test_t5_coerce_value_date()
+    test_t5_value_constraints_datetime()
+    test_t5_agent_get_col_number_format()
+    print()
+    print("── T4/M4 IdScopeValidator ──")
+    test_t4_id_mgr_load_and_segment_violations()
+    test_t4_validate_value_in_scope()
+    test_t4_validate_all()
+    test_t4_agent_helpers()
+    test_t4_validate_router_registered()
+    print()
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print("=" * 60)
+    print(f"结果: {passed}/{total} PASS ({passed * 100 // total}%)")
+    print("=" * 60)
+    failed = [(n, d) for n, ok, d in results if not ok]
+    if failed:
+        print("失败项：")
+        for n, d in failed:
+            print(f"  - {n}: {d}")
+    return 0 if not failed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

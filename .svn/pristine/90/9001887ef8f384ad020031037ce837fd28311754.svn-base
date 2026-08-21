@@ -1,0 +1,131 @@
+"""LLM 调用计数器：per-run 打点 LLM 往返次数 + token 估算。
+
+设计动机：
+    eval 报告需 LLM 调用次数与 token 消耗支撑优化前后对比（如 ai_confirm_table 冗余
+    削减的次数证据）。elapsed_ms 是唯一成本代理但无法拆分往返构成。
+
+实现：
+    线程本地计数器（threading.local）避免多线程 eval（skill_ab_test 并行）竞态。
+    agent._call_llm / parser.parse_multi 入口 inc(site, tokens)。
+    run 结束 snapshot() 返回统计挂 AgentResult 供 eval 采集。
+    生产路径不调 snapshot 则仅空累加（零 IO 零副作用）。
+
+capability: llm-call-instrumentation
+"""
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+
+
+@dataclass
+class _SiteStats:
+    calls: int = 0
+    tokens: int = 0
+
+
+@dataclass
+class LLMStats:
+    """snapshot 返回的统计快照。"""
+
+    total_calls: int = 0
+    total_tokens: int = 0
+    by_site: dict[str, dict] = field(default_factory=dict)
+    success_path_calls: int = 0
+    failure_path_calls: int = 0
+
+
+class LLMCounter:
+    """线程本地 LLM 调用计数器。
+
+    用法：
+        counter = LLMCounter()
+        counter.inc("parse", tokens=1500)  # 在 LLM 调用点
+        counter.mark_failure_path()        # 失败路径标记
+        stats = counter.snapshot()         # run 结束取快照
+        counter.reset()                    # 下次 run 清零
+    """
+
+    def __init__(self) -> None:
+        self._instance_lock = threading.Lock()
+        self._instance_stats: dict[str, _SiteStats] = {}
+        self._instance_success_calls = 0
+        self._instance_failure_calls = 0
+        self._instance_failure_marked = False
+        self._tls = threading.local()
+
+    def _tls_stats(self) -> dict[str, _SiteStats]:
+        if not hasattr(self._tls, "stats"):
+            self._tls.stats = {}
+        return self._tls.stats
+
+    def inc(self, site: str = "unknown", tokens: int = 0) -> None:
+        """记录一次 LLM 调用。线程本地累加，末尾 merge_to_instance 汇总。"""
+        stats = self._tls_stats()
+        s = stats.get(site)
+        if s is None:
+            s = _SiteStats()
+            stats[site] = s
+        s.calls += 1
+        s.tokens += tokens
+
+    def mark_failure_path(self) -> None:
+        """标记当前 run 走了失败路径（verify-repair 触发）。"""
+        self._tls.failure_marked = True
+
+    def merge_to_instance(self) -> None:
+        """把线程本地计数汇总到实例属性（run 结束前调）。"""
+        with self._instance_lock:
+            for site, s in self._tls_stats().items():
+                tgt = self._instance_stats.get(site)
+                if tgt is None:
+                    tgt = _SiteStats()
+                    self._instance_stats[site] = tgt
+                tgt.calls += s.calls
+                tgt.tokens += s.tokens
+            if getattr(self._tls, "failure_marked", False):
+                self._instance_failure_marked = True
+            # 清线程本地（已汇总）
+            self._tls.stats = {}
+            self._tls.failure_marked = False
+
+    def snapshot(self) -> LLMStats:
+        """返回统计快照并按 success/failure 路径分流。"""
+        self.merge_to_instance()
+        total_calls = sum(s.calls for s in self._instance_stats.values())
+        total_tokens = sum(s.tokens for s in self._instance_stats.values())
+        by_site = {
+            site: {"calls": s.calls, "tokens": s.tokens}
+            for site, s in self._instance_stats.items()
+        }
+        # failure_path_calls = failure_marked 时的全部调用；success_path = 总数 - failure
+        failure_calls = total_calls if self._instance_failure_marked else 0
+        success_calls = total_calls - failure_calls
+        return LLMStats(
+            total_calls=total_calls,
+            total_tokens=total_tokens,
+            by_site=by_site,
+            success_path_calls=success_calls,
+            failure_path_calls=failure_calls,
+        )
+
+    def reset(self) -> None:
+        """清零（agent.run 入口调）。"""
+        with self._instance_lock:
+            self._instance_stats = {}
+            self._instance_success_calls = 0
+            self._instance_failure_calls = 0
+            self._instance_failure_marked = False
+        self._tls.stats = {}
+        self._tls.failure_marked = False
+
+    def as_dict(self) -> dict:
+        """snapshot 的 dict 形式（挂 AgentResult.extras 用）。"""
+        s = self.snapshot()
+        return {
+            "total_calls": s.total_calls,
+            "total_tokens": s.total_tokens,
+            "by_site": s.by_site,
+            "success_path_calls": s.success_path_calls,
+            "failure_path_calls": s.failure_path_calls,
+        }

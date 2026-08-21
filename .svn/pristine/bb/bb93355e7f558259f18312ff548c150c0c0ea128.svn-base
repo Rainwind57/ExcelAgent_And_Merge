@@ -1,0 +1,121 @@
+"""任务5.4 端到端：branch apply（absorb 场景，无冲突直接应用）。
+
+接 verify_merge_branch_compare 的 compare 结果，把 sheet 数据原样回传 apply，
+验证落点文件产出 + 审计记录写入。fixture 的 ability.xlsx 无真冲突，可直接 apply。
+另验证 overwrite 落点（临时目标副本，覆盖目标最新同名表格，不产生新版本文件）。
+"""
+import json
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+SERVER_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SERVER_DIR))
+
+from routers.merge_branch import branch_compare, branch_apply, BranchCompareRequest, BranchApplyRequest, TableApplyItem
+
+FIXTURE_WC = SERVER_DIR.parent / "merge" / "svn" / "fixture" / "wc"
+AUDIT_LOG = SERVER_DIR.parent / "merge" / "trunk" / "_merge_audit.json"
+
+
+def tables_payload(resp):
+    """compare 结果转为多表 apply payload（跳过结构增删只读展示分组 files<=1）。"""
+    items = []
+    for gn, g in resp.groups.items():
+        if len(g.files) <= 1:
+            continue
+        sheets = [
+            {"name": s.name, "headers": s.headers, "rows": [r.model_dump() for r in s.rows]}
+            for s in g.sheets.values()
+        ]
+        items.append({"group_name": gn, "sheets": sheets})
+    return items
+
+
+def check_new_version(src, tgt):
+    resp = branch_compare(BranchCompareRequest(
+        direction="absorb", source_branch=src, target_branch=tgt, group_names=["ability"],
+    ))
+    unresolved = sum(1 for g in resp.groups.values() for s in g.sheets.values()
+                     for r in s.rows for c in r.cells if c.conflict)
+    print(f"compare 后未决冲突数={unresolved}")
+
+    result = branch_apply(BranchApplyRequest(
+        direction="absorb", source_branch=src, target_branch=tgt,
+        tables=tables_payload(resp), commit_name="e2e absorb",
+    ))
+    print(f"apply 结果: {json.dumps(result, ensure_ascii=False)}")
+    assert result["ok"], f"apply 失败: {result}"
+    assert len(result["results"]) == 1, result
+    dest = Path(result["results"][0]["path"])
+    assert dest.is_file(), f"落点文件未生成: {dest}"
+    assert dest.name.startswith("ability_"), dest.name
+    print(f"PASS branch_apply absorb new_version → {dest.name}")
+    # 清理产出的测试文件，避免污染 fixture wc
+    dest.unlink(missing_ok=True)
+
+
+def _resolve_to_target(resp):
+    """把所有冲突单元格统一采纳 target 版本（置 conflict=False 即视为已解决）。"""
+    tgt_file = None
+    for g in resp.groups.values():
+        if len(g.files) > 1:
+            tgt_file = g.files[-1]   # files=[base, src, tgt]，取 target 版本列
+            break
+    for g in resp.groups.values():
+        for s in g.sheets.values():
+            for r in s.rows:
+                for c in r.cells:
+                    if c.conflict:
+                        c.value = c.versions.get(tgt_file, c.value)
+                        c.conflict = False
+                        c.changed = False
+                        c.diff_type = ""
+
+
+def check_overwrite():
+    # demo 快照（方式一，merge/demo）：A_r2 absorb → B_r2 的临时副本（覆盖不污染 demo）
+    DEMO = SERVER_DIR.parent / "merge" / "demo"
+    tmp_tgt = Path(tempfile.mkdtemp(prefix="branch_overwrite_")) / "B_r2"
+    shutil.copytree(DEMO / "B_r2", tmp_tgt)
+    src = "A_r2"
+    try:
+        resp = branch_compare(BranchCompareRequest(
+            direction="absorb", source_branch=src, target_branch=str(tmp_tgt), group_names=["ability"],
+        ))
+        _resolve_to_target(resp)
+        result = branch_apply(BranchApplyRequest(
+            direction="absorb", source_branch=src, target_branch=str(tmp_tgt),
+            tables=tables_payload(resp), apply_mode="overwrite", commit_name="e2e overwrite",
+        ))
+        r0 = result["results"][0]
+        dest = Path(r0["path"])
+        print(f"[overwrite] output={r0['output']}")
+        assert r0["output"] == "ability.xlsx", f"覆盖应同名 ability.xlsx，实际 {r0['output']}"
+        assert dest.is_file() and dest.parent.resolve() == tmp_tgt.resolve(), f"落点应为临时目标内同名文件: {dest}"
+        # 不产生版本化新文件、不产新版本目录
+        assert not list(tmp_tgt.glob("ability_*.xlsx")), f"overwrite 不应产生 ability_N.xlsx：{list(tmp_tgt.iterdir())}"
+        assert not (DEMO / "B_r3").exists(), "overwrite 不应产出 B_r3 新版本目录"
+        print("  PASS overwrite → ability.xlsx（同名覆盖，无新版本文件/目录）")
+    finally:
+        shutil.rmtree(tmp_tgt.parent, ignore_errors=True)
+
+
+def main():
+    src = str(FIXTURE_WC / "branches" / "A")
+    tgt = str(FIXTURE_WC / "branches" / "B")
+    check_new_version(src, tgt)
+    check_overwrite()
+    # 审计：一次合并一条记录（tables 明细数组）；最新一条应为 branch_absorb_overwrite
+    audit = json.loads(AUDIT_LOG.read_text(encoding="utf-8")) if AUDIT_LOG.is_file() else []
+    assert audit and audit[0].get("mode") == "branch_absorb_overwrite", f"审计最新条目：{audit[0] if audit else None}"
+    assert audit[0].get("commit_name") == "e2e overwrite", f"commit_name 未入审计：{audit[0]}"
+    assert len(audit[0].get("tables") or []) == 1, f"一次合并应一条记录带 tables 明细：{audit[0]}"
+    print(f"PASS 审计单条记录 mode={audit[0]['mode']} commit={audit[0]['commit_name']} tables={len(audit[0]['tables'])}")
+    print("=== ALL PASS branch_apply ===")
+
+
+if __name__ == "__main__":
+    main()
+

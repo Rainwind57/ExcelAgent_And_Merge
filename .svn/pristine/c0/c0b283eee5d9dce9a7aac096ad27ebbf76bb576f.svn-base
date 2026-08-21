@@ -1,0 +1,336 @@
+"""评估方法论修正单测（capability: eval-fidelity D5/D8 / 4.1/4.7/4.8 部分）。
+
+验证：
+- 4.1 diff_sandbox 首列空行纳入 add 候选
+- 4.7 truth_ok 逻辑（全 row_located + field_score=1 + 无异表）
+- 4.8 extra_ops 扣分（异表 extra_ops 每条扣 1/n_effective）
+- match_case 返回 extra_ops list
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tests.table_case_eval import (
+    diff_sandbox, match_case, ActualOp, _norm_table,
+    _build_eval_sheet_aliases, _sheet_matches, _stem_from_table,
+    _validate_fixture,
+)
+
+
+def _make_xlsx(path: Path, rows: list[list]):
+    """构造测试 xlsx。Row1=中文表头 Row2=字段名:类型 Row3=约束 Row4=默认 Row5+=数据。"""
+    import openpyxl
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Pet"
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, val in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=val)
+    wb.save(path)
+    wb.close()
+
+
+# ── 4.1 diff_sandbox 首列盲区 ────────────────────────────────
+
+class TestDiffSandboxFirstColBlindSpot:
+    def test_first_col_empty_row_detected_as_add(self, tmp_path):
+        pristine = tmp_path / "resources"
+        sandbox = tmp_path / "sandbox"
+        pristine.mkdir()
+        sandbox.mkdir()
+        rows = [
+            ["宠物id", "名字", "类型"],
+            ["pet_id:int", "name:str", "type:int"],
+            ["required:1", "", ""],
+            ["", "", ""],
+            ["p1", "小白", 1],
+            ["p2", "小黑", 2],
+        ]
+        _make_xlsx(pristine / "pet.xlsx", rows)
+        # sandbox 复制 + 新增首列空行
+        import shutil
+        shutil.copy(pristine / "pet.xlsx", sandbox / "pet.xlsx")
+        sandbox_rows = rows + [["", "新增宠物", 3]]  # 首列空的新增行
+        _make_xlsx(sandbox / "pet.xlsx", sandbox_rows)
+        ops = diff_sandbox(sandbox, pristine)
+        adds = [o for o in ops if o.operation == "add"]
+        # 首列空行应被检测为 add
+        assert len(adds) == 1
+        assert adds[0].row_after.get("name") == "新增宠物"
+        assert adds[0].row_after.get("type") == 3
+
+    def test_first_col_empty_existing_row_not_false_add(self, tmp_path):
+        """pristine 已有首列空行，sandbox 未变 → 不应误判 add。"""
+        pristine = tmp_path / "resources"
+        sandbox = tmp_path / "sandbox"
+        pristine.mkdir()
+        sandbox.mkdir()
+        rows = [
+            ["宠物id", "名字", "类型"],
+            ["pet_id:int", "name:str", "type:int"],
+            ["required:1", "", ""],
+            ["", "", ""],
+            ["p1", "小白", 1],
+            ["", "空列行", 5],  # pristine 已有首列空行
+        ]
+        _make_xlsx(pristine / "pet.xlsx", rows)
+        import shutil
+        shutil.copy(pristine / "pet.xlsx", sandbox / "pet.xlsx")
+        ops = diff_sandbox(sandbox, pristine)
+        adds = [o for o in ops if o.operation == "add"]
+        assert len(adds) == 0  # 无变化
+
+
+# ── 4.7/4.8 truth_ok + extra_ops 扣分 ───────────────────────
+
+def _truth_ok_from(results, extra_ops_list, expected_ts):
+    """复制 run_one_case 的 truth_ok 逻辑。"""
+    effective = [r for r in results if r.status != "precondition_missing"]
+    n_effective = len(effective)
+    off_table = sum(1 for o in extra_ops_list if (o.table, o.sheet) not in expected_ts)
+    return (n_effective > 0
+            and all(r.row_located and r.field_score >= 0.999 for r in effective)
+            and off_table == 0), off_table, n_effective
+
+
+class TestTruthOkAndPenalty:
+    def test_match_case_returns_extra_ops_list(self):
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                           row_after={"name": "小白"})]
+        results, extra_ops = match_case(expected, actual, {})
+        assert isinstance(extra_ops, list)
+        assert len(results) == 1
+
+    def test_truth_ok_true_when_all_located_full_score_no_off_table(self):
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                           row_after={"name": "小白"})]
+        results, extra_ops_list = match_case(expected, actual, {})
+        expected_ts = {("pet/pet.xlsx", "Pet")}
+        truth_ok, off_table, n_eff = _truth_ok_from(results, extra_ops_list, expected_ts)
+        assert truth_ok is True
+        assert off_table == 0
+
+    def test_truth_ok_false_when_off_table_extra_op(self):
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [
+            ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                     row_after={"name": "小白"}),
+            # 异表多写
+            ActualOp(table="other/other.xlsx", sheet="Other", operation="add",
+                     row_after={"x": 1}),
+        ]
+        results, extra_ops_list = match_case(expected, actual, {})
+        expected_ts = {("pet/pet.xlsx", "Pet")}
+        truth_ok, off_table, n_eff = _truth_ok_from(results, extra_ops_list, expected_ts)
+        assert off_table == 1
+        assert truth_ok is False
+
+    def test_penalty_reduces_coverage(self):
+        """4.8: 异表 extra_ops 每条扣 1/n_effective。"""
+        # 2 条 expected，1 条异表 extra
+        expected = [
+            {"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+             "row_content": {"name": "小白"}},
+            {"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+             "row_content": {"name": "小黑"}},
+        ]
+        actual = [
+            ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                     row_after={"name": "小白"}),
+            ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                     row_after={"name": "小黑"}),
+            ActualOp(table="other/other.xlsx", sheet="Other", operation="add",
+                     row_after={"x": 1}),
+        ]
+        results, extra_ops_list = match_case(expected, actual, {})
+        effective = [r for r in results if r.status != "precondition_missing"]
+        n_effective = len(effective)
+        expected_ts = {("pet/pet.xlsx", "Pet")}
+        off_table = sum(1 for o in extra_ops_list if (o.table, o.sheet) not in expected_ts)
+        coverage = sum(r.row_located for r in effective) / n_effective
+        penalty = off_table / n_effective
+        coverage_after = max(0.0, coverage - penalty)
+        # 原 coverage=1.0，1 异表 / 2 effective = 0.5 扣分 → 0.5
+        assert off_table == 1
+        assert n_effective == 2
+        assert coverage == 1.0
+        assert coverage_after == 0.5
+
+    def test_same_table_extra_not_counted_as_off_table(self):
+        """同表同语义多写行不扣（异表才算）。"""
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [
+            ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                     row_after={"name": "小白"}),
+            # 同表多写（非异表）
+            ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                     row_after={"name": "多余"}),
+        ]
+        results, extra_ops_list = match_case(expected, actual, {})
+        expected_ts = {("pet/pet.xlsx", "Pet")}
+        off_table = sum(1 for o in extra_ops_list if (o.table, o.sheet) not in expected_ts)
+        # 同表 extra 不算异表
+        assert off_table == 0
+
+
+# ── 4.10 sheet 别名匹配 + fixture 校验 + legacy 对照 ───────
+
+class TestSheetAliasMatching:
+    def test_build_eval_sheet_aliases_returns_reverse_map(self):
+        amap = _build_eval_sheet_aliases()
+        # pet/Pet 别名集含"灵兽表"等（来自 sheet_aliases.yaml）
+        aliases = amap.get(("pet", "Pet"), set())
+        assert "灵兽表" in aliases
+        # 真实 sheet 名本身也在别名集（精确匹配兜底）
+        assert "Pet" in aliases
+
+    def test_sheet_matches_exact(self):
+        assert _sheet_matches("Pet", "Pet", "pet", {}) is True
+
+    def test_sheet_matches_alias(self):
+        amap = _build_eval_sheet_aliases()
+        # expected 写别名"灵兽表"，actual 真实名"Pet" → 命中
+        assert _sheet_matches("灵兽表", "Pet", "pet", amap) is True
+        # 反向：expected 真实名 actual 别名
+        assert _sheet_matches("Pet", "灵兽表", "pet", amap) is True
+
+    def test_sheet_matches_miss(self):
+        amap = _build_eval_sheet_aliases()
+        assert _sheet_matches("NotExist", "Pet", "pet", amap) is False
+
+    def test_match_case_with_sheet_alias(self):
+        """expected.sheet=别名，actual.sheet=真实名 → match_case 命中。"""
+        amap = _build_eval_sheet_aliases()
+        expected = [{"table": "pet/pet.xlsx", "sheet": "灵兽表", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                           row_after={"name": "小白"})]
+        results, extra = match_case(expected, actual, {}, sheet_alias_map=amap)
+        assert len(results) == 1
+        assert results[0].table_sheet_hit is True
+        assert results[0].row_located is True
+
+    def test_match_case_without_alias_map_misses(self):
+        """无 alias_map → 别名 sheet 不命中（精确匹配）。"""
+        expected = [{"table": "pet/pet.xlsx", "sheet": "灵兽表", "operation": "add",
+                     "row_content": {"name": "小白"}}]
+        actual = [ActualOp(table="pet/pet.xlsx", sheet="Pet", operation="add",
+                           row_after={"name": "小白"})]
+        results, extra = match_case(expected, actual, {}, sheet_alias_map=None)
+        assert results[0].table_sheet_hit is False
+
+
+class TestStemFromTable:
+    def test_extract_stem(self):
+        assert _stem_from_table("pet/pet.xlsx") == "pet"
+        assert _stem_from_table("interaction/interaction.xlsx") == "interaction"
+        assert _stem_from_table("item/item.xlsx") == "item"
+
+    def test_empty(self):
+        assert _stem_from_table("") == ""
+
+
+class TestValidateFixture:
+    def test_add_id_already_exists(self):
+        """add 用例 row_content ID 在 pristine 已存在 → fixture_error。"""
+        pristine_idx = {
+            ("pet/pet.xlsx", "Pet"): {"__pk__": "pet_id", "pet_id": {"p1", "p2"}},
+        }
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"pet_id": "p1", "name": "小白"}}]
+        errors = _validate_fixture(expected, pristine_idx)
+        assert len(errors) == 1
+        assert errors[0]["kind"] == "add_id_already_exists"
+
+    def test_add_placeholder_not_flagged(self):
+        """add 用例 row_content 用 placeholder → 不校验。"""
+        from tests.table_case_eval import _is_placeholder
+        assert _is_placeholder("<auto>")  # 确认 placeholder 机制
+        pristine_idx = {("pet/pet.xlsx", "Pet"): {"__pk__": "pet_id", "pet_id": {"p1"}}}
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "add",
+                     "row_content": {"pet_id": "<auto>", "name": "小白"}}]
+        errors = _validate_fixture(expected, pristine_idx)
+        # placeholder 不算已存在
+        assert len(errors) == 0
+
+    def test_modify_row_missing(self):
+        """modify 用例 row_key 目标行 pristine 不存在 → fixture_error。"""
+        pristine_idx = {("pet/pet.xlsx", "Pet"): {"pet_id": {"p1", "p2"}}}
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "modify",
+                     "row_key": {"pet_id": "p999"},
+                     "row_content": {"name": "改名"}}]
+        errors = _validate_fixture(expected, pristine_idx)
+        assert len(errors) == 1
+        assert errors[0]["kind"] == "modify_delete_row_missing"
+
+    def test_modify_row_exists_no_error(self):
+        pristine_idx = {("pet/pet.xlsx", "Pet"): {"pet_id": {"p1", "p2"}}}
+        expected = [{"table": "pet/pet.xlsx", "sheet": "Pet", "operation": "modify",
+                     "row_key": {"pet_id": "p1"},
+                     "row_content": {"name": "改名"}}]
+        errors = _validate_fixture(expected, pristine_idx)
+        assert len(errors) == 0
+
+    def test_empty_expected_no_errors(self):
+        assert _validate_fixture([], {}) == []
+
+
+class TestLegacyMode:
+    def test_run_one_case_legacy_no_fixture_check(self, monkeypatch):
+        """legacy=True 时不调 _validate_fixture + 不传 alias_map。"""
+        from tests import table_case_eval as tce_mod
+        called = {"validate": 0, "alias": 0}
+        def fake_validate(*a, **k):
+            called["validate"] += 1
+            return []
+        def fake_alias(*a, **k):
+            called["alias"] += 1
+            return {}
+        monkeypatch.setattr(tce_mod, "_validate_fixture", fake_validate)
+        monkeypatch.setattr(tce_mod, "_build_eval_sheet_aliases", fake_alias)
+        # mock run_one_case 依赖（AgentService/diff_sandbox 太重，mock 全链）
+        monkeypatch.setattr(tce_mod, "diff_sandbox", lambda *a: [])
+        monkeypatch.setattr(tce_mod, "build_pristine_index", lambda *a: {})
+        # mock AgentService + shutil.copytree + service.chat
+        import shutil as _shutil
+        monkeypatch.setattr(_shutil, "copytree", lambda *a, **k: None)
+        monkeypatch.setattr(_shutil, "rmtree", lambda *a, **k: None)
+        class _FakeResp:
+            ok = True
+            error = ""
+            needs_confirm = False
+        class _FakeService:
+            def chat(self, *a, **k): return _FakeResp()
+            _file_watcher = None
+        import services.agent_service as svc_mod
+        monkeypatch.setattr(svc_mod, "AgentService",
+                            lambda **k: _FakeService(), raising=False)
+        case = {"input": "测试", "expected_answer": []}
+        r = tce_mod.run_one_case(1, case, enable_skill=True, legacy=True)
+        assert called["validate"] == 0
+        assert called["alias"] == 0
+        assert r.fixture_errors == []
+        assert r.truth_ok is False  # legacy 不算 truth_ok
+
+
+# ── 入口 ─────────────────────────────────────────────────────
+
+def _run_all():
+    pytest.main([__file__, "-v"])
+
+
+if __name__ == "__main__":
+    _run_all()

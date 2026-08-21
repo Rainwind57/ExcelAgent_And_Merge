@@ -1,0 +1,111 @@
+"""链按 step 位置聚合逐步成功率 + 断点热步分布。
+
+设计动机：
+    task_chain_eval 已采集逐步 ChainStepResult.entry.status，但 aggregate_chains
+    只做整链聚合，无逐步成功率。实验报告需定位「哪一步是断点热步」。
+
+实现：
+    读现有 task_chain_eval JSON 的 chains[].steps[].entry.status，按 step_index
+    聚合 {success_rate, total, by_status, break_count}。短链后续 step 计 N/A 不计入。
+    独立 CLI，零重跑成本。
+
+capability: step-wise-success-aggregation
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+
+def _status_success(status: str) -> bool:
+    """status=matched 视为成功，其余（partial/located_only/missing/failed）视为失败。"""
+    return status == "matched"
+
+
+def aggregate_step_success(json_path: str) -> dict:
+    """读 task_chain_eval JSON，按 step 位置聚合成功率。
+
+    返回 {
+        step_index: {
+            success_rate, total, by_status{matched,partial,located_only,missing,failed,...},
+            break_count
+        }
+    }
+    短链后续 step 不计入分母（N/A）。
+    """
+    p = Path(json_path)
+    if not p.exists():
+        return {"error": f"file not found: {json_path}"}
+    data = json.loads(p.read_text(encoding="utf-8"))
+    # task_chain_eval JSON 结构：顶层或 results 段含 chains
+    chains = data.get("chains") or data.get("results", {}).get("chains", [])
+    if not chains:
+        return {"error": "no chains in json"}
+    # 按 step_index 聚合
+    by_index: dict[int, dict] = {}
+    for chain in chains:
+        steps = chain.get("steps", [])
+        for i, step in enumerate(steps):
+            entry = step.get("entry", {}) if isinstance(step, dict) else {}
+            status = entry.get("status", "unknown")
+            slot = by_index.setdefault(i, {
+                "total": 0, "by_status": {}, "success_count": 0, "break_count": 0,
+            })
+            slot["total"] += 1
+            slot["by_status"][status] = slot["by_status"].get(status, 0) + 1
+            if _status_success(status):
+                slot["success_count"] += 1
+            else:
+                slot["break_count"] += 1
+    # 计算 success_rate
+    result = {}
+    for idx, slot in sorted(by_index.items()):
+        result[idx] = {
+            "success_rate": slot["success_count"] / slot["total"] if slot["total"] else 0.0,
+            "total": slot["total"],
+            "by_status": slot["by_status"],
+            "break_count": slot["break_count"],
+        }
+    return {"step_wise": result, "chain_count": len(chains)}
+
+
+def format_step_report(agg: dict) -> str:
+    """聚合结果转 markdown 表。"""
+    if "error" in agg:
+        return f"# 聚合失败\n\n{agg['error']}\n"
+    lines = [
+        f"# 逐步成功率聚合（{agg['chain_count']} 条链）",
+        f"",
+        f"| Step Index | 成功率 | 总数 | 断点数 | 状态分布 |",
+        f"|------------|--------|------|--------|----------|",
+    ]
+    for idx, s in agg["step_wise"].items():
+        sr = f"{s['success_rate']:.1%}"
+        dist = ", ".join(f"{k}:{v}" for k, v in s["by_status"].items())
+        hot = " 🔴热步" if s["break_count"] > s["total"] * 0.3 else ""
+        lines.append(f"| {idx} | {sr} | {s['total']} | {s['break_count']} | {dist}{hot} |")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="链逐步成功率聚合")
+    ap.add_argument("--report", default="reports/task_chain_eval_latest.json",
+                    help="task_chain_eval JSON 路径")
+    ap.add_argument("--baseline", metavar="RUN_ID",
+                    help="从归档读（reports/archive/task_chain_eval_<run_id>.json）")
+    args = ap.parse_args()
+    if args.baseline:
+        path = f"reports/archive/task_chain_eval_{args.baseline}.json"
+    else:
+        path = args.report
+    agg = aggregate_step_success(path)
+    print(format_step_report(agg))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

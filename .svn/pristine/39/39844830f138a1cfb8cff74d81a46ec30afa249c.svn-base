@@ -1,0 +1,177 @@
+# Sheet 别名配置：自然语言/sheet 提示 → 真实 sheet 名
+#
+# 用于多 sheet 消歧。当用户用业务别名（如"灵兽基础表""神通表"）指代某 sheet 时，
+# 解析为真实 sheet 名。table_stem 可用 "*" 通配所有表。
+#
+# 结构: sheets: { table_stem: { 别名: 真实sheet名 } }
+version: '1.0'
+
+sheets:
+  '*':
+    说明: 说明
+    备注: 备注
+  pet:
+    # pet.xlsx 仅 Pet 一个业务 sheet，无 sheet 消歧需求。
+    # 灵兽进化/等级/洗炼/技能书 是独立 xlsx（pet_evolve/pet_level/...），
+    # 由 TableResolver 表级 keyword 解析处理，不属 sheet 别名。
+    灵兽表: Pet
+    灵兽基础: Pet
+    基础: Pet
+  item:
+    道具类型: ItemType
+    道具基础: ItemBase
+    道具表: ItemBase
+    宝箱: Chest
+    药水: Potion
+    装备: Equipment
+    宝石: Gem
+    法宝: Fabao
+  ability:
+    神通表: Ability
+    神通: Ability
+  hero:
+    # hero.xlsx 仅 Hero 一个业务 sheet。HeroLevel 是独立 xlsx（hero_level）。
+    英雄表: Hero
+    英雄基础: Hero
+  equipment:
+    装备槽位: EquipmentSlot
+    槽位类型: EquipmentSlot
+    装备宝石类型: EquipmentGemType
+    宝石类型: EquipmentGemType
+    装备评分: EquipmentScore
+    评分倍率: EquipmentScore
+    装备品质概率: EquipmentQuality
+    装备境界概率: EquipmentQuality
+    装备基础属性: EquipmentBaseAttr
+    基础属性上下限: EquipmentBaseAttr
+    装备附加属性: EquipmentExtraAttr
+    附加属性上下限: EquipmentExtraAttr
+    附加属性数量: EquipmentExtraAttrNum
+    附加属性概率: EquipmentExtraAttrNum
+  school:
+    # school.xlsx 仅 School 一个业务 sheet。SchoolAbility/Talent/Spirit 是独立 xlsx。
+    门派表: School
+    门派基础: School
+  building:
+    建筑类型: BuildingType
+    建筑基础: BuildingType
+    建筑名称: BuildingType
+    建筑等级: BuildingLevel
+    建筑初始等级: BuildingLevelInit
+    建筑初始: BuildingLevelInit
+    城池建筑等级: BuildingLevelInit
+  fabao:
+    法宝表: Fabao
+    法宝基础: Fabao
+    法宝描述: Fabao
+    法宝等级: FabaoLevel
+    法宝升级消耗: FabaoUpgradeCost
+    法宝槽位解锁: FabaoSlotUnlockCost
+    法宝槽位: FabaoSlotUnlockCost
+    法宝类型分组: FabaoType
+    法宝分组: FabaoType
+    法宝品质概率: FabaoQuality
+    法宝境界概率: FabaoQuality
+  spell:
+    技能表: common_spell
+    技能名称: common_spell
+    主动技能: spell_data
+    主动技能编号: spell_data
+    被动技能: passive_data
+    被动技能编号: passive_data
+    buff表: buff_data
+    buff编号: buff_data
+    动画覆写: anim_montage_override_data
+    表演覆写: effect_actor_override_data
+  assistant:
+    仙友表: Assistant
+    仙友基础: Assistant
+    仙友编号: Assistant
+  assistant_ability:
+    仙友神通: AssistantAbility
+  assistant_level:
+    仙友等级: AssistantLevel
+    仙友经验道具: AssistantExpItem
+    仙友等级模板: AssistantLevelTemplate
+    等级模板: AssistantLevelTemplate
+  assistant_mystic:
+    仙友秘法: AssistantMystic
+    秘法槽位: AssistantMysticSlot
+    秘法池: AssistantMysticPool
+    仙友秘法池: AssistantMysticPool
+  assistant_weapon:
+    仙友仙器: AssistantWeapon
+    仙器升级消耗: AssistantWeaponUpgradeCost
+    仙器等级: AssistantWeaponLevel
+  city:
+    洞府表: CityTemplate
+    洞府基础: CityTemplate
+    城池模板: CityTemplate
+    城市布局: CityLayout
+    城池布局: CityLayout
+    建筑槽位: LayoutBuildingSlot
+    布局建筑槽位: LayoutBuildingSlot
+    城池等级数据: CityLevelData
+    城池等级: CityLevelData
+  city_siege:
+    攻城建筑: SiegeAttackableBuilding
+    可攻击建筑: SiegeAttackableBuilding
+    攻城配置: CityBuildingSiegeCfg
+    攻城布局: SiegeLayout
+    攻城战布局: SiegeLayout
+  guild:
+    帮派常量: Const
+    帮派职位: Role
+    帮派消息: Message
+    帮派操作权限: OpsPermissions
+    操作权限: OpsPermissions
+    人事权限: PersonnelPermissions
+    职位限制: RoleLimit
+    帮派大厅: GuildHall
+    大厅等级: GuildHall
+    帮派金库: Vault
+    金库等级: Vault
+    帮派商店: Store
+    商店等级: Store
+    帮派厢房: WingRoom
+    厢房等级: WingRoom
+    帮派书院: Library
+    书院等级: Library
+    帮派兽栏: PetHouse
+    兽栏等级: PetHouse
+    帮派任务: Quest
+    帮派任务计数: QuestCount
+    任务计数: QuestCount
+    迎新词: WelcomeMessage
+    帮派技能: SpellData
+    帮派技能数据: SpellData
+  hero_level:
+    英雄等级: HeroLevel
+    英雄等级成长: HeroLevelGrow
+    等级成长: HeroLevelGrow
+    英雄经验道具: ExpItem
+  id_mgr:
+    编号设置: SETTING
+    编号占段: 各模块编号占段表
+    模块编号占段: 各模块编号占段表
+  interaction:
+    交互表: Interaction
+    交互对话: InteractionConv
+    对话选项: InteractionConvOption
+    交互选项: InteractionConvOption
+  item_recipe:
+    配方表: ItemRecipe
+    配方基础: ItemRecipe
+    配方等级: RecipeLevel
+    配方材料: RecipeMaterial
+    材料组: RecipeMaterial
+  mail:
+    邮件模板: MailTemplate
+    全服邮件: GlobalMail
+  model_prefab:
+    模型元数据: MetaData
+    模型基础: MetaData
+    模型表: Model
+    特效表: VFX
+    城市模型: City
+    刚体几何: RigidBodyGeometryType

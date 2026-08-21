@@ -1,0 +1,248 @@
+"""eval 基线管理：run_id 归档 + 跨 run diff 对比报告。
+
+设计动机：
+    eval 脚本输出恒为 *_latest.json 每次覆盖无历史，无法做优化前后对比。
+    本模块提供归档（run_id = 时间戳 + git short hash）+ compare_runs diff 报告
+    （指标白名单 + delta + higher_better/lower_better 方向标注）。
+
+capability: eval-baseline-management
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+
+REPORTS_DIR = Path(__file__).resolve().parent.parent / "tests" / "reports"
+ARCHIVE_DIR = REPORTS_DIR / "archive"
+
+# 指标白名单 + 方向（True=higher_better，False=lower_better）
+METRIC_WHITELIST: dict[str, bool] = {
+    # table_case_eval
+    "ok_rate": True, "truth_ok_rate": True, "locate_rate": True, "coverage": True,
+    "field_accuracy": True, "strict_pass_rate": True,
+    "avg_elapsed_ms": False, "p50_elapsed_ms": False, "p95_elapsed_ms": False,
+    # llm stats
+    "total_llm_calls": False, "total_tokens": False,
+    "success_path_calls": False, "failure_path_calls": False,
+    # task_chain_eval
+    "chain_complete_rate": True, "ref_consistency_rate": True,
+    "producers_resolve_rate": True,
+    # merge_eval
+    "merge_success_rate": True, "false_conflict_rate": False,
+    "id_remap_accuracy": True, "ref_integrity_pass_rate": True,
+    "bigdata_total_elapsed_ms": False, "parallel_speedup": True,
+    # multi_intent_eval
+    "split_correct_rate": True, "topo_correct_rate": True,
+    "step2_success_rate": True, "step3_success_rate": True,
+    "step4_success_rate": True, "step5_success_rate": True, "step6_success_rate": True,
+    "placeholder_closure_rate": True, "multi_intent_speedup": True,
+    "rollback_correct_rate": True,
+}
+
+
+def _git_short_hash() -> str:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()[:8]
+    except Exception:
+        pass
+    return "nogit"
+
+
+def make_run_id(tag: Optional[str] = None) -> str:
+    """生成 run_id = YYYYMMDD_HHMMSS_<gitshort>[_<tag>]。"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    gh = _git_short_hash()
+    rid = f"{ts}_{gh}"
+    if tag:
+        rid += f"_{tag}"
+    return rid
+
+
+def archive_run(script_name: str, result_json: dict, report_md: str,
+                run_id: Optional[str] = None, tag: Optional[str] = None) -> str:
+    """归档一次 eval run 到 reports/archive/。返回 run_id。"""
+    if run_id is None:
+        run_id = make_run_id(tag)
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    header = {
+        "run_id": run_id, "script": script_name,
+        "generated_at": datetime.now().isoformat(),
+        "git_hash": _git_short_hash(),
+    }
+    out = {"_header": header, "results": result_json}
+    json_path = ARCHIVE_DIR / f"{script_name}_{run_id}.json"
+    json_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path = ARCHIVE_DIR / f"{script_name}_{run_id}.md"
+    md_path.write_text(report_md, encoding="utf-8")
+    return run_id
+
+
+def load_archived(script_name: str, run_id: str) -> Optional[dict]:
+    """读归档 JSON。"""
+    p = ARCHIVE_DIR / f"{script_name}_{run_id}.json"
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _extract_metrics(result_json: dict) -> dict[str, Any]:
+    """从 eval result JSON 提取白名单指标（递归找顶层 + summary/aggregates 段）。"""
+    metrics: dict[str, Any] = {}
+    candidates = [result_json]
+    for key in ("summary", "aggregates", "aggregate", "overall"):
+        if isinstance(result_json.get(key), dict):
+            candidates.append(result_json[key])
+    for c in candidates:
+        for k, v in c.items():
+            if k in METRIC_WHITELIST and not isinstance(v, (dict, list)):
+                metrics[k] = v
+    # error_type_distribution 特殊处理（dict 类型，单独提取）
+    for c in candidates:
+        etd = c.get("error_type_distribution")
+        if isinstance(etd, dict):
+            metrics["error_type_distribution"] = etd
+    return metrics
+
+
+def compare_runs(baseline_id: str, current_id: str,
+                 script_name: str) -> dict:
+    """对比两 run 的指标 delta。返回 diff_report。"""
+    base = load_archived(script_name, baseline_id)
+    curr = load_archived(script_name, current_id)
+    if base is None:
+        return {"error": f"baseline {baseline_id} not found"}
+    if curr is None:
+        return {"error": f"current {current_id} not found"}
+    base_m = _extract_metrics(base.get("results", {}))
+    curr_m = _extract_metrics(curr.get("results", {}))
+    diffs = []
+    all_keys = set(base_m) | set(curr_m)
+    for k in sorted(all_keys):
+        if k == "error_type_distribution":
+            # dict 类型：对比各 ErrorType 计数 delta
+            b_etd = base_m.get(k, {})
+            c_etd = curr_m.get(k, {})
+            etd_diffs = []
+            for et in set(b_etd) | set(c_etd):
+                bv, cv = b_etd.get(et, 0), c_etd.get(et, 0)
+                if bv != cv:
+                    etd_diffs.append({"error_type": et, "baseline": bv, "current": cv,
+                                      "delta": cv - bv,
+                                      "status": "improved" if cv < bv else "regressed"})
+            diffs.append({"metric": k, "baseline": b_etd, "current": c_etd,
+                          "delta": etd_diffs, "status": "neutral" if not etd_diffs else "mixed"})
+            continue
+        if k not in METRIC_WHITELIST:
+            continue
+        bv = base_m.get(k)
+        cv = curr_m.get(k)
+        higher_better = METRIC_WHITELIST[k]
+        if bv is None or cv is None:
+            diffs.append({"metric": k, "baseline": bv, "current": cv, "delta": None,
+                          "direction": "higher_better" if higher_better else "lower_better",
+                          "status": "neutral"})
+            continue
+        delta = cv - bv
+        if delta == 0:
+            status = "neutral"
+        elif (delta > 0) == higher_better:
+            status = "improved"
+        else:
+            status = "regressed"
+        diffs.append({"metric": k, "baseline": bv, "current": cv, "delta": delta,
+                      "direction": "higher_better" if higher_better else "lower_better",
+                      "status": status})
+    return {
+        "baseline_run_id": baseline_id, "current_run_id": current_id,
+        "script": script_name,
+        "baseline_git": base.get("_header", {}).get("git_hash", ""),
+        "current_git": curr.get("_header", {}).get("git_hash", ""),
+        "diffs": diffs,
+        "summary": {
+            "improved": sum(1 for d in diffs if d.get("status") == "improved"),
+            "regressed": sum(1 for d in diffs if d.get("status") == "regressed"),
+            "neutral": sum(1 for d in diffs if d.get("status") == "neutral"),
+        },
+    }
+
+
+def format_diff_report(diff: dict) -> str:
+    """diff_report 转 markdown 报告。"""
+    if "error" in diff:
+        return f"# 对比失败\n\n{diff['error']}\n"
+    lines = [
+        f"# Eval 对比报告：{diff['script']}",
+        f"",
+        f"- Baseline: `{diff['baseline_run_id']}` (git: {diff['baseline_git']})",
+        f"- Current: `{diff['current_run_id']}` (git: {diff['current_git']})",
+        f"- 改进 {diff['summary']['improved']} 项 / 退化 {diff['summary']['regressed']} 项 / 持平 {diff['summary']['neutral']} 项",
+        f"",
+        f"| 指标 | Baseline | Current | Delta | 方向 | 状态 |",
+        f"|------|----------|---------|-------|------|------|",
+    ]
+    for d in diff["diffs"]:
+        if d["metric"] == "error_type_distribution":
+            lines.append(f"| error_type_distribution | (dict) | (dict) | {len(d.get('delta',[]))} 项变化 | — | {d['status']} |")
+            for ed in d.get("delta", []):
+                lines.append(f"|  ↳ {ed['error_type']} | {ed['baseline']} | {ed['current']} | {ed['delta']:+d} | lower_better | {ed['status']} |")
+            continue
+        delta = d.get("delta")
+        delta_str = f"{delta:+}" if delta is not None else "—"
+        lines.append(f"| {d['metric']} | {d['baseline']} | {d['current']} | {delta_str} | {d['direction']} | {d['status']} |")
+    return "\n".join(lines) + "\n"
+
+
+def prune_archives(keep: int = 5) -> int:
+    """清理旧归档，每个脚本保留最近 keep 个。返回删除数。"""
+    if not ARCHIVE_DIR.exists():
+        return 0
+    by_script: dict[str, list[Path]] = {}
+    for p in ARCHIVE_DIR.glob("*.json"):
+        # 文件名格式 <script>_<run_id>.json，取首段作 script 名
+        stem = p.stem
+        idx = stem.find("_")
+        script = stem[:idx] if idx > 0 else stem
+        by_script.setdefault(script, []).append(p)
+    deleted = 0
+    for script, paths in by_script.items():
+        paths.sort(key=lambda p: p.stem, reverse=True)  # 时间戳降序
+        for p in paths[keep:]:
+            p.unlink(missing_ok=True)
+            md = p.with_suffix(".md")
+            md.unlink(missing_ok=True)
+            deleted += 1
+    return deleted
+
+
+def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="eval 基线管理")
+    ap.add_argument("--compare", nargs=2, metavar=("BASELINE", "CURRENT"),
+                    help="对比两 run_id")
+    ap.add_argument("--script", default="table_case_eval", help="脚本名")
+    ap.add_argument("--prune-keep", type=int, metavar="N", help="清理旧归档保留 N 个")
+    args = ap.parse_args()
+    if args.compare:
+        diff = compare_runs(args.compare[0], args.compare[1], args.script)
+        print(format_diff_report(diff))
+        return 0
+    if args.prune_keep is not None:
+        n = prune_archives(args.prune_keep)
+        print(f"已清理 {n} 个旧归档")
+        return 0
+    ap.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

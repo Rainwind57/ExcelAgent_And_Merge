@@ -1,0 +1,5 @@
+{
+  "copyfrom_path": "A_r2",
+  "copyfrom_rev": "r2",
+  "note": "A 分支 r3 版本（copyfrom=A_r2，含嵌套 config/skill.xlsx + 10w行 big_data.xlsx）"
+}

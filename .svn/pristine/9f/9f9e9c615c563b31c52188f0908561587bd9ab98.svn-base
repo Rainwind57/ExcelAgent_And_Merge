@@ -1,0 +1,141 @@
+"""R22 批量改值接口验证脚本。
+
+验证点：
+  A. atomic=true 全成功 — 多列一次写入，results 全 ok
+  B. atomic=true 一列失败 — 全部不写（旧值不变）
+  C. atomic=false 部分成功 — 失败列跳过，成功列照写
+  D. 类型转换 — int 列传字符串自动转数字
+  E. 唯一性校验 — 唯一列改已存在值被拒
+  F. 表不存在 / updates 为空 边界
+
+注意：会真实写盘，测前备份 fabao.xlsx，测后还原。
+"""
+from __future__ import annotations
+
+import os
+import sys
+import shutil
+from pathlib import Path
+
+sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from services.agent_service import get_agent_service
+from models.agent_models import BatchCellUpdateRequest, BatchCellUpdateItem
+
+_passed = 0
+_failed = 0
+
+
+def _check(name: str, ok: bool, detail: str = "") -> bool:
+    global _passed, _failed
+    _passed += 1 if ok else 0
+    _failed += 0 if ok else 1
+    mark = "PASS" if ok else "FAIL"
+    print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
+    return ok
+
+
+def main():
+    svc = get_agent_service()
+    stem, sheet = "fabao", "Fabao"
+    res_path = Path("resources/fabao.xlsx")
+    backup = Path("resources/_fabao_backup_r22.xlsx")
+
+    # 备份
+    shutil.copy2(res_path, backup)
+    print(f"已备份 fabao.xlsx → {backup.name}")
+
+    try:
+        # 先读行5原始值（无敌法宝行）
+        data = svc.get_sheet_data(stem, sheet, page=1, page_size=10)
+        # Fabao 数据从行5开始（data_start），行5=无敌法宝
+        row5 = data.data_start  # 应为 5
+        print(f"data_start={row5}, 用 row={row5} 测试")
+
+        print("[A] atomic=true 全成功")
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=True,
+            updates=[
+                BatchCellUpdateItem(col=3, value="Icon_test_A.png"),   # 图标 string
+                BatchCellUpdateItem(col=4, value="测试描述A"),          # 描述 string
+            ]))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        _check("2 列全 ok", all(res.ok for res in r.results) and len(r.results) == 2)
+        # 验证写盘
+        data2 = svc.get_sheet_data(stem, sheet, page=1, page_size=10)
+        ri = row5 - data2.data_start
+        _check("图标已写", str(data2.rows[ri][2]) == "Icon_test_A.png",
+               str(data2.rows[ri][2]) if ri < len(data2.rows) else "row out of range")
+        _check("描述已写", str(data2.rows[ri][3]) == "测试描述A")
+
+        print("[B] atomic=true 一列失败 → 全部不写")
+        # col=1 是法宝id（unique=True），改成已存在的 id=2 应失败
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=True,
+            updates=[
+                BatchCellUpdateItem(col=3, value="Icon_should_not_write.png"),  # 应成功但被原子回滚
+                BatchCellUpdateItem(col=1, value="2"),  # unique 冲突，应失败
+            ]))
+        _check("ok=False", not r.ok)
+        _check("有失败列", any(not res.ok for res in r.results))
+        _check("含 unique_conflict", any("unique" in (res.error or "") for res in r.results))
+        # 验证未写盘（图标应仍是 A 的值）
+        data3 = svc.get_sheet_data(stem, sheet, page=1, page_size=10)
+        ri = row5 - data3.data_start
+        _check("图标未被写（原子回滚）", str(data3.rows[ri][2]) == "Icon_test_A.png",
+               str(data3.rows[ri][2]))
+
+        print("[C] atomic=false 部分成功")
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=False,
+            updates=[
+                BatchCellUpdateItem(col=3, value="Icon_partial.png"),  # 成功
+                BatchCellUpdateItem(col=1, value="2"),  # unique 冲突失败
+            ]))
+        _check("ok=False（部分失败）", not r.ok)
+        _check("图标已写", r.results[0].ok)
+        _check("法宝id列失败", not r.results[1].ok)
+        data4 = svc.get_sheet_data(stem, sheet, page=1, page_size=10)
+        ri = row5 - data4.data_start
+        _check("图标已写盘", str(data4.rows[ri][2]) == "Icon_partial.png")
+
+        print("[D] 类型转换 — 法宝id 列传字符串")
+        # col=1 是 id:int，传 "999" 应转 999
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=True,
+            updates=[BatchCellUpdateItem(col=1, value="999")]))
+        _check("ok=True", r.ok, f"msg={r.message}")
+        if r.results:
+            _check("new_value 为 int 999", r.results[0].new_value == 999
+                   or str(r.results[0].new_value) == "999", str(r.results[0].new_value))
+
+        print("[E] 唯一性校验 — 改已存在值")
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=True,
+            updates=[BatchCellUpdateItem(col=1, value="2")]))  # 法宝id=2 已存在
+        _check("ok=False", not r.ok)
+        _check("unique_conflict", any("unique" in (res.error or "") for res in r.results))
+
+        print("[F] 边界")
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem="不存在的表", sheet=sheet, row=row5, atomic=True,
+            updates=[BatchCellUpdateItem(col=1, value="1")]))
+        _check("表不存在 ok=False", not r.ok and "表格不存在" in r.message)
+
+        r = svc.update_cells_batch(BatchCellUpdateRequest(
+            table_stem=stem, sheet=sheet, row=row5, atomic=True, updates=[]))
+        _check("updates 为空 ok=False", not r.ok and "updates" in r.message)
+
+    finally:
+        # 还原
+        shutil.copy2(backup, res_path)
+        backup.unlink()
+        print(f"\n已还原 fabao.xlsx（删除 {backup.name}）")
+
+    print(f"\n{'='*40}")
+    print(f"R22 验证结果: {_passed} PASS / {_failed} FAIL")
+    return 0 if _failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

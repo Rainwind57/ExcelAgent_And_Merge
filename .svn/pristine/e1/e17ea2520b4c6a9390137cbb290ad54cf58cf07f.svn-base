@@ -1,0 +1,300 @@
+"""通用多指令拆分器：将含多个独立操作的自然语言拆分为多条单指令。
+
+与 cross_table_splitter 的分工：
+  - cross_table_splitter：处理"单指令多表"（如进化链：一条指令涉及 pet+pet_evolve）
+  - multi_intent_splitter：处理"多指令"（如"查A并改B再加C删D"：四条独立指令）
+
+作为 parse_multi(LLM) 的规则化快速前置路径：
+  - 命中多指令 → 各段独立 parse（单指令 LLM 调用，比 parse_multi 巨型调用快且不超时）
+  - 单指令 → 交还 parse_multi / parse 正常路径
+
+拆分策略：
+  1. 引号保护：引号（""''「」）内的内容视为整体，不在内部切分
+  2. 一次切分：按分隔符（句末标点 / 连接词 / 换行，仅引号外生效）
+  3. 二次切分：段内含多个动作关键词时，按动作边界再切
+  4. 动作识别：get/set/add/delete/unknown
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+
+# 引号对（成对识别，内部内容不切分）
+# 含中文全角括号（）【】：括号内常为复合实体/编号（如"宝箱（普通）"、"技能【破甲】"），
+# 内部分隔符不应切断语义边界
+_QUOTE_PAIRS = [
+    ('"', '"'), ("'", "'"), ("「", "」"), ("“", "”"), ("‘", "’"),
+    ("（", "）"), ("【", "】"),
+]
+
+# 分隔符（按优先级）：句末标点 > 连接词 > 换行 > 编号列表
+# 编号列表（1. 2. 3. 或 一、 二、 三、）：用户用编号组织多指令时，按编号边界切分
+# 前瞻断言：编号+标点后须紧跟空白+非数字（避免 "1.5" 小数、"(5000,10)" 括号误切）
+#   1.5      → 不切（1. 后是 5，非空白）
+#   (5000,10)→ 不切（10) 后是 ，，非空白）
+#   1. 新增  → 切（1. 后是 空格+中文）
+# 第4组是捕获组（编号列表），供 cuts 逻辑识别切点位置（start vs end）
+_SEPARATORS = re.compile(
+    r'([。；;])\s*'
+    r'|(\n+)'
+    r'|(然后|接着|之后|并且|同时|另外|而后|随后)\s*'
+    r'|((?:\d+|[一二三四五六七八九十])[\.、)])(?=\s+[^\d])\s*'
+)
+
+# 动作关键词 → action（顺序敏感：长词优先，避免"删除"被"除"误匹配）
+_ACTION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'(?:查看|查询|查一下|有哪些|是什么|看看|查找|搜索|列出|显示)'), 'get'),
+    (re.compile(r'(?:修改|改成|改为|设置成|设置为|设为|更新|调整)'), 'set'),
+    (re.compile(r'(?:新增|增加|添加|加一个|加个|新增一个|添加一个)'), 'add'),
+    (re.compile(r'(?:删除|删除掉|去掉|移除|清除|删掉)'), 'delete'),
+]
+
+
+# 序数词模式：第一个/第二个/第三个... 第N个
+_ORDINAL_RE = re.compile(r'第[一二三四五六七八九十\d]+个')
+
+# 编号列表前缀模式：1. 2. 3. 或 一、 二、 三、 等（行首或空格后）
+# 用于区分"多指令编号列表"和"单实体多列序数"
+_NUMBERED_LIST_PREFIX_RE = re.compile(r'(?:^|\s)(?:\d+|[一二三四五六七八九十])[\.、)]\s')
+
+
+def _has_ordinal_same_target(text: str) -> bool:
+    """检测文本是否含"配一个X，第一个...第二个..."的同列序数结构。
+
+    这类文本语义上是单行多列写入（如秘法池：秘法1/概率1/秘法2/概率2），
+    不应按分号拆成多行。判定条件：
+      1. 含"一个/新增一个/配一个"+ 实体名
+      2. 含 >=2 个序数词（第一个/第二个...）
+    """
+    ordinals = _ORDINAL_RE.findall(text)
+    if len(ordinals) < 2:
+        return False
+    # 须含"一个"或"配/新增"+ 数量词，表明是单实体多属性配置
+    if not re.search(r'(?:一个|新增一个|配一个|添加一个|加一个)', text):
+        return False
+    return True
+
+
+def _has_numbered_list_prefix(text: str) -> bool:
+    """检测文本是否含编号列表前缀（1. 2. 3. 等多指令编号）。
+
+    含编号列表 → 是多指令复合输入，序数词在各子段内处理，
+    整段不应被序数保护折叠（否则多条指令被合并成一段）。
+    """
+    return bool(_NUMBERED_LIST_PREFIX_RE.search(text))
+
+
+def _ordinal_protect_ranges(text: str) -> list[tuple[int, int]]:
+    """计算序数同列保护区间：第一个序数词起始到最后一个序数词结束。
+
+    该区间内的分隔符（分号/逗号）是同列属性分隔，不应作为指令切分点。
+    仅当文本含"一个"+实体 + >=2 序数词时返回非空区间。
+    """
+    if not _has_ordinal_same_target(text):
+        return []
+    matches = list(_ORDINAL_RE.finditer(text))
+    if len(matches) < 2:
+        return []
+    return [(matches[0].start(), matches[-1].end())]
+
+
+def _split_respecting_quotes(text: str, pattern: re.Pattern) -> list[str]:
+    """按 pattern 切分 text，但跳过引号内 + 序数同列区间内的内容（均不切分）。
+
+    引号内的内容（如对话文本"欢迎光临，要不要看看？"）含逗号/句号时不应被切断，
+    否则破坏语义边界。本函数扫描 text，仅在引号外应用分隔符匹配。
+
+    序数同列区间内的分隔符（如"第一个X；第二个Y"的分号）是同列属性分隔，
+    不应切断（否则单行多列写入被拆成多行，主键重复、数据残缺）。
+    """
+    if not text:
+        return []
+    # 标记引号区间：记录每个引号字符的位置，配对后引号内的位置不参与切分
+    quote_ranges: list[tuple[int, int]] = []
+    for oq, cq in _QUOTE_PAIRS:
+        i = 0
+        while i < len(text):
+            if text[i] == oq:
+                j = text.find(cq, i + 1)
+                if j > i:
+                    quote_ranges.append((i, j + 1))
+                    i = j + 1
+                    continue
+            i += 1
+    # 序数同列保护区间：第一个序数词到最后一个序数词（段内分号是同列属性分隔，不切）
+    quote_ranges.extend(_ordinal_protect_ranges(text))
+    # 合并重叠区间并排序
+    quote_ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in quote_ranges:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    def _in_quote(pos: int) -> bool:
+        for s, e in merged:
+            if s <= pos < e:
+                return True
+            if s > pos:
+                break
+        return False
+
+    # 找所有分隔符匹配，仅保留引号外的
+    # 切点位置规则：
+    #   组1（句末标点 。；;）/组2（换行）：m.end()（标点本身是句末符号，前段保留）
+    #   组3（连接词 然后/并且等）/组4（编号列表 1. 2.）：m.start()（连接词/编号归下段开头，供 strip 去除）
+    cuts: list[int] = []
+    for m in pattern.finditer(text):
+        if not _in_quote(m.start()):
+            if m.lastindex in (3, 4):
+                cuts.append(m.start())
+            else:
+                cuts.append(m.end())
+    if not cuts:
+        return [text]
+    # 按 cuts 切分
+    pieces: list[str] = []
+    prev = 0
+    for c in cuts:
+        piece = text[prev:c].strip()
+        if piece:
+            pieces.append(piece)
+        prev = c
+    if prev < len(text):
+        tail = text[prev:].strip()
+        if tail:
+            pieces.append(tail)
+    return pieces
+
+
+@dataclass
+class SplitSegment:
+    """拆分后的单指令段。
+
+    Attributes:
+        text: 单指令文本（供 parser.parse 进一步解析为 NLIntent）
+        action: 动作类型 get/set/add/delete/unknown
+    """
+    text: str
+    action: str
+
+
+def _detect_action(text: str) -> str:
+    """识别文本的动作类型。返回 get/set/add/delete/unknown。"""
+    for pat, action in _ACTION_PATTERNS:
+        if pat.search(text):
+            return action
+    return "unknown"
+
+
+def _split_by_action_boundary(seg: str) -> list[str]:
+    """段内含多个动作关键词时，按动作边界再切。
+
+    例："查看灵兽饕餮的属性并修改它的攻击为100"
+       → ["查看灵兽饕餮的属性", "修改它的攻击为100"]
+    """
+    action_spans: list[tuple[int, int]] = []
+    for pat, _ in _ACTION_PATTERNS:
+        for m in pat.finditer(seg):
+            action_spans.append((m.start(), m.end()))
+    if len(action_spans) <= 1:
+        return [seg]
+    # 按动作起始位置去重排序，作为切点
+    cuts = sorted({sp[0] for sp in action_spans})
+    pieces: list[str] = []
+    prev = 0
+    for cut in cuts:
+        if cut > prev:
+            piece = seg[prev:cut].strip().rstrip('，,、并且然后接着而')
+            if piece:
+                pieces.append(piece)
+        prev = cut
+    if prev < len(seg):
+        piece = seg[prev:].strip()
+        if piece:
+            pieces.append(piece)
+    return pieces or [seg]
+
+
+def split_multi_intent(text: str) -> list[SplitSegment]:
+    """拆分多指令文本 → 独立指令段列表。
+
+    单指令返回 [单段]；空输入返回 []。
+    每段含 text + action，供上层各段独立解析执行。
+
+    跨表模式保护：整句若命中 detect_cross_table_action（NPC/进化链等），
+    不拆分，整句返回单段交 cross_table_splitter 处理任务链。
+    "同时/然后"切分后的子段也各过跨表检测，命中则该子段不进一步按动作切。
+
+    Args:
+        text: 用户自然语言输入（可能含多个操作指令）
+
+    Returns:
+        SplitSegment 列表。单指令或跨表模式时长度为 1。
+    """
+    if not text or not text.strip():
+        return []
+    text = text.strip()
+
+    # 序数词同列保护（切分前）：整段是"配一个X，第一个...第二个..."的单行多列写入
+    # 时，段内分号是同列属性分隔（非指令分隔），须保护不被切分。
+    # 判定条件：含"一个"+实体 + >=2 序数词 + 不含编号列表前缀（1./2. 等表示多指令）
+    if _has_ordinal_same_target(text) and not _has_numbered_list_prefix(text):
+        action = _detect_action(text)
+        try:
+            from ..core.cross_table_splitter import detect_cross_table_action
+            if detect_cross_table_action(text):
+                action = "cross_table"
+        except Exception:
+            pass
+        return [SplitSegment(text=text, action=action)]
+
+    # A. 前置跨表检测：整句命中跨表模式时不再整句折叠。
+    # G7 修复：原行为命中跨表即 return 单段，导致同句内非跨表子句（如"修改reward名称"）
+    # 被吞进跨表段无法独立拆分（task_chain 用例4 新增NPC+修改reward 混合句失败）。
+    # 新行为：命中跨表仍按分隔符切分，跨表子段标记 cross_table 保持完整交 splitter，
+    # 非跨表子段正常走动作边界拆分。整句无分隔符（纯跨表单指令）时才折叠单段。
+    try:
+        from ..core.cross_table_splitter import detect_cross_table_action
+        has_cross = detect_cross_table_action(text)
+    except Exception:
+        has_cross = False
+
+    # 一次切分：按分隔符（引号保护，不在引号内切分）
+    raw_segs = _split_respecting_quotes(text, _SEPARATORS)
+    if not raw_segs or (len(raw_segs) == 1 and raw_segs[0] == text):
+        # 无分隔符：单指令。跨表则标记 cross_table，否则按动作识别
+        action = "cross_table" if has_cross else _detect_action(text)
+        return [SplitSegment(text=text, action=action)]
+
+    # D. 子段跨表检测：命中跨表模式的子段保持完整，不按动作边界再切
+    segments: list[SplitSegment] = []
+    for seg in raw_segs:
+        # 去掉段首编号前缀（1. 2. 3. 或 一、 二、 等）+ 段首连接词（然后/并且等，切分后残留）
+        seg = re.sub(r'^(?:(?:\d+|[一二三四五六七八九十])[\.、)]\s*|(?:然后|接着|之后|并且|同时|另外|而后|随后)\s*)', '', seg).strip()
+        if not seg:
+            continue
+        try:
+            from ..core.cross_table_splitter import detect_cross_table_action as _d
+            if _d(seg):
+                segments.append(SplitSegment(text=seg, action="cross_table"))
+                continue
+        except Exception:
+            pass
+        # 二次切分：段内多动作 → 按动作边界再切
+        pieces = _split_by_action_boundary(seg)
+        for piece in pieces:
+            piece = piece.strip()
+            if piece:
+                segments.append(SplitSegment(text=piece, action=_detect_action(piece)))
+
+    segments = [s for s in segments if s.text]
+    return segments if segments else [SplitSegment(text=text, action=_detect_action(text))]
+
+
+def is_multi_intent(text: str) -> bool:
+    """快速判定文本是否含多个独立指令（供 agent.run 决定是否走快速路径）。"""
+    return len(split_multi_intent(text)) > 1

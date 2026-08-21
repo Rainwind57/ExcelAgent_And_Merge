@@ -1,0 +1,458 @@
+"""公式缓存保护模块。
+
+解决 ca-overview.md §2.5 的 P0 写表基础问题：
+openpyxl save 会清空公式缓存值，编表工具链用 xlrd 读公式单元格返回缓存值，
+无缓存返回空 → 编表输出 0/空。
+
+流程：
+1. save 前快照所有公式单元格缓存值
+2. save 后回读对比，检测缓存丢失/不一致
+3. 丢失则调 libreoffice headless 重算写回
+4. 重算后二次校验，仍不一致 → 阻断提交（FormulaCacheError）
+
+铁律：任何 AI 写表路径必经此校验。
+"""
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import subprocess
+import tempfile
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# per-file 互斥锁，防止 libreoffice 并发冲突
+_file_locks: dict[str, threading.Lock] = {}
+
+# 4.6 snapshot_formulas 双 load 结果缓存:键 (str(path), mtime, size)。
+# 同一文件未变化(重复合并同 base)命中缓存免二次 load;文件变化 mtime/size 变 → 失效。
+_SNAPSHOT_CACHE: dict[tuple[str, float, int], dict] = {}
+_SNAPSHOT_CACHE_LOCK = threading.Lock()
+_SNAPSHOT_CACHE_MAX = 64
+
+
+def reset_formula_snapshot_cache() -> None:
+    """清空 snapshot 缓存(测试隔离用)。"""
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE.clear()
+_locks_guard = threading.Lock()
+
+
+def _get_file_lock(path: str) -> threading.Lock:
+    """获取指定文件的互斥锁（per-file，防 libreoffice 并发冲突）。"""
+    key = str(Path(path).resolve())
+    with _locks_guard:
+        if key not in _file_locks:
+            _file_locks[key] = threading.Lock()
+        return _file_locks[key]
+
+
+class FormulaCacheError(Exception):
+    """公式缓存修复失败，需人工 Excel 打开重存。"""
+
+    def __init__(self, message: str, *, needs_manual_fix: bool = True,
+                 lost_cells: list | None = None):
+        super().__init__(message)
+        self.needs_manual_fix = needs_manual_fix
+        self.lost_cells = lost_cells or []
+
+
+@dataclass
+class CellIssue:
+    """公式单元格缓存问题。"""
+    sheet: str
+    row: int
+    col: int
+    kind: str  # "lost" | "changed"
+    before: Any
+    after: Any
+
+
+@dataclass
+class ValidationResult:
+    """公式缓存校验结果。"""
+    has_formulas: bool
+    issues: list[CellIssue] = field(default_factory=list)
+    recalculated: bool = False
+    needs_manual_fix: bool = False
+    message: str = ""
+
+
+class LibreOfficeRunner:
+    """libreoffice headless 调用封装。
+
+    用 soffice --headless --convert-to xlsx --calc 重算公式并写回缓存值。
+    per-file 互斥锁防并发冲突，60s 超时。
+    """
+
+    TIMEOUT = 60
+
+    def __init__(self):
+        self._exe = self._resolve_exe()
+        self._available = self._exe is not None
+        if not self._available:
+            logger.warning(
+                "[FormulaCache] libreoffice 未安装或未配置，"
+                "降级为仅 roundtrip 校验不重算。设置 LIBREOFFICE_PATH 环境变量启用重算。"
+            )
+
+    @staticmethod
+    def _resolve_exe() -> str | None:
+        """解析 libreoffice 可执行路径：优先 LIBREOFFICE_PATH，其次 PATH。"""
+        env_path = os.environ.get("LIBREOFFICE_PATH")
+        if env_path and Path(env_path).exists():
+            return env_path
+        for name in ("soffice", "libreoffice", "soffice.exe", "libreoffice.exe"):
+            found = shutil.which(name)
+            if found:
+                return found
+        # Windows 常见安装路径兜底
+        for candidate in (
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ):
+            if Path(candidate).exists():
+                return candidate
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def recalculate(self, path: Path) -> bool:
+        """重算指定 xlsx 的公式并写回缓存值。
+
+        用 --convert-to xlsx 输出到 tmp 目录（避免覆盖原文件造成损坏），
+        重算成功后用 tmp 文件替换原文件。
+
+        Returns:
+            True 重算成功，False 失败或不可用。
+        """
+        if not self._available:
+            return False
+
+        path = Path(path)
+        lock = _get_file_lock(str(path))
+        with lock:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="lo_recalc_"))
+            try:
+                # libreoffice profile dir 隔离，避免并发 profile 冲突
+                # file:// URL 需正斜杠路径（Windows 反斜杠会致命令解析失败）
+                profile_dir = tmp_dir / "profile"
+                profile_dir.mkdir()
+                profile_url = f"file:///{str(profile_dir).replace(chr(92), '/')}"
+                cmd = [
+                    self._exe,
+                    "--headless",
+                    "--norestore",
+                    f"-env:UserInstallation={profile_url}",
+                    "--convert-to", "xlsx",
+                    "--calc",
+                    "--outdir", str(tmp_dir),
+                    str(path),
+                ]
+                logger.info("[FormulaCache] libreoffice 重算: %s", path.name)
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
+                    timeout=self.TIMEOUT, check=False,
+                )
+                if result.returncode != 0:
+                    logger.error("[FormulaCache] libreoffice 重算失败 rc=%d: %s",
+                                 result.returncode, result.stderr[:200])
+                    return False
+
+                out_file = tmp_dir / path.name
+                if not out_file.exists():
+                    logger.error("[FormulaCache] libreoffice 输出文件不存在: %s", out_file)
+                    return False
+
+                # 校验批注/样式保留情况（libreoffice 转换可能丢）
+                if not self._preserve_check(path, out_file):
+                    logger.warning("[FormulaCache] libreoffice 重算后批注/样式可能丢失，标记人工检查")
+
+                # 用重算结果替换原文件
+                shutil.move(str(out_file), str(path))
+                return True
+            except subprocess.TimeoutExpired:
+                logger.error("[FormulaCache] libreoffice 重算超时 %ds: %s", self.TIMEOUT, path.name)
+                return False
+            except Exception as e:
+                logger.error("[FormulaCache] libreoffice 重算异常: %s", e)
+                return False
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _preserve_check(original: Path, recalculated: Path) -> bool:
+        """粗略检查重算后批注/样式是否保留。
+
+        比较 sheet 数量和每 sheet 的批注数量。libreoffice 对批注支持较好，
+        但样式可能微调。这里只做粗粒度检查，精细样式差异由调用方决定是否人工处理。
+        """
+        try:
+            import openpyxl
+            wb_o = openpyxl.load_workbook(original, read_only=True)
+            wb_r = openpyxl.load_workbook(recalculated, read_only=True)
+            if set(wb_o.sheetnames) != set(wb_r.sheetnames):
+                wb_o.close()
+                wb_r.close()
+                return False
+            # 批注数量对比（read_only 模式不加载批注，用普通模式）
+            wb_o.close()
+            wb_r.close()
+            wb_o = openpyxl.load_workbook(original)
+            wb_r = openpyxl.load_workbook(recalculated)
+            for sn in wb_o.sheetnames:
+                ws_o = wb_o[sn]
+                ws_r = wb_r[sn]
+                # 行数差异大 → 结构可能变
+                if abs(ws_o.max_row - ws_r.max_row) > 0:
+                    wb_o.close()
+                    wb_r.close()
+                    return False
+            wb_o.close()
+            wb_r.close()
+            return True
+        except Exception:
+            return False
+
+
+def _has_formulas(path: Path) -> bool:
+    """检测 xlsx 是否含任何公式单元格（值以 = 开头）。fast-path 用。
+
+    zip XML 字节扫描 `<f`（openpyxl 公式标签），10w 行文件 ~0.05s vs openpyxl
+    全量 load ~6s。公式标签不可能出现在转义后的文本值里（文本 `&lt;f`），无假阳性。
+    扫描失败回退 openpyxl 全量读取。
+    """
+    try:
+        import zipfile
+        with zipfile.ZipFile(path) as zf:
+            for name in zf.namelist():
+                if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                    data = zf.read(name)
+                    if b"<f>" in data or b"<f " in data or b"<f/>" in data:
+                        return True
+            return False
+    except Exception as e:
+        logger.warning("[FormulaCache] zip 扫描公式失败 %s: %s", path.name, e)
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        wb.close()
+                        return True
+        wb.close()
+    except Exception as e:
+        logger.warning("[FormulaCache] 检测公式失败 %s: %s", path.name, e)
+    return False
+
+
+def snapshot_formulas(path: Path) -> dict[tuple[str, int, int], Any]:
+    """快照所有公式单元格的缓存值。
+
+    先用 data_only=False 识别公式单元格（值以 = 开头），
+    再用 data_only=True 读缓存值。
+
+    4.6: 结果按 (path, mtime, size) 缓存,同一未变文件重复合并命中免二次 load;
+    文件变化(mtime/size 变)自动失效。
+
+    Returns:
+        dict[(sheet, row, col) -> cached_value]，无公式表返回空 dict。
+    """
+    # 4.6 缓存命中检查
+    ckey = None
+    try:
+        st = path.stat()
+        ckey = (str(path), st.st_mtime, st.st_size)
+    except Exception:
+        ckey = None
+    if ckey is not None:
+        with _SNAPSHOT_CACHE_LOCK:
+            cached = _SNAPSHOT_CACHE.get(ckey)
+        if cached is not None:
+            return dict(cached)  # 返回副本,避免调用方篡改缓存
+
+    import openpyxl
+    snapshot: dict[tuple[str, int, int], Any] = {}
+    try:
+        # 第一步：识别公式单元格位置
+        wb_formula = openpyxl.load_workbook(path, data_only=False)
+        formula_cells: list[tuple[str, int, int]] = []
+        for ws in wb_formula.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        formula_cells.append((ws.title, cell.row, cell.column))
+        wb_formula.close()
+
+        if not formula_cells:
+            # 无公式也缓存(空 dict),免下次再双 load 扫一遍
+            if ckey is not None:
+                _cache_snapshot_put(ckey, snapshot)
+            return snapshot
+
+        # 第二步：读缓存值
+        wb_cache = openpyxl.load_workbook(path, data_only=True)
+        for sheet, row, col in formula_cells:
+            try:
+                snapshot[(sheet, row, col)] = wb_cache[sheet].cell(row, col).value
+            except Exception:
+                snapshot[(sheet, row, col)] = None
+        wb_cache.close()
+    except Exception as e:
+        logger.error("[FormulaCache] 快照公式失败 %s: %s", path.name, e)
+        return snapshot  # 异常不缓存(可能不完整)
+    if ckey is not None:
+        _cache_snapshot_put(ckey, snapshot)
+    return snapshot
+
+
+def _cache_snapshot_put(ckey: tuple[str, float, int], snapshot: dict) -> None:
+    """写入 snapshot 缓存,FIFO 上限保护。"""
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE[ckey] = dict(snapshot)
+        if len(_SNAPSHOT_CACHE) > _SNAPSHOT_CACHE_MAX:
+            _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
+
+
+def compare_snapshots(
+    before: dict[tuple[str, int, int], Any],
+    after: dict[tuple[str, int, int], Any],
+) -> list[CellIssue]:
+    """对比 save 前后快照，返回问题单元格列表。
+
+    判定：
+    - lost: before 有值（非 None）/after 无值（None）
+    - changed: before 与 after 值不一致
+    """
+    issues: list[CellIssue] = []
+    for key, before_val in before.items():
+        after_val = after.get(key)
+        if before_val is not None and after_val is None:
+            issues.append(CellIssue(
+                sheet=key[0], row=key[1], col=key[2],
+                kind="lost", before=before_val, after=after_val,
+            ))
+        elif before_val != after_val and before_val is not None:
+            issues.append(CellIssue(
+                sheet=key[0], row=key[1], col=key[2],
+                kind="changed", before=before_val, after=after_val,
+            ))
+    return issues
+
+
+class FormulaCacheValidator:
+    """公式缓存校验器。
+
+    主流程 validate_and_fix：save 前快照 → （调用方 save）→ save 后回读 →
+    对比 → 丢失则 libreoffice 重算 → 二次校验 → 不一致抛 FormulaCacheError。
+    """
+
+    def __init__(self):
+        self._runner = LibreOfficeRunner()
+
+    @property
+    def libreoffice_available(self) -> bool:
+        return self._runner.available
+
+    def snapshot_before(self, path: Path) -> dict[tuple[str, int, int], Any]:
+        """save 前快照（供调用方在 save 前调用）。"""
+        if not _has_formulas(path):
+            return {}
+        return snapshot_formulas(path)
+
+    def validate_and_fix(
+        self,
+        path: Path,
+        before_snapshot: dict[tuple[str, int, int], Any] | None = None,
+    ) -> ValidationResult:
+        """save 后校验 + 必要时重算 + 二次校验。
+
+        Args:
+            path: 已 save 的 xlsx 路径。
+            before_snapshot: save 前快照（由调用方在 save 前调 snapshot_before 获取）。
+                为 None 时跳过对比，仅检测当前是否有公式（用于无 save 场景的纯检测）。
+
+        Returns:
+            ValidationResult。
+        """
+        path = Path(path)
+
+        # fast-path：无公式单元格直接通过，零开销
+        if not _has_formulas(path):
+            return ValidationResult(has_formulas=False, message="无公式单元格，fast-path 通过")
+
+        # 无 before_snapshot → 无法对比，仅报告有公式
+        if before_snapshot is None:
+            return ValidationResult(has_formulas=True, message="含公式单元格，未提供 before 快照无法对比")
+
+        # save 后回读
+        after_snapshot = snapshot_formulas(path)
+        issues = compare_snapshots(before_snapshot, after_snapshot)
+
+        if not issues:
+            return ValidationResult(has_formulas=True, message="公式缓存完好，校验通过")
+
+        # 区分问题类型：lost（真丢失，需重算）vs changed（值变了，可能因输入源被改）
+        lost_issues = [i for i in issues if i.kind == "lost"]
+        changed_issues = [i for i in issues if i.kind == "changed"]
+
+        # 无 lost 且仅 changed → 可能是改了公式输入源导致结果变化，属合理
+        # 但仍需确保重算后缓存有值（非 None），否则也是丢失
+        if not lost_issues and changed_issues:
+            # changed 但 after 均非 None → 公式结果合理变化，非缓存丢失
+            if all(i.after is not None for i in changed_issues):
+                return ValidationResult(
+                    has_formulas=True,
+                    message="公式输入源变更导致结果更新，缓存完好",
+                )
+
+        logger.warning("[FormulaCache] %s 检测到 %d 个公式缓存问题（lost=%d changed=%d）",
+                       path.name, len(issues), len(lost_issues), len(changed_issues))
+
+        # 缓存丢失 → 调 libreoffice 重算
+        if self._runner.available:
+            recalced = self._runner.recalculate(path)
+            if recalced:
+                # 二次校验：重算后只看缓存值是否恢复（非 None），不对比 before
+                # 因为改了输入源后新算值必然与旧不同，对比 changed 无意义
+                after_recalc = snapshot_formulas(path)
+                still_lost = [
+                    (k, v) for k, v in after_recalc.items()
+                    if v is None and before_snapshot.get(k) is not None
+                ]
+                if not still_lost:
+                    return ValidationResult(
+                        has_formulas=True, recalculated=True,
+                        message="libreoffice 重算成功，公式缓存已恢复",
+                    )
+                # 重算后仍 None（循环引用等无法算出值）
+                lost_cells = [
+                    f"{k[0]}!R{k[1]}C{k[2]}" for k, _ in still_lost
+                ]
+                return ValidationResult(
+                    has_formulas=True, recalculated=True, needs_manual_fix=True,
+                    issues=[i for i in issues if i.kind == "lost"],
+                    message=f"libreoffice 重算后仍有 {len(still_lost)} 个公式无缓存值，需人工修复",
+                )
+            else:
+                # 重算失败
+                return ValidationResult(
+                    has_formulas=True, needs_manual_fix=True, issues=issues,
+                    message="libreoffice 重算失败，需人工 Excel 打开重存",
+                )
+        else:
+            # libreoffice 不可用 → 降级仅报告不阻断（由调用方决定）
+            return ValidationResult(
+                has_formulas=True, needs_manual_fix=True, issues=issues,
+                message="libreoffice 不可用，检测到公式缓存丢失但无法重算，需人工处理",
+            )

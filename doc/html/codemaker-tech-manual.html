@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配表模式 · 技术文档 · AI 配表助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">CodeMaker 配表模式 · 技术文档</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav"><a href="index.html">← 返回首页</a></nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">手册</div>
+      <nav class="nav">
+        <a href="user-manual.html"><span class="badge planner">用户</span> 后端 Agent</a>
+        <a href="tech-manual.html"><span class="badge tech">技术</span> 后端 Agent</a>
+        <a href="codemaker-user-manual.html"><span class="badge planner">用户</span> 配表模式</a>
+        <a class="active" href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 配表模式</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">本页章节</div>
+      <nav class="nav">
+        <a href="#pos">1. 定位与原理</a>
+        <a href="#install">2. 安装机制</a>
+        <a href="#activate">3. 激活机制</a>
+        <a href="#rules">4. 行为规则</a>
+        <a href="#kb">5. 知识库</a>
+        <a href="#api">6. 原子 API 清单</a>
+        <a href="#r">7. 关键行为规则</a>
+        <a href="#safe">8. 安全规则</a>
+        <a href="#debug">9. 故障排查</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <p class="muted"><span class="badge tech">技术 · 配表模式</span></p>
+    <h1>CodeMaker 配表模式技术使用文档</h1>
+    <p class="lead">面向开发 / 维护人员：CodeMaker 配表模式（第二形态）的设计原理、安装机制、行为规则、知识库与原子 API。使用侧操作见 <a href="codemaker-user-manual.html">配表模式用户手册</a>。</p>
+
+    <h2 id="pos">1. 定位与原理</h2>
+    <p>配表模式是项目的<strong>第二形态</strong>，与 Web 端 AI 配表助手（第一形态）本质不同：</p>
+    <table>
+      <thead><tr><th>维度</th><th>第一形态（Web Agent）</th><th>第二形态（配表模式）</th></tr></thead>
+      <tbody>
+        <tr><td>LLM</td><td>codemaker serve（后端完整 agent 解析）</td><td><strong>CodeMaker 自身 LLM</strong></td></tr>
+        <tr><td>入口</td><td>浏览器 <code>:8000</code></td><td>CodeMaker 插件对话框</td></tr>
+        <tr><td>后端角色</td><td>业务 + LLM 编排 + Excel 读写</td><td><strong>仅提供原子 API 执行 Excel 读写</strong></td></tr>
+        <tr><td>权限</td><td>完整项目</td><td>仅 <code>resources/</code> 表格，其他隔离</td></tr>
+        <tr><td>意图理解</td><td><code>/api/agent/chat</code>（后端 LLM）</td><td>CodeMaker LLM + skill 知识</td></tr>
+      </tbody>
+    </table>
+    <div class="callout"><span class="ctitle">核心分工</span>CodeMaker = 意图理解 + 编排（大脑）；后端 = 执行引擎（读写 <code>.xlsx</code>、类型转换、校验、公式保护）。CodeMaker 不直接碰文件，只调后端原子 API。</div>
+    <div class="callout warn"><span class="ctitle">关键约束</span>配表模式下<strong>不调</strong> <code>/api/agent/chat</code> 与 <code>/api/agent/chat/stream</code>（那是第一形态的后端完整 agent），改由 CodeMaker 自身 LLM 结合 skill 知识把自然语言拆解为具体原子 API 调用。</div>
+
+    <h2 id="install">2. 安装机制</h2>
+    <p><code>.codemaker/</code> 不提交（svn:ignore），配表模式需各成员本地生成。</p>
+    <h3>2.1 自动安装</h3>
+    <p><code>tools/deploy.bat</code>（第 6 步）和 <code>tools/update.bat</code>（第 6 步）已自动安装，正常跑脚本即可。</p>
+    <h3>2.2 手动重装</h3>
+    <p>仅当单独改了 <code>tools/table-mode/</code> 源文档或 <code>server/agent/excel/skills/</code> 想立即生效时：</p>
+    <pre><code>uv run python tools/table-mode/install.py</code></pre>
+    <h3>2.3 产物</h3>
+    <p>安装后生成 <code>.codemaker/table-mode/</code>：</p>
+    <ul>
+      <li><code>配表操作模式.md</code> — 模式行为指令（CodeMaker 进入后遵循）</li>
+      <li><code>知识库.md</code> — 配表知识（实体路由 / 列别名 / 行定位 / 原子 API）</li>
+      <li><code>skills/</code> — skill yaml 原文（列别名 / sheet 别名 / 行定位 / 反模式等）</li>
+    </ul>
+    <p>源文档位于 <code>tools/table-mode/</code>（<code>配表操作模式.md</code>、<code>知识库.md</code>、<code>install.py</code>）。</p>
+
+    <h2 id="activate">3. 激活机制</h2>
+    <ol>
+      <li>CodeMaker 识别「查看项目文件夹，进入配表模式」指令。</li>
+      <li>读 <code>.codemaker/table-mode/配表操作模式.md</code>（未安装则回退读 <code>tools/table-mode/配表操作模式.md</code> 源）并遵循。</li>
+      <li>询问确认 → 用户确认后读 <code>知识库.md</code> 加载规则 → 进入模式。</li>
+      <li>「退出配表模式」清除模式状态，恢复完整能力。</li>
+    </ol>
+    <div class="callout"><span class="ctitle">前提</span>后端服务运行中 <code>http://127.0.0.1:8000</code>（<code>python -m server.main</code> 或 <code>tools/start.bat</code>）。</div>
+
+    <h2 id="rules">4. 行为规则（<code>配表操作模式.md</code>）</h2>
+    <h3>4.1 模式内权限</h3>
+    <p><strong>允许</strong>：</p>
+    <ul>
+      <li>读 <code>.codemaker/table-mode/知识库.md</code> + <code>skills/</code> 下 skill 文件</li>
+      <li>调后端原子 API 操作 <code>resources/</code> 表格</li>
+      <li>用 <code>run_terminal_cmd</code> 执行 <code>curl</code> 调原子 API</li>
+    </ul>
+    <p><strong>禁止</strong>：</p>
+    <ul>
+      <li>访问项目其他代码 / 文件（<code>server/</code> <code>frontend/</code> <code>merge/</code> 等）</li>
+      <li>调 <code>/api/agent/chat</code> 或 <code>/chat/stream</code>（后端完整 agent）</li>
+      <li>执行与表格操作无关的请求（写代码、查项目结构、闲聊等）→ 统一拒答</li>
+    </ul>
+    <h3>4.2 操作流程</h3>
+    <ol>
+      <li><strong>理解意图</strong> — 解析用户自然语言。</li>
+      <li><strong>查知识库解析</strong> — 实体→表路由、sheet 别名、列别名、行定位。</li>
+      <li><strong>调原子 API 执行</strong> — 查询定位 → 改值 / 新增 / 删除。</li>
+      <li><strong>返回结果</strong> — 改了什么、旧值→新值、校验结果、跨表影响。</li>
+    </ol>
+
+    <h2 id="kb">5. 知识库（<code>知识库.md</code>）</h2>
+    <h3>5.1 实体 → 表路由</h3>
+    <p>自然语言实体类别映射到 <code>table_stem</code>（<code>resources/</code> 下 xlsx 文件名去扩展名）。例：</p>
+    <table>
+      <thead><tr><th>实体</th><th>table_stem</th><th>主 sheet</th></tr></thead>
+      <tbody>
+        <tr><td>灵兽/宠物</td><td><code>pet</code></td><td><code>Pet</code></td></tr>
+        <tr><td>法宝</td><td><code>fabao</code></td><td><code>Fabao</code></td></tr>
+        <tr><td>神通</td><td><code>ability</code></td><td><code>Ability</code></td></tr>
+        <tr><td>道具</td><td><code>item</code></td><td><code>ItemBase</code>/<code>ItemType</code></td></tr>
+        <tr><td>建筑</td><td><code>building</code></td><td><code>BuildingType</code></td></tr>
+      </tbody>
+    </table>
+    <h3>5.2 别名体系</h3>
+    <ul>
+      <li><strong>Sheet 别名</strong>（<code>sheet_aliases.yaml</code>）：业务别名 → 真实 sheet（如「法宝等级」→<code>FabaoLevel</code>）。</li>
+      <li><strong>列别名 / 短形式 / 中英对照</strong>（<code>column_aliases.yaml</code> 等）：如「名字」→<code>名称</code>、「攻击」→<code>atk</code>。</li>
+      <li><strong>行定位</strong>（<code>row_aliases.yaml</code>）：默认 <code>locator_column=名称</code>、<code>match=contains</code>。</li>
+      <li><strong>解析器配置</strong>（<code>parser_config.yaml</code>）：前导动词剥离（给/将/把/为...）、非业务 sheet 跳过标记。</li>
+    </ul>
+    <div class="callout"><span class="ctitle">R25 真实名优先</span>表结构变更后别名 yaml 可能滞后。解析时优先调 <code>GET /api/tables/{stem}</code> 取真实 sheet 名、<code>?include_columns=1</code> 取真实列名，别名 yaml 仅作兜底。后端启动时 <code>regenerate_skills</code> 重算 L1_derived 保持同步。</div>
+
+    <h2 id="api">6. 原子 API 清单</h2>
+    <p>base URL：<code>http://127.0.0.1:8000</code>，用 <code>curl</code> 调用。</p>
+    <h3>6.1 查询类</h3>
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>GET</td><td><code>/api/tables</code></td><td>所有表列表</td></tr>
+        <tr><td>GET</td><td><code>/api/tables/search?q=&amp;table=</code></td><td>全文搜索</td></tr>
+        <tr><td>GET</td><td><code>/api/tables/{stem}</code></td><td>表详情</td></tr>
+        <tr><td>GET</td><td><code>/api/tables/{stem}/sheets/{sheet}?page=&amp;page_size=&amp;include_columns=1</code></td><td>sheet 分页数据（<code>include_columns=1</code> 同返列约束）</td></tr>
+        <tr><td>GET</td><td><code>/api/tables/{stem}/sheets/{sheet}/columns</code></td><td>列约束</td></tr>
+        <tr><td>GET</td><td><code>/api/tables/{stem}/sheets/{sheet}/suggest?value=&amp;col=&amp;top=3</code></td><td>R19 相近项建议</td></tr>
+        <tr><td>GET</td><td><code>/api/validate/id-scope</code></td><td>跨表 ID 校验 + 查重</td></tr>
+      </tbody>
+    </table>
+    <div class="callout"><span class="ctitle">行号定位</span><code>data_start</code> 是数据起始 Excel 行号（1-based），页内索引 <code>ri</code> → Excel 行号 = <code>data_start + (page-1)*page_size + ri</code>。</div>
+
+    <h3>6.2 改值</h3>
+    <ul>
+      <li><code>POST /api/tables/cell/update</code> <code>{table_stem, sheet, row, col, value}</code> — 单格。</li>
+      <li><code>POST /api/tables/cells/batch-update</code> <code>{..., atomic, updates:[{col,value}]}</code> — R22 多字段批量，<code>atomic=true</code> 全成或全败。</li>
+    </ul>
+    <h3>6.3 新增行（R23 二段提交）</h3>
+    <ol>
+      <li><code>POST /api/tables/add-form/build</code> <code>{text}</code> → <code>{columns, empty_row}</code></li>
+      <li><code>POST /api/tables/add-form/validate</code> <code>{table_stem, sheet, values}</code> → errors/warnings</li>
+      <li><code>POST /api/tables/add-form/commit</code>：先 <code>dry_run=true</code> 预览（不写盘）→ 用户确认后 <code>dry_run=false</code> 写盘返回 <code>new_row</code></li>
+    </ol>
+    <h3>6.4 行/列增删（R24）</h3>
+    <ul>
+      <li><code>POST /api/tables/row/delete</code> <code>{table_stem, sheet, row}</code></li>
+      <li><code>POST /api/tables/row/insert</code> <code>{table_stem, sheet, row, values?}</code></li>
+      <li><code>POST /api/tables/column/add</code> / <code>column/delete</code> <code>{..., confirm}</code> — <strong>必须 <code>confirm=true</code></strong>，高风险。</li>
+    </ul>
+
+    <h2 id="r">7. 关键行为规则（R 系列）</h2>
+    <table>
+      <thead><tr><th>编号</th><th>规则</th></tr></thead>
+      <tbody>
+        <tr><td>R19</td><td>名称定位失败 → <code>suggest</code> 取 top-3 相近项 → 展示候选卡片供用户选 → 仍无则全文 <code>search</code></td></tr>
+        <tr><td>R20</td><td>同名列消歧：<code>columns_meta</code> 含 <code>{col_index, name}</code>，回显标注 <code>激活消耗(列3)</code>，<code>cell/update</code> 用 <code>col</code> 号区分</td></tr>
+        <tr><td>R21</td><td>改值前用 <code>?include_columns=1</code> 一次取行数据 + 列约束</td></tr>
+        <tr><td>R22</td><td>多字段改值用 <code>cells/batch-update</code>，事务性</td></tr>
+        <tr><td>R23</td><td>新增行强制二段提交（先 <code>dry_run</code> 预览再写盘）</td></tr>
+        <tr><td>R24</td><td>行/列增删；列操作需 <code>confirm</code></td></tr>
+        <tr><td>R25</td><td>真实名优先，别名 yaml 兜底</td></tr>
+        <tr><td>R27</td><td>公式列只读不改，提示用户手动处理</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="safe">8. 安全规则</h2>
+    <ul>
+      <li><strong>改值前先查</strong>：sheet 数据 + <code>columns</code> 约束，确认行号/列号/类型/唯一性。</li>
+      <li><strong>唯一列查重</strong>：改值前搜该列是否已有相同值。</li>
+      <li><strong>公式列保护</strong>：标记为公式的列不直接覆写，提示风险。</li>
+      <li><strong>ID 列改动</strong>：改 id 后调 <code>/api/validate/id-scope</code> 校验跨表冲突。</li>
+      <li><strong>新增先校验</strong>：<code>validate</code> 通过再 <code>commit</code>，<code>confirm=true</code> 仅用户明确确认时用。</li>
+      <li><strong>值类型</strong>：数字列传数字字符串（<code>"100"</code>），后端转换。</li>
+    </ul>
+
+    <h2 id="debug">9. 故障排查</h2>
+    <table>
+      <thead><tr><th>现象</th><th>原因 / 处理</th></tr></thead>
+      <tbody>
+        <tr><td>CodeMaker 找不到 <code>配表操作模式.md</code></td><td><code>.codemaker/table-mode/</code> 未安装，跑 <code>install.py</code> 或 <code>deploy.bat</code>/<code>update.bat</code></td></tr>
+        <tr><td>API 调用连接失败</td><td>后端未启动，检查 <code>:8000</code></td></tr>
+        <tr><td>curl 带中文参数报 <code>Invalid HTTP request</code></td><td>用 <code>curl --get --data-urlencode</code> 对中文参数做 URL 编码</td></tr>
+        <tr><td>别名与真实结构不符</td><td>重启后端触发 <code>regenerate_skills</code>，或依 R25 直接取真实名</td></tr>
+        <tr><td>名称查不到</td><td>触发 R19，从相近项建议中选，或改用其他列定位</td></tr>
+      </tbody>
+    </table>
+
+    <hr class="hr">
+    <p class="muted">面向程序员，使用侧见 <a href="codemaker-user-manual.html">配表模式用户手册</a>；功能更全的 Web 端见 <a href="tech-manual.html">后端 Agent 技术文档</a>。</p>
+  </main>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.figure img').forEach(function (img) {
+      img.title = '点击查看原图';
+      img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+    });
+  });
+</script>
+</body>
+</html>

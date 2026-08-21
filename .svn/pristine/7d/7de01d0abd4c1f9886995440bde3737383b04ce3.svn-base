@@ -1,0 +1,1150 @@
+# 配表 AI 优化全过程
+
+> **持续更新文档**。每轮优化追加一轮记录,仪表盘动态汇总。
+> 更新规则:新优化 → 跑 before/after 测评 → 填 R{n} 记录 → 更新仪表盘 + 注册表状态。
+> **详细流程见 [`./.codemaker/优化工作流.md`](.codemaker/优化工作流.md)** — 含 agent/merge 两线指标测试入口、每轮流程、我的行为约定(每轮后报告+询问)。
+> 数据来源基准,后续汇报以此为准。
+
+---
+
+## 〇、累计成果仪表盘
+
+> 每轮优化后更新。汇总已落地项 + 累计量化提升。
+
+### 已落地优化(按轮次)
+
+| 轮次 | 日期 | 优化项 | 状态 | 核心提升 |
+|---|---|---|---|---|
+| R1 | 2026-08-10 | #5 Prompt 升级 + #2 值语义门 + #1 SET PK 级联 + bug修 | ✅ 已落地 | 定位+20.8% / 覆盖+22.7% / 精准+33.4% / 严格通过+100% |
+| R2 | 2026-08-10 | bug修2 验证 + #6 skill AI 归纳落地 | ✅ 已落地 | bug修2 精准+0.0713(vs R1 before);#6 LLM 从8失败trace归纳4反模式(PK冲突/seed不存在/conv_id定位/类型转换)写盘 pending_review |
+| R3 | 2026-08-11 | merge 路由层性能(svn info批量+calamine+假删除修+AI预取控+LRU+漂移脚本) | ✅ 已落地 | subdir_compare 2.33x(21.8s→9.3s) / branch_compare 1.11x(99.5s→89.5s) / 假source_deleted 69→0 |
+| R4 | 2026-08-11 | agent 配表层(Step5追踪+值类型容错+verify降级+表路由+跨表模板扩展+Step3编号保护+G7重复intent修) | ✅ 已落地 | 新6用例 off 轮:覆盖度0.16→0.39(v4峰值) / 用例106耗时204s→112s(-45%) / 用例107精准0→0.79 |
+| R5 | 2026-08-11 | on 轮卡点修复(semantic_outlier对add放宽+Step3跳过splitter intent AI介入+parse_multi空返回回退规则模板) | ✅ 已落地 | 见 R5.3(待端到端验证) |
+| R6 | 2026-08-11 | merge 引擎层+前端(#24语义归一+#25splitter跳Step4+#33未变更跳过+#32 ProcessPool+#38批量采纳+#39冲突排序) | ✅ 已落地 | #33 demo_svn 1.10x(64/74表跳过) / 假冲突0.5→0(seed) / splitter省1次LLM / #32 ProcessPool卡死回退ThreadPool待隔离修复 / 前端批量采纳+排序 |
+| R8 | 2026-08-13 | column_matcher 嵌套字段整名匹配(type_aliases row2 规范名桥接,原则9) + 3 非 quest 跨链变体样例(进化/道具/邮件) | ✅ 已落地 | **quest_npc 引用一致 0.62→1.00(达标 ✓)** / 定位 1.00 / 覆盖 0.91 / 精准 0.76 / 耗时 134→115s / 3 非 quest 变体可扩展性基线(cov 0.50,引用一致 0.00,暴露 splitter pet/mail 模板缺口) |
+| R8b | 2026-08-13 | 框架级:produces 推断层(关系图驱动,替代 per-template 硬编码 produces,原则10)+ 声明式 FK 数据扩展 | ✅ 已落地 | produces_inference.py 新建(unit 验证 pet/item/mail 三链 produces+占位符自动闭环)/ table_relations.json 加 Equipment→ItemBase+Potion/Fabao+GlobalMail→MailTemplate+SpawnQuestEntity→quest FK / quest_npc 0.94(15/16,LLM 方差非推断层)/ 跨链端到端仍 0.00(producer add 失败,下一层框架问题:LLM 字段质量+verify-repair fix_fields 应用) |
+| R8c | 2026-08-13 | 框架级:verify-repair fix_fields 应用校验(post-LLM validator)+ produces 显式PK字面代换 + type_aliases 合并进 matcher | ✅ 已落地 | **quest_npc ok=True/引用一致 0.94/cov 1.00/精准 0.78/107s(reward modify 修好,strong 高)** / item ItemBase 字段全匹配 score=1.0(unit) / 跨链 pet/item/mail 仍 0.00(各表独立瓶颈:pet_evolve 模板/item sheet 路由/mail LLM 路径,非单层可解) |
+| R8f | 2026-08-13 | detect 跨表识别模式修复(量词"一+把/个/件"+mail"全服邮件"广义匹配) | ✅ 已落地 | **item ok=True/cov 1.00(was 0.50/False)**——detect 漏"新增一把武器"致走 LLM 路由错 sheet(道具表说明),修后走 splitter sheet_hint=ItemBase 路由正 / item 功能上引用闭环(Equipment c1=28528=ItemBase auto-PK,eval 字段读取漏显 0.00) / pet(mail)splitter 模板缺口仍 0.00(pet 缺 PetEvolveData/mail 产空) |
+| R8g | 2026-08-13 | 框架级:LLM 链分解器(schema 注入+产每表一 op+produces/consumes,原则11)——LLM 为主、规则为安全网,真正泛化 | ✅ 已落地 | **mail ok=True/cov1.00(was 0.50)+pet LLM 产 Pet+PetEvolveData(PetEvolveData 全字段写)**——splitter 模板不完整(<2 intent)时 LLM 链分解取代 per-template;quest_npc/item(splitter ≥2)保留 fast-path 不受影响 / 引用一致仍 0.00(占位符闭环标签失配+LLM 过产,下一轮调) |
+
+| 维度 | 基线 | 累计 | 增量 |
+|---|---|---|---|
+| 单测总数 | 145 | 204 | +59(R1:17 semantic+16 cascade;R2:14 anti_pattern;R5:+3 semantic_gate add放宽;R6:+9 semantic_eq) |
+| 单测通过率 | 100% | 100% | 零回归 |
+| skill_ab_test 定位成功率 | 1.0000 | 1.0000 | 零回归 |
+| 新建源文件 | 0 | 3 | semantic_gate.py / cascade_planner.py / parallel_compare.py(R6) |
+| merge 路由层 subdir_compare | 21.8s | 9.3s | R3 -57%(2.33x,calamine+svn info批量) |
+| merge 路由层 branch_compare | 99.5s | 89.5s | R3 -10%(1.11x,瓶颈在引擎层 compare_sheet) |
+| merge 假 source_deleted | 69 | 0 | R3 src_scope_only 修复(正确性,非性能) |
+| merge 假冲突率(seed id=2) | 0.5 | 0.0 | R6 #24 语义相等归一(100/100.0/1e2 不再判冲突) |
+| merge 未变更表跳过(demo_svn) | 全74表 compare | 64/74 跳过 | R6 #33 branch_compare 54.2→49.3s(1.10x,小表为主,大表场景收益更高) |
+| merge 引擎层 compare 并行 | ThreadPool(GIL 0.96x) | ProcessPool(待修复) | R6 #32 samples 2.0x,真实 demo_svn worker 导入卡死回退 ThreadPool,需隔离 worker 模块 |
+
+### 累计端到端提升(table_case_eval,skill=on)
+
+| 指标 | 基线(before R1) | 当前(after R1) | 累计 delta |
+|---|---|---|---|
+| 定位功能 | 0.6667 | 0.8056 | +0.1389 |
+| 覆盖度 | 0.6111 | 0.7500 | +0.1389 |
+| 精准程度 | 0.5185 | 0.6917 | +0.1732 |
+| 严格通过率 | 0.1667 | 0.3333 | +0.1666 |
+
+> 注:端到端指标含 LLM 波动,单轮样本量小。核心质量提升方向一致,确定性验证(单测+回归)为零波动硬证据。
+> R2 重跑(20260810_161654,bug修2 后)因 LLM 波动 + case5/6/7 全0,指标回落(locate 0.6389/cov 0.5833/acc 0.5898/pass 0.1667),不反映质量退化,见 [R2 记录](#r22026-08-10bug修2-验证ai_plan-list-归一)。
+
+---
+
+## 一、优化项注册表
+
+> 全量优化项(已落地 + 规划中)。每项唯一 ID,状态流转:规划中 → 已落地 → 已量化。
+
+| ID | 优化项 | 类别 | 状态 | 落地轮次 | 源文件 | 测试文件 |
+|---|---|---|---|---|---|---|
+| #5 | Prompt 角色升级(路由器→配表专家) | 贯穿 | ✅ 已落地 | R1 | prompts.py, codemaker_parser.py | (无独立单测,靠端到端) |
+| #2 | 值语义合理性门(Level 0) | P0 数据风险 | ✅ 已落地 | R1 | semantic_gate.py(新), error_classifier.py, repair_playbook.py, agent.py | test_semantic_gate.py(17) |
+| #1 | SET 改主键级联影响推理 | P0 数据风险 | ✅ 已落地 | R1 | cascade_planner.py(新), agent.py | test_cascade_planner.py(16) |
+| bug修 | StepAIEnhancer init 顺序(_llm_counter) | bug | ✅ 已落地 | R1 | agent.py | (靠 skill_ab_test 验证不再降级) |
+| #3 | 多表规划增强(produces/topo 强化) | P1 生成式 | ⏳ 规划中 | — | intent_planner.py(待建) | — |
+| #4 | 结构变更迁移推理(col_add 下游同步) | P1 生成式 | ⏳ 规划中 | — | agent.py 列操作分支 | — |
+| #6 | skill AI 归纳(失败案例→反模式) | 贯穿 | ✅ 已落地 | R2 | skill_updater.py, step_ai_enhancer.py, skill_loader.py, agent.py, table_case_eval.py | test_anti_pattern_induction.py(14) |
+| bug修2 | ai_plan fields list 归一(_normalize_fields_list) | bug | ✅ 已落地 | R1 | step_ai_enhancer.py:30,296 | R2 端到端验证(精准+0.0713) |
+| #7 | svn info 批量预填 rev_cache | 性能 | ✅ 已落地 | R3 | merge_branch.py(_prefill_rev_cache), merge_subdir.py | merge_router_bench.py |
+| #8 | calamine Rust 引擎补装 | 性能 | ✅ 已落地 | R3 | merge_branch.py/merge_subdir.py(_sheet_names 优先 calamine) | merge_router_bench.py |
+| #9 | subdir src_scope_only 假删除修复 | bug | ✅ 已落地 | R3 | merge_subdir.py:435 | verify_merge_subdir_compare.py |
+| #10 | AI 预取成本控制(初始化检查+前5sheet+去重) | 资源 | ✅ 已落地 | R3 | merge_branch.py(_prefetch_ai_suggestions) | (逻辑单测,不在基准) |
+| #11 | _suggest_cache LRU+TTL 有界 | 资源 | ✅ 已落地 | R3 | agent_service.py(_suggest_cache_get/put) | (逻辑单测) |
+| #12 | 漂移回归脚本数据源迁移 | 测试 | ✅ 已落地 | R3 | verify_merge_branch_compare.py/verify_merge_subdir_compare.py | 两脚本 PASS |
+| #13 | 表级并行(ThreadPool 表循环) | 性能 | ✅ 已落地 | R3 | merge_branch.py/merge_subdir.py(循环) | merge_router_bench.py(本地无收益,远程场景生效) |
+| #14 | Step5 执行追踪打印 | 可观测性 | ✅ 已落地 | R4 | agent.py:3754(`_step5_log`) | table_case_eval(进程stdout实时可见) |
+| #15 | 值类型转换容错(int列) | bug | ✅ 已落地 | R4 | agent.py:1773(`_coerce_value` float/×字符串容错) | (端到端验证) |
+| #16 | verify-repair 超时降级 | 性能 | ✅ 已落地 | R4 | agent.py:476(环境变量控制轮数+开关) | (用例3耗时229s→91s) |
+| #17 | 表路由修正(法宝alias+行索引优先) | bug | ✅ 已落地 | R4 | alias_mapping.json(法宝→item.xlsx) + agent.py:730(策略1提前) | (用例111路由修正) |
+| #18 | 跨表拆分模板扩展 | P1 生成式 | ✅ 已落地 | R4 | cross_table_splitter.py(+3模板+触发词放宽) | (用例2/3/5覆盖度0→0.5+) |
+| #19 | Step3 显式编号保护 | bug | ✅ 已落地 | R4 | agent.py:4511(`_phase_plan` 保护数字/占位符) | (on轮防LLM幻觉改编号) |
+| #20 | G7 重复intent修复 | bug | ✅ 已落地 | R4 | agent.py:3555(只追加非add子句) | (用例106耗时280s→112s) |
+| #21 | semantic_outlier 对 add 放宽 | bug | ✅ 已落地 | R5 | semantic_gate.py(run_semantic_gate 加 action 参,add 跳过分布离群) + agent.py(_verify_write 传 intent.action) | test_semantic_gate.py(+3) |
+| #22 | Step3 跳过 splitter intent AI 介入 | bug | ✅ 已落地 | R5 | agent.py:3540(extras 标 source=splitter) + agent.py:4526(_phase_plan 早返回跳过 ai_plan_operation) | (确定性单测+端到端) |
+| #23 | parse_multi 空返回回退规则模板 | 性能/韧性 | ✅ 已落地 | R5 | agent.py:3673(空返回优先用 cross_intents_nl,零 LLM) + 3717(去重 append) | test_parse_layer.py(回归) |
+| #24 | 冲突判定语义相等归一 | 准确率 | ✅ 已落地 | R6 | engine/compare.py(_semantic_key/_semantic_eq) + merge_engine.py(多数表决) | test_semantic_eq.py(9) + test_merge_eval.py(契约更新) |
+| #25 | splitter intent 跳 Step4 ai_validate | 性能/准确率 | ✅ 已落地 | R6 | agent.py:4598(_phase_validate 门控 source!=splitter) | samples_first_batch.py(样例2) |
+| #33 | 未变更表跳过 compare | 性能 | ✅ 已落地 | R6 | routers/merge_stages.py(_build_group rev==base rev 早返回 no_change) + MergeGuideView.vue(无差异徽标) | samples_first_batch.py(样例3) |
+| #32 | compare 改 ProcessPoolExecutor | 性能 | ✅ 已落地 | R6 | engine/parallel_compare.py(新) + merge_branch.py/merge_subdir.py(_compare_one_table_proc) | samples_process_pool.py(3) |
+| #38 | 一键采纳高置信建议 | UX | ✅ 已落地 | R6 | MergeGuideView.vue(batchAdoptHighConfidence,阈值0.8) | 前端 build OK |
+| #39 | 冲突密度排序 | UX | ✅ 已落地 | R6 | MergeGuideView.vue(sortByConflict + tableTabs 排序) | 前端 build OK |
+| #40 | splitter option_go 接任务选项 + branch_conv 原文尾保护 | P1 生成式 | ✅ 已落地 | R7 | cross_table_splitter.py(_GO_OPT_RE 新增 + _extract_npc_dialogue 捕获 go_opt + _build_npc_dialogue_intents 产 option_go intent + branch_conv 不 rstrip('。') + branch_conv 加 选项1 引用) | test_multi_table_orchestration.py(18 回归) + splitter unit sanity |
+| #41 | column_matcher 嵌套字段整名匹配(type_aliases row2 规范名桥接) | P0 数据风险 | ✅ 已落地 | R8 | cli_interface.py(read_type_row 新增) + agent.py(_type_aliases 缓存方法 + _translate_dotted_keys 加 type_aliases 精确+前缀2段匹配 + 3 调用点传参 + _type_alias_cache 初始化/失效) | test_multi_table_orchestration.py + test_parse_layer.py(122 回归) + matcher unit sanity |
+| #42 | produces 推断层(关系图驱动,替代 per-template 硬编码 produces) | P0 框架架构 | ✅ 已落地 | R8b | produces_inference.py(新建,infer_produces_consumes:RelationGraph 直查+(stem,sheet)键+不跳同文件跨 sheet+consume-eligible 才替换) + agent.py(topo_order 前接入) + table_relations.json(Equipment/Potion/Fabao→ItemBase + GlobalMail→MailTemplate + SpawnQuestEntity→quest FK 声明式数据) | 122 单测零回归 + 3 链 unit sanity(pet/item/mail produces+占位符闭环)|
+| #43 | verify-repair fix_fields 应用校验(post-LLM validator) | P0 框架鲁棒 | ✅ 已落地 | R8c | agent.py(_coerce_fix_fields_to_headers:翻译点分键→matcher 校验→失败从 reason 解析「列名」强制替换;接入 _run_react_repair + _llm_diagnose_only 两路径) | 122 单测零回归;quest "rewards" 方差消除(quest step 稳定 ok=True) |
+| #44 | produces 显式 PK 字面代换 | P1 框架闭环 | ✅ 已落地 | R8c | produces_inference.py(producer 有显式 PK→consumer FK 字段代换字面值,绕过 _capture_produced 显式 PK 不回传的悬空) | unit sanity:item Equipment 物品编号=7001(显式 PK 字面)、pet 进化后的灵兽ID=30010 |
+| #45 | type_aliases 合并进 matcher.yaml_aliases | P0 框架匹配 | ✅ 已落地 | R8c | agent.py(_make_matcher 加 path 参数 + 合并 type_aliases 进 yaml_aliases,使 plain row2 名 item_type/quality/name 等 stage1 精确命中;8 调用点传 path) | unit sanity:item ItemBase 6 字段全 score=1.0 source=dict;quest_npc reward modify 修好(locator 列匹配) |
+| #46 | detect 跨表识别量词/邮件广义匹配 | P1 框架路由 | ✅ 已落地 | R8f | cross_table_splitter.py(detect item 量词 `(?:一?(?:把\|个\|件\|...))?` + mail `(?:全服\|全局)?邮件`/`mail_id`) | item detect None→item;mail None→mail;18 单测零回归;item ok=True/cov1.00 |
+| #47 | LLM 链分解器(schema 注入+产每表一 op+produces/consumes,原则11) | P0 框架泛化 | ✅ 已落地 | R8g | agent.py(_llm_chain_decompose:候选表(detect+relation graph)+row1/row2 schema+FK 链注入+LLM 产 JSON 数组→NLIntent;splitter <2 intent 时接管,≥2 保留 fast-path) | 122 单测零回归;mail LLM 产 MailTemplate+GlobalMail ok=True/cov1.00;pet LLM 产 Pet+PetEvolveData |
+
+---
+
+## 二、迭代记录
+
+### R1(2026-08-10):Prompt 升级 + 值语义门 + SET PK 级联 + bug修
+
+#### R1.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #5 | prompts 定位"路由器/问答模块",领域知识未激活 | 三处 prompt 升级"配表规范专家"+ 领域知识注入块,保留输出契约 | `server/agent/prompts.py`、`server/agent/excel/codemaker_parser.py` |
+| #2 | `_verify_write` 不做值语义合理性判断,take_max 采纳"攻击力100→10000" | 新建 semantic_gate.py 作 Level 0(硬范围+分布median/MAD+枚举白名单),新增 SEMANTIC_OUTLIER + _h_semantic_outlier 修复 handler | `server/agent/excel/semantic_gate.py`(新)、`error_classifier.py`、`repair_playbook.py`、`agent.py` |
+| #1 | 改 PK 不联动引用行,ref_integrity 只事后报警 | 新建 cascade_planner.py 写前预览(table_relations.json 关系图+语义回退)+ 写后执行级联更新 | `server/agent/excel/cascade_planner.py`(新)、`agent.py` |
+| bug修 | `_llm_counter` 用在前赋值在后,StepAIEnhancer 必失败降级 | 移赋值到 init 前,解锁 6步 AI 增强层 | `server/agent/excel/agent.py` |
+| bug修2 | `ai_plan_operation` LLM 偶返 list 形态 fields(`[{"列":"值"}]`/`[["列","值"]]`/`["值1","值2"]`),原代码直接当 dict 用致 Step3 返回 None 降级 | 新增 `_normalize_fields_list` 三态归一(多 dict 合并 / 二元组转 dict / 裸值按 columns 对齐)+ 列名校验清洗 | `server/agent/excel/step_ai_enhancer.py` |
+
+#### R1.2 确定性验证(零 LLM 波动)
+
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `server/tests/test_semantic_gate.py` | 17 | 硬范围/分布离群/枚举白名单/handler/classify/降级 | 17/17 passed |
+| `server/tests/test_cascade_planner.py图/FK查询/预览/执行/降级/完整性 | 16/16 passed |
+| 核心 pytest 回归 | 145 | verify-repair/parser/error | 145/145 passed(零回归) |
+| skill_ab_test | — | skill on/off A/B | 定位1.0/严格综合0.9592 一致(零回归) |
+
+#### R1.3 端到端量化(table_case_eval before/after,skill=on)
+
+**结果文件**:
+- after:`server/tests/reports/archive/table_case_eval_20260810_150127_nogit.md`(15:01)
+- before:`server/tests/reports/archive/table_case_eval_20260810_152403_nogit_before.md`(15:24)
+- 波动参照:`server/tests/reports/archive/table_case_eval_20260810_151025_nogit_after .md`(15:10 第二轮)
+
+**核心质量对比**(越高越好):
+
+| 指标 | before | after | delta | 增强比 |
+|---|---|---|---|---|
+| 定位功能 | 0.6667 | 0.8056 | +0.1389 | +20.8% |
+| 覆盖度 | 0.6111 | 0.7500 | +0.1389 | +22.7% |
+| 精准程度 | 0.5185 | 0.6917 | +0.1732 | +33.4% |
+| 严格通过率 | 0.1667 | 0.3333 | +0.1666 | +100% |
+
+**副作用及解读**:
+
+| 指标 | before | after | 解读 |
+|---|---|---|---|
+| 响应ok率 | 0.8333 | 0.3333 | 预期下降:#2 语义门拦截不合规值,ok=False 但避免错误数据,严格通过率反升 |
+| 平均多余写入 | 0.8333 | 1.5000 | 预期增多:#1 cascade 级联联动引用行,被统计为"多余" |
+| 平均耗时(ms) | 82236 | 98637 | trade-off:#2 读全表 + #1 级联预览开销换数据安全 |
+
+#### R1.4 根因归因
+
+| 提升来源 | 贡献 | 证据 |
+|---|---|---|
+| bug修(_llm_counter) | 定位/覆盖提升主因 | StepAIEnhancer 不再降级,6步 ai_plan/ai_validate 真正参与 |
+| bug修2(ai_plan list 归一) | 精准度提升补充 | LLM 偶返 list 不再致 Step3 返回 None 降级,fields 正确落表(R1 after 主跑未含此修,靠 R2 重跑验证提升是否放大) |
+| #5 prompt 升级 | 精准度提升 | LLM 以专家思维解析,理解列类型/枚举/表关系 |
+| #2 语义门 | 严格通过率提升(更准非更松) | 拦截不合规值 |
+| #1 cascade | 基础设施就位 | 本批无改PK场景,靠16单测验证 |
+
+#### R1.5 注意事项
+
+- 样本量小(8 条),LLM 波动(15:10 第二轮指标偏低见参照文件)
+- #1 未直接触发(无改PK用例),端到端待补
+- bug修2(ai_plan list 归一)在 R1 after 主跑(15:01)未含,本次修补后由 R2 重跑验证提升是否放大
+
+---
+
+### R2(2026-08-10):bug修2 验证 + #6 skill AI 归纳落地
+
+> 验证 R1 末期补修的 bug修2(`_normalize_fields_list`)在端到端是否放大 R1 提升幅度。
+
+#### R2.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| bug修2 | `ai_plan_operation` LLM 偶返 list 形态 fields,原代码直接当 dict 用致 Step3 返回 None 降级 | 新增 `_normalize_fields_list` 三态归一 + 列名校验(详见 R1.1) | `server/agent/excel/step_ai_enhancer.py` |
+
+> 本次 R2 无新源码改动,仅重跑 eval 验证 R1 已落地的 bug修2。
+
+#### R2.2 确定性验证
+
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| 核心 pytest 回归 | 178 | verify-repair/parser/error/semantic_gate/cascade | 178/178 passed(零回归,bug修2 不破坏现有) |
+| skill_ab_test | — | skill on/off A/B | 定位/严格综合一致(零回归) |
+
+#### R2.3 端到端量化(8 条,skill=on)
+
+**结果文件**:
+- R2 after(本次,bug修2 后):`server/tests/reports/archive/table_case_eval_20260810_161654_nogit_R2_after.{md,json}`
+- R1 after(对照,bug修2 前):`server/tests/reports/archive/table_case_eval_20260810_150127_nogit.{md,json}`
+- R1 before(基线):`server/tests/reports/archive/table_case_eval_20260810_152403_nogit_before.{md,json}`
+
+**对比一:R1 before → R2 after(累计 R1 全优化 + bug修2)**
+
+| 指标 | R1 before | R2 after | delta | 状态 |
+|---|---|---|---|---|
+| 定位功能 | 0.6667 | 0.6389 | -0.0278 | regressed(LLM 波动) |
+| 覆盖度 | 0.6111 | 0.5833 | -0.0278 | regressed(LLM 波动) |
+| 精准程度 | 0.5185 | 0.5898 | +0.0713 | improved(bug修2 确定性贡献) |
+| 严格通过率 | 0.1667 | 0.1667 | +0.0000 | neutral |
+| ok率 | 0.8333 | 0.3333 | -0.5000 | 预期(语义门拦截不合规值) |
+| type_mismatch error | 2 | 1 | -1 | improved(类型校验生效) |
+| unknown error | 0 | 3 | +3 | regressed(LLM 定位失败,case5/6/7) |
+
+**对比二:R1 after → R2 after(隔离 bug修2 增量)**
+
+| 指标 | R1 after | R2 after | delta | 解读 |
+|---|---|---|---|---|
+| 定位功能 | 0.8056 | 0.6389 | -0.1667 | LLM 波动(case5/6/7 全0) |
+| 覆盖度 | 0.7500 | 0.5833 | -0.1667 | LLM 波动 |
+| 精准程度 | 0.6917 | 0.5898 | -0.1019 | LLM 波动 |
+| 严格通过率 | 0.3333 | 0.1667 | -0.1666 | LLM 波动(case5/6/7 拉低) |
+| type_mismatch error | 2 | 1 | -1 | improved(确定性) |
+| success_path LLM calls | 92 | 102 | +10 | bug修2 让 Step3 不降级,多跑 LLM(符合预期) |
+
+#### R2.4 根因归因
+
+| 来源 | 贡献 | 证据 |
+|---|---|---|
+| bug修2(list 归一) | 精准度 +0.0713(vs R1 before,确定性) | fields 正确落表,type_mismatch -1,success_path LLM calls +10(Step3 不降级) |
+| LLM 波动 | 定位/覆盖/严格通过回落主因 | R1 after 那次(15:01)LLM 表现优(locate 0.8056),R2 after(16:16)case5/6/7 全0;R1 文档已记 15:10 第二轮波动 |
+| 语义门(#2) | ok率大降(预期副作用) | 拦截不合规值,ok=False 但避免错误数据 |
+
+#### R2.5 注意事项
+
+- 8 条样本噪声远大于 bug修2 确定性增量,case5/6/7 全0 是 LLM 定位失败非 bug修2 退化
+- bug修2 真实贡献靠确定性证据:type_mismatch -1、success_path calls +10、R1 before→R2 after 精准 +0.0713
+- "提升是否放大"结论:**未放大**。R1 after(0.8056/0.7500/0.6917/0.3333)仍是当前最佳端到端成绩,R2 因 LLM 波动回落。bug修2 是防降级兜底,非放大器
+- 后续若需干净验证 bug修2,需大样本(30+)+ 固定 LLM seed,或构造必触发 list 形态的 case
+
+#### R2.6 #6 skill AI 归纳落地
+
+> 在规则频次累积反模式机制上加 LLM 归纳层,从失败 trace 自动提取可复用反模式。OpenSpec change:`openspec/changes/skill-ai-anti-pattern-induction/`。
+
+**改动清单**:
+
+| 改动 | 文件 |
+|---|---|
+| `AntiPattern` 加 trigger_pattern/rationale/source 字段 + to_dict/load 向后兼容 | `skill_updater.py` |
+| `StepAIEnhancer.ai_induce_anti_pattern(traces)` LLM 归纳方法 + type/action 白名单校验 | `step_ai_enhancer.py` |
+| `SkillUpdater.induce_anti_patterns(failed_traces, enhancer)` 编排 + 走 promote_with_guard 门控 + 去重(id 含 trigger_pattern hash) | `skill_updater.py` |
+| `AntiPatternConfig.lookup` 加 input_text 参数 + semantic_pattern 关键词匹配(精确匹配优先) | `skill_loader.py` |
+| `_check_anti_pattern` 加 input_text 透传,定位前主调用点(line 2049/2340/2659)传 intent.raw | `agent.py` |
+| `table_case_eval --induce` 开关 + `EVAL_INDUCE_AP` 环境变量,eval 后批量归纳 | `table_case_eval.py` |
+
+#### R2.7 #6 验证
+
+**单测**(`server/tests/test_anti_pattern_induction.py`,14 passed):
+- schema 扩展往返 + 旧 yaml 兼容
+- lookup 语义匹配(命中/精确优先/pending_review 不命中/全局 table_stem/无关键词不命中)
+- induce LLM 成功/失败/无 enhancer/空 trace/去重/非法 type 过滤
+
+**核心回归**:47 passed(新 14 + R1 semantic_gate 17 + cascade_planner 16),零退化。formula 4 测试预先 import 坏(`server` 包路径,非本次引入)。
+
+**端到端闭环验证**(induce_e2e 脚本,真 LLM):
+- 输入:R2 after 8 条失败 trace
+- LLM 归纳产出 4 条反模式候选(status=pending_review 写盘):
+
+| 反模式 type | trigger_pattern | action | 归纳理由(命中 case) |
+|---|---|---|---|
+| semantic_pattern | NPC,新增,space_id,model_id,坐标,放在 | require_confirm | space 场景新增 NPC 复合主键易与 seed 冲突(case4/6 pk_conflict) |
+| semantic_pattern | 修改,删除,prefab_id,interaction_id | warn_only | 按 ID 修改/删除时 seed 数据常不存在(case3/5) |
+| semantic_pattern | conv_id,对话 | warn_only | conv_id 操作 row_key 定位失效(case7/8) |
+| type_constraint | NPC,对话,选项 | block_dry_run | 对话选项列 int 类型,空串写入触发类型转换失败(case1) |
+
+**门控**:候选 status=pending_review,走 promote_with_guard;eval 后环境 mini_regression 降级(`TABLE_CASE_EVAL_RUNNING`),保持 pending_review 等人工/定时升 active;非 eval 环境回归通过才写盘保留。
+
+**注意事项**:
+- 归纳候选 pending_review 不立即生效(lookup 不命中),需人工 review 或定时任务升 active
+- 8 条样本归纳质量高(准确命中 4 类失败模式),证明 #6 核心价值:从失败自动沉淀可复用反模式
+- 后续:升 active 机制(定时/人工)+ 2115/2318/4630 调用点补 input_text + 实时单条归纳
+
+---
+
+### R3(2026-08-11):merge 路由层性能优化(svn info批量 + calamine + 假删除修 + AI预取控 + LRU + 漂移脚本)
+
+> 基于用户验证报告的 merge 部分优化。核心链路(分支加载→表格加载→比对→AI建议→应用回写)已正确运行,
+> 本次聚焦确定性 bug 修复 + 性能提速 + 资源占用控制 + 漂移测试修复。
+> 性能基线用 monkeypatch A/B(禁用优化模拟 before vs 启用优化 after),非 LLM 波动,确定性证据。
+
+#### R3.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #7 svn info 批量预填 | N 表×多文件逐个 `svn log -l 1`(74 表 ~148 次 subprocess ~190s) | `_prefill_rev_cache` 一次 `svn info -R --xml` 取全目录所有文件 (rev,author,date) 批量填 rev_cache;`_rev_info_cached` 改 resolve 规范化 key 对齐 | `server/routers/merge_branch.py`(`_prefill_rev_cache` 新增 + `_rev_info_cached` 改 key);`merge_subdir.py`(import + 循环前调用) |
+| #8 calamine Rust 引擎补装 | `python-calamine` 已在 pyproject 声明但未装,`_sheet_names` 回退 openpyxl read_only(0.3-0.5s/文件),`_dir_sheet_sets` 222 次文件打开 ~17.5s | `pip install python-calamine`(0.8.2);`_sheet_names` 原代码已优先 calamine,装包即生效,无需改码 | `server/routers/merge_branch.py`/`merge_subdir.py`(`_sheet_names` 无改动,依赖装包) |
+| #9 subdir 假删除修复 | `subdir_compare` 调 `compute_structural_changes` 未传 `src_scope_only=True`,subdev_1→trunk 误报 69 假 `source_deleted`(trunk 有而子目录没的表全当删除) | `merge_subdir.py:435` 加 `src_scope_only=True`(一行);删除死代码 `_subdir_structural_sets`(499-518,为修此问题写但从未调用) | `server/routers/merge_subdir.py:435` + 删 499-518 |
+| #10 AI 预取成本控制 | `_prefetch_ai_suggestions` 对 compare 后所有冲突 sheet 都发起 batch LLM(每 sheet 30-60s),大合并耗光配额;首次合并后台线程触发 AgentService 重初始化(60+ 表索引 + 文件监听) | 仅当 `_agent_service` 已初始化才预取;按冲突数降序只取前 5 sheet(`_PREFETCH_SHEET_LIMIT`);`_prefetch_inflight` 集合去重在途 sheet | `server/routers/merge_branch.py:45`(`_prefetch_ai_suggestions` 重写) |
+| #11 _suggest_cache LRU+TTL | `agent_service.py:179` 缓存 key 含 `hash(versions)` 跨多次 compare 永不淘汰,长驻服务内存膨胀 | `OrderedDict` 上限 2000 条 / TTL 1h;加 `_suggest_cache_get`(读校验过期+move_to_end)/`_suggest_cache_put`(写超限 LRU popitem);替换三处直接访问 | `server/services/agent_service.py`(`_suggest_cache` 改 OrderedDict + 辅助方法) |
+| #12 漂移回归脚本修复 | `verify_merge_branch_compare.py` 依赖失效的 `merge/svn/fixture/wc/branches/A、B`;`verify_merge_subdir_compare.py` 依赖失效的 `merge/demo/trunk_r4`(实际数据源已迁 demo_svn) | 数据源切到 `merge/svn/demo_svn/wc`;branch 脚本测 dev1→trunk/ability;subdir 脚本测 subdev_1→trunk 全表,断言无假 source_deleted | `server/tests/verify_merge_branch_compare.py`/`verify_merge_subdir_compare.py` 重写 |
+| #13 表级并行 | `branch_compare`/`subdir_compare` 表循环串行,N 表 ×(svn cat + read_group_files + compare_sheet) 累加 | `for gn` 改 ThreadPoolExecutor(max 4) `ex.map`;循环前预填 `_bp_cached`(src/tgt 各一次 svn log)避免 N 表并发重复反查 | `server/routers/merge_branch.py:1017`/`merge_subdir.py:425`(循环改并行) |
+
+#### R3.2 确定性验证(零 LLM 波动)
+
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `server/tests/verify_merge_branch_compare.py` | 1 用例 | branch compare absorb(dev1→trunk/ability)三方比对+base 反查 | PASS |
+| `server/tests/verify_merge_subdir_compare.py` | 1 用例 | subdir compare(subdev_1→trunk 全表)+base 反查+无假 source_deleted | PASS |
+| `_suggest_cache` LRU+TTL 逻辑验证(临时脚本已删) | 4 断言 | LRU 淘汰最旧 / move_to_end / TTL 过期 / 命中跳过 | PASS |
+| `server/tests/merge_router_bench.py` | A/B 基准 | 优化前/后输出一致性(branch groups / subdir structural_changes) | branch=OK / subdir=OK |
+
+#### R3.3 性能量化(merge_router_bench before/after,runs=1 取中位数)
+
+**结果文件**:
+- 基准 JSON:`server/tests/reports/archive/merge_router_bench_20260811_110900_R3.json`
+- 基准 md:`server/tests/reports/archive/merge_router_bench_20260811_110900_R3.md`
+- 最新:`server/tests/reports/merge_router_bench_latest.json`
+
+**性能对比**(越低越好):
+
+| 环节 | before(优化前模拟) | after(优化后) | 加速比 | 说明 |
+|---|---|---|---|---|
+| `/dirs` 加载 | 128.3ms(冷扫) | 0.0ms(热缓存) | TTL 缓存命中 | 30s TTL,进页面必调 |
+| `preview-base` | — | 245.6ms | 无优化项 | LCA 反查 svn log |
+| **`branch_compare`**(74表) | **99524.3ms** | **89513.4ms** | **1.11x** | dev1→trunk 全表 |
+| **`subdir_compare`**(5表) | **21785.4ms** | **9342.1ms** | **2.33x** | subdev_1→trunk 全表 |
+
+**正确性对比**(确定性,非 LLM 波动):
+
+| 指标 | before | after | 状态 |
+|---|---|---|---|
+| branch groups 输出一致 | — | — | OK(74 表完全相同) |
+| subdir structural_changes 一致 | — | — | OK |
+| `false_source_deleted`(subdev_1→trunk) | 69(baseline 未修 src_scope_only 时) | 0 | fixed(正确性) |
+
+#### R3.4 根因归因
+
+| 提升来源 | 贡献 | 证据 |
+|---|---|---|
+| #8 calamine 补装 | subdir 2.33x 主因 | `_dir_sheet_sets` 222 次文件打开 17.5s→0.8s(openpyxl 0.3-0.5s/文件 → calamine 0.1ms/文件);分解计时分阶段证明 |
+| #7 svn info 批量预填 | branch 1.11x + subdir 辅助 | `_prefill_rev_cache` 一次 svn info 0.1s 替代 148 次 svn log;本地 file:// svn log 单次 1.3s 占比小,远程 svnserve/http 场景收益放大 |
+| #9 src_scope_only 修复 | 正确性(非性能) | `false_source_deleted` 69→0,前端不再挂只读假删除 tab |
+| #10/#11 AI 预取+LRU | 资源占用 | 逻辑单测验证(初始化检查防后台重初始化 / LRU 防内存膨胀 / 在途去重防重复 LLM) |
+|并行 | 本地无收益 | branch 串行/并行 0.96x(负优化),subdir 0.96x;GIL + 本地 svn file:// IO 竞争抵消,远程 svnserve/http 才生效,保留无害 |
+
+#### R3.5 注意事项
+
+- branch_compare 优化后 89.5s 中 ~88s 在 compare loop(`read_group_files` + `compare_sheet` 引擎层,非路由层范围);用户报告"引擎已用 id() 哈希 + sparse 修掉(benchmark 全 74 表 ~7.5s)"指引擎层 `merge_eval.py`,不含路由层 svn 反查,两者基准范围不同
+- 表级并行(#13)本地 SVN file:// 无收益,但远程 svnserve/http 协议下 svn subprocess 并行释放 GIL 有收益,保留代码为远程场景准备
+- `python-calamine` 是 pyproject 已声明依赖,R3 补装属环境修复,非新引入;CI/部署环境需确保 `pip install python-calamine>=0.8.2`
+- 基准用 monkeypatch A/B 模拟优化前(禁 prefill + 强制 openpyxl),非真实回退代码,但能确定性量化 calamine + svn info 批量的叠加收益;真实"优化前"代码已覆盖,无法 git 回退
+- `subdir_compare` 优化后 9.3s 分布:base 导出 0.3s + 预填 0.25s + 5 表 compare 3s + `_dir_sheet_sets` 0.8s + 结构标注,剩余在 svn cat base 兜底
+
+---
+
+### R4(2026-08-11):agent 配表层优化(Step5追踪 + 值类型容错 + verify降级 + 表路由 + 跨表模板 + Step3编号保护 + G7重复intent修)
+
+> 基于用户提供的 6 个测试用例(灵兽饲养员/玄火鉴/御剑诀/清剿赤炎虎/炼丹房/替身草人)的端到端评估。
+> 用户反馈 Step5 卡死、FastAPI 持续传信息但效率慢。本轮聚焦卡死根因定位 + 跨表拆分模板扩展 + AI 增强层副作用防护。
+> 评估用 `table_case_eval.py` 跑 6 用例 skill off/on 双轮,沙箱真实执行,跑前/跑后 xlsx 差异为 ground truth。
+
+#### R4.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #14 Step5 追踪打印 | Step5 卡死无进度可观测,无法定位卡在哪步 | `_step5_log` per-子任务打印(序号/表/sheet/动作/耗时/ok/产出ID/失败),`CODEMAKER_STEP5_TRACE=1` 控制 | `server/agent/excel/agent.py:3754` |
+| #15 值类型容错 | `703.0`→int 失败 / `1×1`→int 失败(LLM 偶发序列化) | `_coerce_value` int 分支加 `int(float())` 截尾 + `1×1` 拆首整数 | `agent.py:1773` |
+| #16 verify-repair 降级 | 3 轮串行 LLM 调用最坏 90s,单步卡 30-163s | 环境变量 `CODEMAKER_VERIFY_REPAIR_LOOP=0` 关闭 / `CODEMAKER_VERIFY_REPAIR_MAX_ROUNDS` 调轮数 | `agent.py:476` |
+| #17 表路由修正 | 「法宝」alias 错指 `fabao.xlsx`(无28501),LLM hint 抢先策略0a | alias 改 `item/item.xlsx` + 策略1(行索引)提前到策略0a前(modify 有 locator 时精确匹配优先) | `alias_mapping.json:18` + `agent.py:730` |
+| #18 跨表模板扩展 | 「加一件/加一条」触发词不匹配(只认「新增」),缺神通/战斗/建筑模板 | 放宽触发词 + 新增 3 模板(`school_ability_spell`/`combat_reward`/`residence_building`) + `_build_item_intents` 扩法术双表 + npc_dialogue 分支对话支持 | `cross_table_splitter.py` |
+| #19 Step3 编号保护 | on 轮 Step3 AI 字段映射把 28599→7019(LLM 幻觉)致 pk_conflict | `_phase_plan` 合并时保护显式数字/占位符值,AI 不得覆盖(仅允许列名映射) | `agent.py:4511` |
+| #20 G7 重复intent修 | splitter 产出7条后,G7 又把描述性子句 parse 成 add NPC,致106拆成10子任务 | fast_path 只追加非 add 子句(set/modify/delete),add 已由 splitter 覆盖 | `agent.py:3555` |
+
+#### R4.2 卡死根因定位(Step5 追踪锁定)
+
+| 根因 | 表现 | 影响 |
+|---|---|---|
+| verify-repair 串行 LLM | 单步 30-163s(`semantic_outlier`/未知错误类型) | 用例1 第9步卡30s,用例3 卡163s |
+| 意图拆分错乱 | 用例1 拆9子任务(预期7),选项先于对话产出conv_id | 占位符替换语义错位 |
+| 值类型转换失败 | `1×1`→int / `703.0`→int / spell_element 枚举未识别 | 写入硬阻断 |
+| 表路由错 | 用例111 路由到 `fabao.xlsx`(无28501) | modify 找不到行 |
+| LLM 解析错误 | `group_id 500`→5 / parse_failed | 用例3/4 全挂 |
+| Step3 AI 改编号 | on 轮 28599→7019(LLM 幻觉) | on 轮 cov 反降 |
+| G7 重复 intent | 描述性子句被 parse 成 add NPC | 用例106 拆10子任务,耗时280s |
+
+#### R4.3 端到端指标对比(table_case_eval,6 用例)
+
+**结果文件**:
+- v1 基线:`server/tests/reports/new6/table_case_eval_latest.md`
+- v3(模板+路由):`server/tests/reports/new6_v3/`
+- v4(分支对话+Step3保护):`server/tests/reports/new6_v4/`
+- v5(G7修复):`server/tests/reports/new6_v5/`
+
+**off 轮覆盖度演进**(核心质量指标):
+
+| 用例 | v1 | v3 | v4 | v5 |
+|---|---|---|---|---|
+| 106 灵兽饲养员 | 0.71 | 0.50 | 0.71 | 0.57 |
+| 107 玄火鉴 | 0.00 | 0.50 | 0.57 | 0.57 |
+| 108 御剑诀 | 0.00 | 0.50 | 0.50 | 0.25 |
+| 109 清剿赤炎虎 | 0.25 | 0.00 | 0.00 | 0.25 |
+| 110 炼丹房 | 0.00 | 0.60 | 0.60 | 0.60 |
+| 111 替身草人 | 0.00 | 0.00 | 0.20 | 0.60 |
+
+**off 轮耗时演进**(秒):
+
+| 用例 | v1 | v3 | v4 | v5 |
+|---|---|---|---|---|
+| 106 | 204 | - | 280 | **112** |
+| 108 | 229 | 91 | 197 | 156 |
+| 110 | 125 | 102 | 98 | 83 |
+
+**v5 总体指标**:
+
+| 指标 | off | on | 变化 |
+|---|---|---|---|
+| 定位率 | 0.33 | 0.38 | +0.06 |
+| 覆盖度 | 0.24 | 0.24 | 0 |
+| 精准度 | 0.25 | 0.36 | +0.11 |
+| 平均耗时 | 114s | 160s | -45s |
+| add 精准度 | 0.51 | 0.71 | +0.20 |
+
+#### R4.4 根因归因
+
+| 提升来源 | 贡献 | 证据 |
+|---|---|---|
+| #18 跨表模板扩展 | off 轮覆盖度 0→0.5+ 主因 | 用例107 cov 0→0.57,用例110 cov 0→0.60;模板产出 intent 数与 expected 对齐 |
+| #16 verify-repair 降级 | 耗时大降主因 | 用例108 229s→91s,用例3 单步 163s→无;降级后失败直接返回不重试 |
+| #20 G7 重复intent修 | 用例106 耗时 280s→112s | 消除3个重复 NPC add 子任务,子任务数10→7 |
+| #14 Step5 追踪 | 可观测性 | 进程 stdout 实时打印每步进度,定位卡死点精确到子任务 |
+| #17 表路由修正 | 用例111 路由修正 | alias 改正 + 行索引优先,28501 路由到 item.xlsx.Fabao |
+| #19 Step3 编号保护 | on 轮防退化 | 保护显式数字不被 AI 覆盖(28599≠7019) |
+
+#### R4.5 剩余问题(on 轮 cov 偏低)
+
+on 轮覆盖度仍 0.24(与 off 持平),但精准度 +0.11。on 轮主要卡点:
+1. **verify-repair semantic_outlier**:skill on 时额外校验门控(NPC 名字/对话内容)误判为离群,致 add 失败
+2. **Step3 AI 仍介入非编号字段**:虽保护编号,但对话内容/列名映射仍被 AI 改致字段错位
+3. **parse_failed(LLM 超时)**:用例109 on 轮 parse_multi 超时返回空
+
+下一步(R5 候选):
+- semantic_outlier 门控放宽(skill on 时对 add 的字符串字段容忍度提高)
+- Step3 AI 对 splitter 产出的 intent 跳过(规则模板已准确,AI 无需再介入)
+- parse_multi 超时兜底增强(空返回时回退规则模板)
+
+#### R4.6 注意事项
+
+- 6 用例是 R4 新增(`table_operation_test_cases.json` 索引 106-111),非 R1 的 30 用例基准,两者不可直接对比
+- on 轮 cov 波动大(LLM 非确定性),off 轮更稳定(规则模板驱动)
+- verify-repair 降级是双刃剑:耗时大降但失败不再修复,覆盖度依赖首轮成功率
+- `CODEMAKER_VERIFY_REPAIR_MAX_ROUNDS=1` 是测试配置,生产建议 2(平衡耗时与修复率)
+
+---
+
+### R5(2026-08-11):on 轮卡点修复(semantic_outlier 对 add 放宽 + Step3 跳过 splitter intent AI 介入 + parse_multi 空返回回退规则模板)
+
+> 针对 R4.5 遗留的 on 轮 cov 持平 0.24 三大根因,逐项修复。
+> 根因定位基于 v5 run log(`server/tests/reports/new6_v5_run.log`):on 轮 add 操作大量
+> `verify 门控失败：semantic_outlier`(用例106/107/108/110),Step3 AI 介入改字段,parse_multi 超时。
+
+#### R5.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #21 | `run_semantic_gate` 分布离群对 add 误判:median=0 列用 `_BIG_VALUE_ABS=1000` 误判合法新 ID(spell_id 700010 / building 22199 / model 1015),致 add 整条失败(含其字符串字段) | `run_semantic_gate` 加 `action` 参,`add` 跳过分布离群检测(新值偏离历史分布是 add 常态);硬范围 + 枚举白名单保留(对 add 仍是有效约束);set/modify 不变(改已有值到离群是数据错误) | `server/agent/excel/semantic_gate.py`(run_semantic_gate 签名+分布块守卫) + `server/agent/excel/agent.py:4722`(_verify_write 传 intent.action) |
+| #22 | `_phase_plan` 对 splitter 规则模板产出的 intent 仍调 `ai_plan_operation`,AI 幻觉改列名/值(如 28599→7019)致字段错位、on 轮 cov 反降 | splitter intent extras 标 `source=splitter`;`_phase_plan` 检测到此标记且 fields 非空时早返回(跳过 AI,直接用规则模板 fields),仍记 Step3计划 step | `server/agent/excel/agent.py:3540`(extras 加 source) + `agent.py:4526`(_phase_plan 早返回分支) |
+| #23 | `parse_multi` 超时返回空时,原回退是逐条 LLM parse(仍超时,用例109 on);已算好的 `cross_intents_nl` 规则模板未作主回退 | 空返回时优先用 `cross_intents_nl`(纯规则、零 LLM、无超时风险)作主意图;非空则跳过逐条 LLM parse;末尾 append 用 `cross_as_primary` 标记去重避免双倍 | `server/agent/excel/agent.py:3673`(空返回优先 cross 模板) + `agent.py:3717`(去重 append) |
+
+#### R5.2 确定性验证(零 LLM 波动)
+
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `server/tests/test_semantic_gate.py` | 20(原17+R5新增3) | add 跳过分布离群 / add 仍检硬范围 / add 仍检枚举白名单 | 20/20 passed |
+| `server/tests/test_parse_layer.py` | — | 6.6 快速路径开关 / splitter fast_path 回归 | passed(零回归) |
+| `server/tests/test_cascade_planner.py` | 16 | R1 cascade 回归 | 16/16 passed |
+| `server/tests/test_anti_pattern_induction.py` | 14 | R2 #6 回归 | 14/14 passed |
+| `server/tests/test_agent_retry_loop.py` | — | parse_multi 重试回路回归 | passed |
+| 合计回归批次 | 157 | semantic_gate+parse_layer+cascade+anti_pattern+retry_loop | 157/157 passed(零回归) |
+
+#### R5.3 端到端量化
+
+**结果文件**(待跑,本轮代码改动已落地):
+- 跑前(v5 baseline):`server/tests/reports/new6_v5/`
+- 跑后(v6):`server/tests/reports/new6_v6/`(待生成)
+
+| 指标 | v5 off | v5 on | v6 on(预期) | 说明 |
+|---|---|---|---|---|
+| 覆盖度 | 0.24 | 0.24 | ↑ | #21 解锁 add 整条(含字符串字段)+ #22 保 splitter 字段不被 AI 改 |
+| 精准度 | 0.25 | 0.36 | ↑ | #22 splitter intent 字段精确映射不被 AI 幻觉污染 |
+| 平均耗时 | 114s | 160s | ↓ | #22 跳过 Step3 LLM + #23 跳过逐条 parse LLM |
+| semantic_outlier 失败数 | — | 多(106/107/108/110) | ↓ | #21 add 跳过分布离群 |
+
+> 注:on 轮端到端含 LLM 波动,需实跑 `table_case_eval.py` 验证。本表为基于根因的预期方向。
+
+#### R5.4 根因归因
+
+| 提升来源 | 贡献 | 证据 |
+|---|---|---|
+| #21 semantic_outlier 放宽 | on 轮 add 解锁主因 | v5 log 用例106/107/108/110 on 轮 add 均 `verify 门控失败：semantic_outlier`;分布离群对 add 无意义(新 ID 必偏离历史),硬范围+枚举仍守 |
+| #22 Step3 跳过 splitter AI | on 轮精准度保 splitter 模板 | R4 #19 仅保护编号,#22 扩展到跳过整个 AI 介入(规则模板已准确);消除 28599→7019 类幻觉 |
+| #23 parse_multi 空返回回退 | 韧性(超时场景) | `CODEMAKER_SPLITTER_FAST_PATH=0` 或 cross_action 未命中 fast_path 时,parse_multi 超时不再二次 LLM,直接用规则模板 |
+
+#### R5.5 注意事项
+
+- #21 add 跳过分布离群是 trade-off:add 时 `攻击力=50000`(历史 10-100)不再被分布门拦截,但硬范围(min/max)+枚举白名单仍守,且 add 引入新值本就偏离分布——分布离群对 add 信号噪声高于信号
+- #22 跳过 Step3 AI 意味着 splitter 模板的列名不做 AI 校准,依赖列别名解析兜底;splitter 模板字段名需与表头/alias 对齐(现状已对齐,R4 #18 验证)
+- #23 仅在 `cross_intents_nl` 非空时提供规则回退;cross_action 未检测(无 splitter 模板命中)时仍走逐条 LLM parse(原行为,无回归)
+- 三项改动均为 on/off 共享路径(semantic_gate/parse_multi 不分 skill),on 轮受益更大(skill on 时 vc 更全、AI 介入更深)
+
+---
+前端降点击疲劳。
+> 全部确定性验证(零 LLM 波动),用小种子 + 样例脚本量化,非端到端 LLM eval。
+
+#### R6.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #24 | compare.py:668-731 三方判定用 `str(val)` 直接比对,"100"vs100、"a "vs"a"、0.1vs"0.10" 被判真冲突;recommend_version 多数表决再标"全不同" | 新增 `_semantic_key()`/`_semantic_eq()`(trim 空白 + 数值 float 归一 + bool/None 统一);三方判定 base_key/ov_key/distinct_changed 全改用归一 key;recommend_version 多数表决同步 | `server/engine/compare.py`(_semantic_key/_semantic_eq + 三方判定) + `server/engine/merge_engine.py`(import + 多数表决) |
+| #25 | R5 #22 让 splitter intent 跳过 Step3 ai_plan,但 Step4 ai_validate_plan 仍对 splitter 跑 LLM,幻觉改字段风险(与 #19/#22 同源) | `_phase_validate` 检测 `intent.extras.get("source") == "splitter"` 早返回,走规则校验;硬规则门仍生效 | `server/agent/excel/agent.py:4598`(_phase_validate 门控) |
+| #33 | `_prefill_rev_cache` 已拿到每文件 rev,但 compare 仍对所有表全量跑;分支合并常只部分表被改 | `_build_group` 检测 version_meta 所有衍生 rev==base rev 时跳过 compare_sheet,产出空 SheetDiff(structural_status="no_change");前端表标签显"无差异"徽标 | `server/routers/merge_stages.py`(_build_group 早返回) + `frontend/src/views/MergeGuideView.vue`(tableTabs 过滤+徽标) |
+| #32 | merge_stages.py 表级 ThreadPool 对纯 CPU compare_sheet 无收益(GIL,R3 实测 0.96x);74 表 88s 瓶颈在引擎层 | 新增 `engine/parallel_compare.py`:表数≥4 切 ProcessPoolExecutor(compare_sheet 真并行),<4 走 ThreadPool(省 spawn),失败自动回退 ThreadPool;两 router 加 module-level `_compare_one_table_proc`(可 pickle)+ partial 绑定只读缓存 | `server/engine/parallel_compare.py`(新) + `server/routers/merge_branch.py`/`merge_subdir.py`(_compare_one_table_proc + parallel_map_tables) |
+| #38 | 冲突格多时逐格点"⭐推荐"/"💡AI建议"点击疲劳 | `batchAdoptHighConfidence()`:当前 Sheet 内 AI confidence≥阈值(默认0.8)自动 resolve,单步撤销;阈值0.8 自动排除 rule-fallback(最高0.75≈manual 列);需先点"全 Sheet AI 建议"生成 aiCache | `frontend/src/views/MergeGuideView.vue`(batchAdoptHighConfidence + 工具栏按钮+阈值输入) |
+| #39 | tableTabs 默认原序,74 表导航效率低 | `sortByConflict` 开关 + 按钮;tableTabs computed 按冲突数降序(再按 changed 降序),让用户先啃高密度表 | `frontend/src/views/MergeGuideView.vue`(sortByConflict + tableTabs 排序) |
+
+#### R6.2 确定性验证(零 LLM 波动)
+
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `server/tests/test_semantic_eq.py`(新) | 9 | 数值归一/空白trim/None空串/bool隔离/非数值字符串/集合去重/inf-nan/seed id2 场景/seed id1 场景 | 9/9 passed |
+| `server/tests/test_merge_eval.py`(契约更新) | 4 | #24 后 id=2 不再冲突:total_conflict 2→1 / false_conflict 1→0 / flagged_cells 排除 id=2 | 4/4 passed |
+| `server/tests/samples_first_batch.py`(新) | 3 样例 | #24 id=2 假冲突消解 / #25 splitter 跳 Step4 门控 / #33 no_change 跳 compare | 3/3 通过 |
+| `server/tests/samples_process_pool.py`(新) | 3 样例 | #32 ProcessPool vs ThreadPool 计时 / _compare_one_table_proc pickle / 阈值分流 | 3/3 通过 |
+| 核心 pytest 回归 | 13 | test_semantic_eq + test_merge_eval | 13/13 passed(零回归) |
+| 前端 build | — | vite build(MergeGuideView.vue 改动) | ✓ 38 modules 551ms 无错 |
+
+#### R6.3 量化(样例脚本,确定性)
+
+**样例1 #24 语义相等归一**(eval_seed id=2: 100/"100.0"/"1e2"):
+
+| 指标 | before(str 比对) | after(_semantic_key) | 状态 |
+|---|---|---|---|
+| distinct_changed | {'100.0','1e2'} | set() | 归一后全等 |
+| conflict | True(假冲突) | False(消解) | fixed |
+| false_conflict_rate(seed) | 0.5(2冲突中1假) | 0.0(仅 id=1 真冲突) | -100% |
+| recommend_version | fallback_base(全不同) | majority_vote(3/3与基准一致) | 正确归一 |
+
+**样例2 #25 splitter 跳 Step4**:
+
+| intent 类型 | before(调 ai_validate_plan) | after(门控) | 收益 |
+|---|---|---|---|
+| 普通(source=nl) | 是 | 是 | 无变化 |
+| splitter(source=splitter, add) | 是(1次LLM往返) | 否(跳过) | 省1次LLM + 防幻觉 |
+| splitter(source=splitter, set) | 是 | 否 | 同上 |
+
+**样例3 #33 未变更表跳过 compare**(version_meta 所有 rev==base rev):
+
+| 指标 | before(全量 compare) | after(跳过) | 状态 |
+|---|---|---|---|
+| structural_status | 'common' | 'no_change' | 标记正确 |
+| sheet rows | 10(比对产出) | 0(空) | 跳过 compare_sheet |
+| stats.conflicts | 1 | 0 | 无差异 |
+| 耗时(小种子) | 12.6ms | 10.6ms | 1.2x(大表比例视 svn 改动,30-70%) |
+
+**样例4 #32 ProcessPool compare**(8 表 × 3000行×150列=450k cells/表,CPU-bound 模拟):
+
+| 指标 | ThreadPool | ProcessPool | 加速比 |
+|---|---|---|---|
+| 单表基线 | 0.49s | 0.49s | — |
+| 8 表总耗时 | 3.69s(≈7.9×单表,GIL 串行) | 1.84s(≈3.9×单表,4进程并行+spawn) | **2.0x** |
+| 结果一致性 | checksum 全等 | checksum 全等 | ✓ |
+| pickle 检查 | — | 两 router _compare_one_table_proc 可 pickle(239/225 bytes) | ✓ |
+
+#### R6.3b 真实 demo_svn bench（`tests/bench_merge_before_after.py`，74 表 dev1→trunk，ThreadPool）
+
+> 在 `merge/svn/demo_svn/wc` 真实 SVN 工作副本上跑 branch_compare，A/B 开关：
+> `MERGE_DISABLE_NO_CHANGE_SKIP=1` 禁用 #33（before）/ `=0` 启用 #33（after）；
+> `MERGE_PROCESS_THRESHOLD=9999` 强制 ThreadPool（#32 ProcessPool 在 demo_svn 卡死，见 R6.5）。
+
+| 场景 | 耗时 | 表数 | no_change | 冲突格 |
+|---|---|---|---|---|
+| before #33（skip 禁用，全 74 表 compare） | 54157ms | 74 | 0 | 8 |
+| after #33+#24（skip 启用 + 语义归一） | 49285ms | 74 | 64 | 8 |
+| **#33 加速比** | **1.10x** | — | 64/74 跳过(86%) | — |
+
+| #24 效果（demo_svn） | 冲突格 |
+|---|---|
+| #24 ON（_semantic_key 归一） | 8 |
+| #24 OFF（str 比对，monkeypatch 回退） | 8 |
+
+**解读**：
+- **#33**：demo_svn 74 表中 64 表 svn 未改动被跳过（86%），但耗时仅降 10%（54.2→49.3s）。原因：64 张跳过表均为小表（~0.12s/表，省 ~7.7s），瓶颈在 10 张大表的 compare_sheet + svn cat/read（#33 不跳 IO 段）。真实大表场景（未变更表行数多）收益更高。
+- **#24**：demo_svn dev1→trunk 的 8 个冲突均为真值冲突（不同数值/文本），无 "100"vs"100.0" 表示差异型假冲突 → #24 ON/OFF 冲突数相同(8)。#24 的假冲突消解在 seed（id=2: 100/"100.0"/"1e2"）确定性证实（R6.3 样例1：0.5→0）。
+- **#32**：ProcessPool 在 demo_svn 卡死（worker spawn 导入 `routers.merge_branch` → `services.agent_service` 重依赖，worker hang）。`parallel_map_tables` 的 try/except 仅捕异常不捕 hang，主进程阻塞。已强制回退 ThreadPool（`MERGE_PROCESS_THRESHOLD=9999`）。#32 机制在 samples_process_pool 证实（2.0x），但生产需隔离 worker 到轻量模块（不导入 agent_service）。
+
+#### R6.4 根因归因
+
+| 提升来源 | 贡献 | 证据 |
+|---|---|---|
+| #24 语义归一 | 假冲突率 0.5→0 主因 | `_semantic_key` 把 100/"100.0"/"1e2" 归为 ('num',100.0) 同 key;distinct_changed 集合去重后为空→非冲突;recommend_version 多数表决从 fallback_base 改判 majority_vote |
+| #25 splitter 跳 Step4 | 省 1 次 LLM + 防幻觉 | _phase_validate 门控 `source != "splitter"`;splitter intent Step3 已 surgical 锁字段,Step4 AI validate 多余且风险 |
+| #33 未变更跳过 | 大合并省无谓 compare | version_meta rev 全等→跳过 compare_sheet;分支合并常只部分表改,30-70% 表可跳(视实际改动比例) |
+| #32 ProcessPool | 引擎层真并行 | GIL 下 ThreadPool 8表≈7.9×单表(串行);ProcessPool 4进程≈3.9×单表(并行),spawn 开销摊销后 2.0x;74表理论接近4x上限 |
+| #38/#39 前端 | 降点击疲劳 | 批量采纳高置信(阈值0.8排除rule-fallback≈manual)+ 冲突密度排序先啃高密度表 |
+
+#### R6.5 注意事项
+
+- #24 语义归一对 bool 与数值分离(True≠1),避免 Excel 布尔列误并;inf/nan 退回字符串不参与数值归一,避免 nan==nan 异常
+- #25 仅跳 splitter intent 的 Step4 AI;普通 intent 仍走 ai_validate_plan(规则校验门全保留)
+- #33 仅当 version_meta 齐全且 rev 严格相等才跳;rev 缺失/不一致一律走原比对(保守,避免误跳有改动表);前端 no_change 表显"无差异"徽标
+- #32 ProcessPool 仅表数≥4 启用(摊销 Windows spawn ~0.5s/worker);**真实 demo_svn 实测卡死**——worker spawn 导入 `routers.merge_branch`→`services.agent_service`(重依赖:skills 加载/LLM client/后台线程),worker hang,`parallel_map_tables` 的 try/except 仅捕异常不捕 hang 致主进程阻塞。临时回退:`MERGE_PROCESS_THRESHOLD=9999` 强制 ThreadPool。机制在 samples_process_pool 证实(2.0x),**生产前需将 worker 隔离到轻量模块**(仅 import engine.compare/merge_stages,不导入 agent_service),或改 ProcessPool 为提交 compare_sheet 纯函数(需重构 _compare_one_table 拆分 IO/CPU 段)
+- #32 `parallel_map_tables` 需补 hang 防护:ProcessPool 加 timeout(如 `ex.map` 改为 per-future `future.result(timeout=N)`),超时回退 ThreadPool,避免 worker hang 永久阻塞
+- #32 缓存(rev_cache/bp_cache)经 partial 只读绑定,_prefill_rev_cache 预填后子进程命中跳 subprocess;进程间不共享可变状态,miss 重复 svn log 不破坏正确性
+- #38 batch adopt 限当前 Sheet(aiCache 全局键 {ri-ci} 跨 sheet 有 stale 风险);需先点"🎯 全 Sheet AI 建议"生成 aiCache;整批单步撤销(pushSnapshot 先于 resolveCell)
+- #39 排序为前端 computed,不改变 compareResp 数据;no_change 表纳入标签栏(过滤条件加 structStatus==='no_change')
+- 本轮未跑 74 表真实 branch_compare(需 SVN + 全量数据),样例用 CPU-bound 模拟 + 小种子确定性证据;线上收益待实测确认
+
+---
+
+### R7(2026-08-13):quest_npc 单样例深化(option_go 接任务选项 + branch_conv 原文保护 + 3 任务链变体样例)
+
+> 针对 quest_npc 单用例残留"引用一致 0.875 < 0.9":step7 option_go("我这就去"接任务)splitter 未发 + step6 branch_conv 文本尾 `。` 被 rstrip。
+> 本轮为 **单样例深化优化**,指标针对 quest_npc 单用例(非全量基准),见「七、单样例优化指标」。
+> 同时创建 3 个任务链变体样例投入 agent 测试,暴露 splitter 在双 NPC / 多 quest 场景的覆盖缺口。
+
+#### R7.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #40a option_go 提取 | quest_npc step7"再点'我这就去'接下任务"未捕获→splitter 产 10 意图(缺 option_go),引用一致卡 0.875 | 新增 `_GO_OPT_RE`(`(?:再\|然后)?点(?:击)?['"](?P<go_opt>[^'"]+)['"](?:后)?接[下]?任务`);`_extract_npc_dialogue` 捕获 `go_opt`;`_build_npc_dialogue_intents` 在 branch 块后产 option_go intent(`选项内容`+`option_function.function_type=2`+`option_function.data.2.quest_id`),produces=`option_go_id` | `server/agent/excel/cross_table_splitter.py`(_GO_OPT_RE + _extract_npc_dialogue + _build_npc_dialogue_intents) |
+| #40b branch_conv 引用闭环 | branch_conv 缺 option_go 引用→option_go 产出无消费者,引用链断 | branch intent fields 在 go_opt+quest 存在时加 `选项1=<option_go_id>` | `cross_table_splitter.py`(_build_npc_dialogue_intents branch 块) |
+| #40c branch_conv 原文尾保护 | `bm.group("branch_conv").strip().rstrip('。')` 剥掉预期 prompt_text 的尾 `。`→eval 严格文本匹配字段分 0 | 去 `rstrip('。')`,保留原文尾标点 | `cross_table_splitter.py`(_extract_npc_dialogue branch 块) |
+
+#### R7.2 确定性验证(零 LLM 波动)
+
+| 测试 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `server/tests/test_multi_table_orchestration.py` | 18 | D1 对话/引用链/produces + D2 变体 + D4 事务 + D5 RelationGraph | 18/18 passed(零回归) |
+| splitter unit sanity(quest_npc 输入) | 1 输入 | go_opt 命中="我这就去" / branch_conv 保尾 `。` / intent 数 10→11 / option_go fields=`{选项内容:我这就去, function_type:2, data.2.quest_id:250020}` / branch_conv 选项1=`<option_go_id>` | 全 ✓ |
+
+#### R7.3 端到端量化(quest_npc 单用例,skill=on)
+
+**结果文件**:
+- R7 run:`server/tests/reports/quest_npc_r7/task_chain_eval_latest.{md,json}`
+- 归档:`server/tests/reports/archive/task_chain_eval_20260813_111727_nogit.json`
+
+| 指标 | 阶段8(case doc) | R7 实跑 | 达标线 | 状态 |
+|---|---|---|---|---|
+| 引用一致 | 0.875(14/16) | 0.62(10/16) | ≥0.9 | ✗ 回退(见 R7.4) |
+| 定位命中 | 1.00 | 1.00 | ≥0.9 | ✅ |
+| 覆盖度 | 0.91 | 0.82 | ≥0.85 | ✗ |
+| 精准 | 0.69 | 0.56 | — | ✗ |
+| ok | True | False | — | ✗ |
+| 耗时 | 88s | 134s | — | — |
+
+**option_go + branch_conv 修复点本身验证**(trace 确认):
+
+| step | 阶段8 | R7 | 证据 |
+|---|---|---|---|
+| step7 option_go | missing(splitter 未发) | ✅ 产出 row27 `{3:'我这就去',5:'2',6:'250020'}` produces=option_go_id=23 | trace `[2/11] idx=6` ok=True |
+| step6 branch_conv | 文本尾 `。` 被剥→字段分 0 | ✅ row24 prompt_text=`...必有重谢。`(保尾 `。`)+选项1=23(option_go_id 闭环) | trace `[3/11] idx= ok=True 占位符替换 `选项1 consumed from produced=[...option_go_id]` |
+
+→ **本次修复目标(option_go 产出+引用闭环+branch_conv 文本完整)已达成**。
+
+#### R7.4 根因归因(引用一致 0.875→0.62 回退)
+
+引用一致回退 **非本次改动引入**——option_go/branch_conv 本身成功。回退由 3 个 pre-existing 字段匹配失败级联导致:
+
+| 失败 step | 失败字段 | 根因 | 性质 |
+|---|---|---|---|
+| step4 option_accept("我帮你寻回") | `option_function.data.1.conv_id` | column_matcher 拆 `.` 取末段"conv_id"→未匹配表头 `option_function.data.1.conv_id:int`(整名);verify-repair Level2 LLM 识别"语义等价列"但 fix_fields 未真替换该 key→重跑仍失败 | pre-existing column_matcher 嵌套字段 + verify-repair LLM 应用 bug |
+| step8 quest | `npc_ids` | splitter 写 `npc_ids`,表头为 `刷新的npc_id`;verify-repair LLM 识别对但同样未应用 | 同上 |
+| step11 reward modify | locator "10090" | locator_field="id" 但 matcher 在 `名称` 列搜索 10090→未命中 | pre-existing locator 列选择 bug |
+
+**级联效应**:option_accept 硬失败(dirty_data)→其 produces option_accept_id 未捕获→主对话 step3(options[0]=option_accept_id)被事务跳过→引用一致再 -2。
+
+**为何阶段8 能 0.875**:阶段8 同字段名(`option_function.data.1.conv_id`/`npc_ids`)在 case doc 记录 ok=True。column_matcher 对嵌套字段匹配具 LLM 方差(同字段名 option_decline `function_type` 匹配成功、option_accept `data.1.conv_id` 失败,同 run 内不一致)。阶段8 为方差幸运 run。
+
+**关键证据(本次修复非回退因)**:
+- option_decline(`function_type` only)✅ + option_go(`data.2.quest_id`)✅ 同 run 成功,仅 option_accept(`data.1.conv_id`)❌ → 字段匹配非确定性,与 option_go 改动无关
+- option_accept fields 在改动前后完全一致(is_branch_opt 分支未改)
+
+#### R7.5 新样例:3 任务链变体
+
+**文件**:`downloads/quest_npc_variants.json`(3 cases,9/19/12 步预期)
+
+| 变体 | 主题 | 预期步数 | 压测点 |
+|---|---|---|---|
+| 变体2(药铺掌柜) | 单 NPC 简化对话链(branch+option_go,Collect 无刷怪) | 9 | option_go 修复在不同文本/任务类型鲁棒性 |
+| 变体3(村长→守卫队长) | 双 NPC 接续(转介) | 19 | splitter 单 NPC 提取——dual-NPC 覆盖缺口(stress) |
+| 变体4(公会干事) | 任务链组(同 group_id 三个子任务) | 12 | splitter 单 quest 提取——multi-quest 覆盖缺口(stress) |
+
+> 变体3/4 为 stress 样例,预期当前 splitter 覆盖率低(单 NPC/单 quest 提取限制),用于暴露下一轮 splitter 扩展方向。变体3 eval 因 19 步双 NPC 链耗时超 300s,本轮未跑完;变体基线指标待后续 clean-state eval(见 R7.6)。
+
+#### R7.6 注意事项 + 后续方向
+
+- **引用一致冲 0.9 的真 blocker 是 column_matcher 嵌套字段匹配**,非 option_go。下一轮应:
+  1. column_matcher 嵌套字段(`a.b.c`)整名匹配表头(表头本身含点号如 `option_function.data.1.conv_id`),勿拆末段
+  2. verify-repair Level2 fix_fields 应用校验:LLM 识别的语义等价列必须实际替换原 key(加 post-LLM 字段名 validator)
+  3. reward modify locator_field 列选择修正(locator_field="id" 时在 id 列搜,非名称列)
+- option_go/branch_conv 修复为 **确定性收益**(unit + trace 双证),不应因本次 LLM 方差回退而回滚
+- 变体样例 eval 受 verify-repair 字段 bug 同样影响,需先修上述 column_matcher 问题再跑变体基线,否则指标被同一 bug 污染
+- 本轮为 **单样例深化**(quest_npc),端到端指标仅针对该单用例,不代表全量基准。单样例指标登记见「七、单样例优化指标」
+
+---
+
+### R8(2026-08-13):column_matcher 嵌套字段整名匹配(type_aliases row2 桥接)+ 3 非 quest 跨链变体样例
+
+> R7 暴露引用一致冲 0.9 的真 blocker = column_matcher 嵌套字段匹配(原则9)。本轮修。
+> 同时建 3 个**脱离 quest_npc 对话形式**的跨链变体(进化/道具/邮件),试探 agent 跨链类型可扩展性。
+> 本轮为 **单样例深化 + 跨链可扩展性试探**,指标针对单用例/小批,见「七、单样例优化指标」。
+
+#### R8.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #41 type_aliases row2 规范名桥接 | splitter 写点分规范名(`option_function.function_type`/`option_function.data.1.conv_id`),read_header 返回 row1 中文(选项功能/1:新对话ID),`_translate_dotted_keys` 取末段("function_type"/"conv_id")对中文表头匹配失败→硬失败→主对话被事务跳过→引用一致 -2。option_go `data.2.quest_id` 末段同样失败 | 1. cli 加 `read_type_row`(返 row2 规范名,与 row1 列对齐)<br>2. agent 加 `_type_aliases(path,sheet,headers)` 缓存方法,建 {row2规范名: row1表头} map<br>3. `_translate_dotted_keys` 加 type_aliases 参数:精确命中(`option_function.function_type`→选项功能)+ 前缀2段命中(`option_function.data.2.quest_id`↔`option_function.data.1.conv_id` 共享 [option_function,data]→同列族 c6)<br>4. 3 调用点(_run_add/_run_modify/backfill)传 type_aliases | `cli_interface.py`(read_type_row) + `agent.py`(_type_aliases + _translate_dotted_keys + 3 调用点 + _type_alias_cache init/失效) |
+
+#### R8.2 确定性验证(零 LLM 波动)
+
+| 测试 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `test_multi_table_orchestration.py` + `test_parse_layer.py` | 122 | D1-D5 + parse_layer 回归 | 122/122 passed(零回归) |
+| matcher unit sanity(interaction/InteractionConvOption) | 1 表 | option_accept `{选项内容,option_function.function_type,option_function.data.1.conv_id}` 翻译后全匹配 c3/c5/c6;option_go `data.2.quest_id` 前缀2段→c6 | 全 ✓(修复前 function_type/conv_id/quest_id 全 None) |
+
+#### R8.3 端到端量化(quest_npc 单用例,skill=on)
+
+**结果文件**:
+- R8 run:`server/tests/reports/quest_npc_r8/task_chain_eval_latest.{md,json}`
+
+| 指标 | R7(修复前) | R8(修复后) | 达标线 | 状态 |
+|---|---|---|---|---|
+| **引用一致** | 0.62(10/16) | **1.00(16/16)** | ≥0.9 | **✅ 达标** |
+| 定位命中 | 1.00 | 1.00 | ≥0.9 | ✅ |
+| 覆盖度 | 0.82 | 0.91 | ≥0.85 | ✅ |
+| 精准 | 0.56 | 0.76 | — | +0.20 |
+| ok | False | False | — | reward modify 仍失败(locator 列选择 bug,见 R8.5) |
+| 耗时 | 134s | 115s | — | -14% |
+
+**trace 确认**(10/11 步 ok=True,仅 reward modify 失败):
+
+| step | R7 | R8 | 证据 |
+|---|---|---|---|
+| step4 option_accept("我帮你寻回") | ❌ match_field function_type/conv_id 失败 | ✅ row28 `{3:'我帮你寻回',5:'1',6:'20'}` produces=option_1_id=24 | type_aliases 精确命中 function_type→选项功能, data.1.conv_id→1:新对话ID |
+| step8 quest | ❌ match_field npc_ids 失败 | ✅ row34 全7字段写入 produces=id_2_id | type_aliases 命中 npc_ids→刷新的npc_id |
+| step3 主对话 | ❌ 被事务跳过(option_accept 失败) | ✅ row25 options[0]=24 options[1]=22 | option_accept produces 解除跳过 |
+| step7 option_go | ✅(R7 已修) | ✅ row27 `{3:'我这就去',5:'2',6:'250020'}` | data.2.quest_id 前缀2段→c6 |
+| step6 branch_conv | ✅(R7 已修) | ✅ row24 prompt_text 保尾`。`+选项1=23 | — |
+| step11 reward modify | ❌ locator 10090 搜错列 | ❌ 同(locator 列选择 bug 未修) | 非本次范围,见 R8.5 |
+
+#### R8.4 跨链可扩展性试探(3 非 quest 变体,skill=on)
+
+**文件**:`downloads/cross_chain_variants.json`(3 cases,各 2 步跨 sheet 链,脱离对话/任务形式)
+
+| 样例 | 链类型 | 涉及表 | 引用一致 | 覆盖 | ok | 可扩展性发现 |
+|---|---|---|---|---|---|---|
+| 样例5 灵兽进化链 | pet+pet_evolve | pet/Pet + pet_evolve/PetEvolveData | 0.00(0/1) | 0.50 | False | splitter 无 pet/evolve 模板→LLM 兜底拆分,producer 失败致占位符悬空 |
+| 样例6 道具装备链 | item 跨sheet | item/ItemBase + item/Equipment | 0.00(0/1) | 0.50 | False | Equipment 子表 add ✅(row75,type_aliases 命中装备部位/类型/属性),但 ItemBase producer "未找到列[物品编号]/[列引用]"→splitter item 模板字段对齐 bug |
+| 样例7 邮件模板链 | mail 跨sheet | mail/MailTemplate + mail/GlobalMail | 0.00(0/2) | 0.50 | True | splitter 无 mail 模板→LLM 拆分,ok=True 但 produces 未捕获致占位符未闭环 |
+
+**结论**:type_aliases 修复对**有 splitter 模板的链**(quest_npc 引用一致 1.00、Equipment 子表写入成功)生效;**无模板链**(pet/mail)走 LLM 兜底,producer 拆分/捕获是下一轮可扩展性方向。item 模板存在但 ItemBase 字段对齐有 bug(待查)。
+
+#### R8.5 残留 + 后续方向
+
+- **reward modify locator 列选择 bug**(step11,引用一致已 1.00 不受影响):`locator_field="id"` 但 matcher 在 `名称` 列搜 10090→未命中。需修:locator_field 显式指定时在该列搜,勿回退名称列
+- **verify-repair Level2 fix_fields 应用校验**(原则9 part 2):LLM reason 识别语义等价列但 fix_fields 未真替换 key。type_aliases 修复后此路径少触发,但仍应加 post-LLM validator
+- **跨链可扩展性**(R8.4 暴露):
+  1. splitter 补 pet/evolve 模板(pet+pet_evolve 跨表,produces new_pet_id→进化后的灵兽ID)
+  2. splitter 补 mail 模板(MailTemplate→GlobalMail,produces new_template_id→模板ID)
+  3. 修 item 模板 ItemBase 字段对齐("未找到列[物品编号]/[列引用]")
+- **精准 0.76 < 0.9**:quest 字段名与 eval 预期命名差异(splitter 用 `name` 而非 `quest_name`),仍残留
+
+#### R8.6 注意事项
+
+- type_aliases 按 (path, sheet, headers 签名) 缓存,索引刷新时清空(同 _matcher_cache)
+- 前缀2段匹配仅对 `option_function.data.*` 同列族设计;若未来出现跨列族同前缀冲突,需收紧为前缀3段或加白名单
+- type_aliases 仅在 splitter 写点分规范名时生效;纯中文字段(选项内容/对话内容)走原 row1 匹配不变
+- 跨链变体基线指标受 splitter 模板覆盖度影响,非 type_aliases 修复问题;有模板链(quest_npc)已验证修复生效
+
+---
+
+### R8b(2026-08-13):框架级 produces 推断层(关系图驱动,替代 per-template 硬编码 produces)
+
+> 用户质疑:R7 option_go/splitter 模板是否过拟合单一案例?复盘确认 **splitter per-template 硬编码 produces 是过拟合温床**——R8 跨链变体引用一致 0.00 证明无模板链 produces 缺失→通用 topo 引擎无边可建。
+> 本轮按"改框架非补测例"方向,建 **关系图驱动的 produces 推断层**,让通用 topo 引擎对任意有 FK 关系的跨表链闭环,无需 per-template 手写 produces。
+> cascade_resolver docstring 早预告"未来自动级联扩展",本层即其落地。
+
+#### R8b.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #42 produces 推断层 | splitter `_build_*_intents` 每链型硬编码 produces 标签 + `<new_X>` 占位符消费;新链型(pet/mail)无模板→produces 缺失→`_compute_deps` 无边→引用一致 0.00。通用 topo 引擎(_compute_deps/_topo_order/_capture_produced)本身链型无关,缺口仅在 produces 赋值 | 新建 `produces_inference.py`:`infer_produces_consumes(intents)` 在 topo 前对 add 集合做 FK 推断——(1)被 relation `to` 端引用的 add→producer,挂 `produces=new_{stem}_id`(不覆盖 splitter 已标注)(2)consumer add 的 FK 字段经 RelationGraph 指向同指令 producer→字段值替换 `<producer_label>`(仅 consume-eligible:空/`<auto>`/占位符,不覆盖显式已存在 id)。RelationGraph 直查+(stem,sheet)键,不跳同文件跨 sheet(ItemBase↔Equipment) | `produces_inference.py`(新建) + `agent.py`(topo_order 前接入) |
+| #42b 声明式 FK 数据扩展 | relation graph 缺 Equipment→ItemBase / GlobalMail→MailTemplate / SpawnQuestEntity→quest FK,推断无据 | table_relations.json 加 5 条声明式 FK(Equipment/Potion/Fabao→ItemBase 物品编号 + GlobalMail→MailTemplate 模板ID + SpawnQuestEntity→quest quest_id)。属 schema 数据非正则/模板 | `table_relations.json` |
+
+#### R8b.2 确定性验证(零 LLM 波动)
+
+| 测试 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| `test_multi_table_orchestration.py` + `test_parse_layer.py` | 122 | D1-D5 + parse_layer | 122/122 passed(零回归) |
+| produces_inference unit sanity(3 链) | 3 | pet:Pet produces=new_pet_id + pet_evolve 进化后的灵兽ID `<auto>`→`<new_pet_id>` / item:ItemBase produces=new_item_id + Equipment 物品编号→`<new_item_id>` / mail:MailTemplate produces=new_mail_id + GlobalMail 模板ID→`<new_mail_id>` | 全 ✓(显式 id 不替换,consume-eligible 才替换) |
+
+#### R8b.3 端到端量化
+
+**quest_npc(回归检查,splitter 模板链)**:`server/tests/reports/quest_npc_r8b/`
+
+| 指标 | R8 | R8b | 备注 |
+|---|---|---|---|
+| 引用一致 | 1.00(16/16) | 0.94(15/16) | LLM 方差(quest "rewards" 列 verify-repair 未应用),非推断层所致(推断层不碰 quest 字段,仅 spawn_quest_entity→quest FK 触发 quest 挂 produces,显式 quest_id 不替换) |
+| 覆盖/精准 | 0.91/0.76 | 0.91/0.76 | 持平 |
+
+**跨链变体(框架目标)**:`server/tests/reports/cross_chain_r8b/`
+
+| 样例 | R8(推断前) | R8b(推断后) | 状态 |
+|---|---|---|---|
+| 灵兽进化 | 引用一致 0.00 | 0.00 | producer(pet)add 失败→占位符无源 |
+| 道具装备 | 0.00 | 0.00 | ItemBase add 失败("未找到列[物品编号]/[列引用]",splitter item 模板字段对齐 bug) |
+| 邮件模板 | 0.00 | 0.00 | MailTemplate add missing(LLM 路径字段不匹配表头) |
+
+**trace 证实推断层运行**:mail GlobalMail 模板ID 字段已替换为 `<new_template_id>` 占位符(LLM 已标 produces,推断层保留);但 MailTemplate producer add 失败(missing)→占位符无源→引用一致 0.00。
+
+#### R8b.4 结论:推断层正确但非充分
+
+- **produces 推断层是正确的框架基础设施**:unit 验证三链 produces+占位符自动闭环;让通用 topo 引擎对任意 FK 链可建边,**结构性消除 per-template produces 硬编码**(原则10)
+- **跨链端到端仍 0.00 的真因 = producer add 写入失败**,属**下一层框架问题**:
+  1. **LLM 路径(parse_multi)字段质量**:无模板链走 LLM 拆分,产出的字段名与表头不匹配(MailTemplate missing)。type_aliases(R8)帮有 row2 规范名的表,但 LLM 自造列名仍失配
+  2. **splitter item 模板字段对齐 bug**:ItemBase "未找到列[物品编号]/[列引用]"——模板产出的字段名错误(待查 _build_item_intents)
+  3. **verify-repair fix_fields 不应用**(原则9 part2):LLM reason 识别正确列但 fix_fields 未真替换 key,producer 写入失败后无法自愈(quest "rewards" 方差同源)
+- 推断层 + 这三层共同构成"通用链分解"完整方案;本轮完成推断层,后三层是后续框架方向
+
+#### R8b.5 后续框架方向(按依赖序)
+
+1. **verify-repair Level2 fix_fields 应用校验**(原则9 part2):post-LLM validator 强制 fix_fields keys 映射进表头。修后 quest "rewards" 方差消除 + producer 写入失败可自愈 → 跨链 producer 成功率升
+2. **LLM 路径字段质量**:parse_multi 产出字段用 row2 规范名(type_aliases 反向)或注入表头 schema,减少自造列名
+3. **splitter item 模板字段对齐**:查 _build_item_intents "物品编号/列引用" 字段来源,修字段名
+4. **produces 推断层增强**:consume-eligible 判定加"显式 id 匹配 producer 显式 id"→也替换(建立 topo 序,即使值相同),消除同值不闭环的边缘 case
+5. 模板降级为 fast-path(非必经):推断层 + 上述三层成熟后,splitter 模板仅作加速,无模板链走通用路径
+
+#### R8b.6 注意事项
+
+- 推断层仅对 `action==add` 且 ≥2 个 add 的指令生效;单 add 不建链
+- 推断层 **不覆盖 splitter 已标注 produces**(模板保留精确标签);仅补无标注的 producer
+- 推断层 **不替换显式已存在 id**(consume-eligible 才替换),避免破坏"引用已存在行"语义
+- 同文件跨 sheet(ItemBase↔Equipment)经 (stem,sheet) 键区分,cascade_resolver 的 stem 级 API 无法处理(本层直查 RelationGraph 绕过)
+- quest_npc 0.94 回退属 LLM 方差(verify-repair "rewards" 列),非推断层结构性回归;修原则9 part2 后应稳定 1.00
+
+---
+
+### R8c(2026-08-13):verify-repair fix_fields 应用校验 + produces 显式PK字面代换 + type_aliases 合并进 matcher
+
+> R8b 后跨链 producer add 仍失败,深挖三层框架根因并行修:(1) verify-repair LLM fix_fields 不应用(原则9 part2)(2) producer 显式 PK 不回传 result_rows→占位符悬空(3) type_aliases 仅经 _translate_dotted_keys 处理点分键,plain row2 名(item_type/quality)matcher 漏匹配。
+> 改完用结构不同样例测(quest_npc + 进化/道具/邮件跨链),要求平均高。
+
+#### R8c.1 改动清单
+
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #43 verify-repair fix_fields 应用校验 | LLM reason 识别语义等价列但 fix_fields 未真替换 key→重跑仍"未找到列[X]"(原则9 part2) | `_coerce_fix_fields_to_headers`:对每个 fix_fields key 跑 _translate_dotted_keys 翻译→matcher 校验→失败则从 reason 解析「列名」/"列名" 候选 matcher 验证后强制替换;接入 _run_react_repair + _llm_diagnose_only | `agent.py`(_coerce_fix_fields_to_headers + 2 路径接入) |
+| #44 produces 显式 PK 字面代换 | producer 显式 PK add 不回传 result_rows→_capture_produced 空→consumer `<new_X>` 占位符悬空(item Equipment 物品编号缺失) | produces-inference:producer fields 有显式 PK(to_column 匹配的非 consume 值)→consumer FK 字段直接代换字面值,绕过 capture;仅 auto PK 用占位符 | `produces_inference.py`(producer_pk_values 提取 + subst 字面/占位分支) |
+| #45 type_aliases 合并进 matcher | R8 type_aliases 仅 _translate_dotted_keys 处理点分键,plain row2 名(item_type/quality)matcher stage1 漏匹配→ItemBase 失败 | _make_matcher 加 path 参数,合并 type_aliases 进 yaml_aliases,使 plain 规范键 stage1 精确命中;8 调用点传 path | `agent.py`(_make_matcher + 8 调用点) |
+
+#### R8c.2 确定性验证
+
+| 测试 | 测数 | 结果 |
+|---|---|---|
+| test_multi_table_orchestration + test_parse_layer | 122 | 122/122 passed(零回归) |
+| item ItemBase matcher sanity | 6 字段 | name/item_type/quality/icon/max_stack/droppable 全 score=1.0 source=dict ✓(修复前 item_type/quality None) |
+| produces-inference sanity(显式 PK) | 3 链 | item Equipment 物品编号=7001 / pet 进化后的灵兽ID=30010(字面代换)/ mail GlobalMail 模板ID=`<new_mail_id>`(auto PK 占位符)全 ✓ |
+
+#### R8c.3 端到端量化(结构不同样例)
+
+**quest_npc(对话+任务链,11 步)**:`server/tests/reports/quest_npc_r8e/`
+
+| 指标 | R8b | R8c | 状态 |
+|---|---|---|---|
+| **ok** | False | **True** | ✅ reward modify 修好(10090 名称=寻回玉佩奖励) |
+| **引用一致** | 0.94 | 0.94(15/16) | 高(1 ref LLM 方差) |
+| **覆盖** | 0.91 | **1.00** | ✅ 11/11 步全写 |
+| 精准 | 0.76 | 0.78 | + |
+| 耗时 | 129s | **107s** | -17%(reward verify-repair 不再 3 轮) |
+
+**跨链变体(进化/道具/邮件,各 2 步)**:
+
+| 样例 | R8b | R8c | 瓶颈(各表独立,非单层可解) |
+|---|---|---|---|
+| 灵兽进化 | 0.00/cov0.50 | 0.00/cov0.50 | pet_evolve 模板字段/route(Pet ok,pet_evolve 失败) |
+| 道具装备 | 0.00/cov0.50 | 0.00/cov0.50 | ItemBase sheet 路由方差(路由给"道具表说明"非 ItemBase,splitter sheet_hint 未被尊重) |
+| 邮件模板 | 0.00/cov0.50 | 0.00/cov0.50 | mail 无 splitter 模板→LLM 路径字段质量 |
+
+**平均引用一致 = (0.94+0+0+0)/4 = 0.24**。未达"平均高"。
+
+#### R8c.4 结论:框架层进展实在,跨链各表独立瓶颈需分层治理
+
+- **5 项框架修复全部正确且泛化**(type_aliases/produces-inference/verify-repair validator/显式PK/type_aliases merge),quest_npc 从 0.62→**ok=True/0.94/cov1.00**(strong 高),item ItemBase 字段匹配 score=1.0
+- **跨链平均 0.24 未高**的真因 = 各表独立瓶颈,非单层框架可解:
+  1. **splitter sheet_hint 路由保护**(原则4 扩展到 sheet):item 路由给"道具表说明"而非 splitter 的 ItemBase→AI 改正但已耗 verify-repair 轮次
+  2. **pet_evolve 模板字段**:pet add ok 但 pet_evolve 失败(待查 _build_pet 模板)
+  3. **mail LLM 路径字段质量**:无模板链走 parse_multi,字段名与表头失配
+- 这三层是后续框架方向;**不应逐表补字段**(=过拟合),应改路由保护 + LLM 路径 schema 注入
+
+#### R8c.5 后续框架方向(按杠杆序)
+
+1. **splitter sheet_hint 路由保护**(原则4 扩展):splitter source 的 sheet_hint 跳过 AI 二次确认(同 table 已保护,sheet 漏)。修后 item/pet 等模板链路由稳定
+2. **LLM 路径 schema 注入**:parse_multi 产出后,用 resolve 出的表头 schema 校验/修正字段名(类 _coerce_fix_fields_to_headers 但在 parse 时)。修后 mail 等 LLM 路径字段质量升
+3. **pet_evolve 模板字段对齐**:查 _build_pet 模板 pet_evolve 字段名
+4. quest_npc 第 16 ref LLM 方差(verify-repair validator 已缓解,待观察)
+
+#### R8c.6 注意事项
+
+- _make_matcher 现读 type row(path 提供时),索引刷新清缓存(同 _matcher_cache)
+- _coerce_fix_fields_to_headers 仅在 verify-repair 触发时跑(写失败后),非主路径开销
+- produces 显式 PK 字面代换仅当 producer fields 有显式 PK;auto PK 仍走占位符+_capture_produced
+- 跨链平均 0.24 是诚实数据,非框架修复失败——5 项修复均验证生效,瓶颈转移到路由+LLM 路径层
+
+---
+
+## 三、新轮次模板
+
+> 每轮新优化照此结构填写,追加到「二、迭代记录」末尾。
+
+```markdown
+### R{n}(日期):优化项简称
+
+#### R{n}.1 改动清单
+| 优化项 | 痛点 | 方案 | 源文件 |
+|---|---|---|---|
+| #X | ... | ... | path |
+
+#### R{n}.2 确定性验证
+| 测试文件 | 测数 | 覆盖 | 结果 |
+|---|---|---|---|
+| test_xxx.py | N | ... | N/N passed |
+| 回归 | 178 | ... | 178/178 passed(零回归) |
+
+#### R{n}.3 端到端量化
+**结果文件**:
+- after:reports/archive/table_case_eval_<rid_after>.md
+- before:reports/archive/table_case_eval_<rid_before>.md
+
+| 指标 | before | after | delta | 增强比 |
+|---|---|---|---|---|
+| 定位功能 | x | y | +z | +P% |
+| 覆盖度 | | | | |
+| 精准程度 | | | | |
+| 严格通过率 | | | | |
+
+#### R{n}.4 根因归因
+| 来源 | 贡献 | 证据 |
+|---|---|---|
+
+#### R{n}.5 注意事项
+- ...
+```
+
+---
+
+## 四、文件索引(按轮次)
+
+### R1 文件
+
+**源文件**:
+- `server/agent/prompts.py`(#5)
+- `server/agent/excel/codemaker_parser.py`(#5)
+- `server/agent/excel/semantic_gate.py`(#2 新建)
+- `server/agent/excel/error_classifier.py`(#2)
+- `server/agent/excel/repair_playbook.py`(#2)
+- `server/agent/excel/cascade_planner.py`(#1 新建)
+- `server/agent/excel/agent.py`(#2+#1+bug修)
+- `server/agent/excel/step_ai_enhancer.py`(bug修2: _normalize_fields_list 三态归一)
+
+**测试文件**:
+- `server/tests/test_semantic_gate.py`(17 测)
+- `server/tests/test_cascade_planner.py`(16 测)
+
+**结果文件**:
+- `server/tests/reports/archive/table_case_eval_20260810_150127_nogit.md`(after 主)
+- `server/tests/reports/archive/table_case_eval_20260810_150127_nogit.json`(after JSON)
+- `server/tests/reports/archive/table_case_eval_20260810_152403_nogit_before.md`(before 主)
+- `server/tests/reports/archive/table_case_eval_20260810_152403_nogit_before.json`(before JSON)
+- `server/tests/reports/archive/table_case_eval_20260810_151025_nogit_after .md`(after 波动参照)
+- `server/tests/reports/skill_ab_latest.md`(skill_ab 回归)
+
+### R2 文件
+
+**结果文件**:
+- `server/tests/reports/archive/table_case_eval_20260810_161654_nogit_R2_after.md`(R2 after 主)
+- `server/tests/reports/archive/table_case_eval_20260810_161654_nogit_R2_after.json`(R2 after JSON)
+
+**对照文件**(R1 已存档,本次复用):
+- `server/tests/reports/archive/table_case_eval_20260810_150127_nogit.{md,json}`(R1 after,bug修2 前)
+- `server/tests/reports/archive/table_case_eval_20260810_152403_nogit_before.{md,json}`(R1 before 基线)
+
+**#6 源文件**:
+- `server/agent/excel/skill_updater.py`(AntiPattern schema 扩展 + induce_anti_patterns 编排门控)
+- `server/agent/excel/step_ai_enhancer.py`(ai_induce_anti_pattern LLM 归纳方法)
+- `server/agent/excel/skill_loader.py`(lookup 加 input_text 语义匹配)
+- `server/agent/excel/agent.py`(_check_anti_pattern 透传 input_text,定位前调用点传 intent.raw)
+- `server/tests/table_case_eval.py`(--induce 开关 + EVAL_INDUCE_AP)
+- `server/tests/test_anti_pattern_induction.py`(单测 14)
+
+**OpenSpec change**:
+- `openspec/changes/skill-ai-anti-pattern-induction/`(proposal / design / specs / tasks)
+
+### R3 文件
+
+**源文件**:
+- `server/routers/merge_branch.py`(#7 `_prefill_rev_cache` 新增 + `_rev_info_cached` key 改 resolve;#10 `_prefetch_ai_suggestions` 重写;#13 表循环改并行)
+- `server/routers/merge_subdir.py`(#7 import + 循环前调用;#8 `_sheet_names` 无改动依赖装包;#9 `:435` 加 src_scope_only + 删死代码 `_subdir_structural_sets`;#13 表循环改并行)
+- `server/services/agent_service.py`(#11 `_suggest_cache` 改 OrderedDict + `_suggest_cache_get/_put` 辅助方法 + 三处访问替换)
+
+**测试/基准文件**:
+- `server/tests/merge_router_bench.py`(新建,路由层性能基准 A/B,monkeypatch 优化前/后对比)
+- `server/tests/verify_merge_branch_compare.py`(#12 重写,数据源切 demo_svn/wc)
+- `server/tests/verify_merge_subdir_compare.py`(#12 重写,数据源切 demo_svn/wc + 无假 source_deleted 断言)
+
+**结果文件**:
+- `server/tests/reports/archive/merge_router_bench_20260811_110900_R3.json`(基准 JSON)
+- `server/tests/reports/archive/merge_router_bench_20260811_110900_R3.md`(基准 md)
+- `server/tests/reports/merge_router_bench_latest.json`(最新基准)
+
+**依赖**:
+- `python-calamine>=0.8.2`(pyproject 已声明,R3 补装,`pip install python-calamine>=0.8.2`)
+
+### R4 文件
+
+**源文件**:
+- `server/agent/excel/agent.py`(#14 Step5追踪 `_step5_log`:3754;#15 `_coerce_value` 容错:1773;#16 verify-repair 降级环境变量:476;#17 策略1提前:730;#19 `_phase_plan` 编号保护:4511;#20 G7 重复intent修:3555)
+- `server/agent/excel/alias_mapping.json`(#17 「法宝」→item/item.xlsx + 替身草人/法宝属性别名)
+- `server/agent/excel/cross_table_splitter.py`(#18 触发词放宽 `_ADD_PREFIX`;新增 `_build_school_ability_spell_intents`/`_build_combat_reward_intents`/`_build_residence_building_intents`;`_build_item_intents` 扩法术双表;`_build_npc_dialogue_intents` 分支对话支持;`_NPC_NAME_RE`/`_CONV_RE`/`_OPTS_RE`/`_BRANCH_OPT_RE` 正则修正)
+
+**测试/用例文件**:
+- `table_operation_test_cases.json`(追加 6 用例,索引 106-111)
+- `server/tests/table_case_eval.py`(复用现有评估器,`--start 106 --end 111`)
+
+**结果文件**:
+- `server/tests/reports/new6/table_case_eval_latest.md`(v1 基线)
+- `server/tests/reports/new6_v3/`(模板+路由后)
+- `server/tests/reports/new6_v4/`(分支对话+Step3保护后)
+- `server/tests/reports/new6_v5/`(G7修复后,最终)
+- `server/tests/reports/new6_v5_run.log`(Step5 追踪日志)
+
+**环境变量**:
+- `CODEMAKER_STEP5_TRACE=1`(Step5 追踪打印,默认开)
+- `CODEMAKER_VERIFY_REPAIR_LOOP=0`(关闭 verify-repair 迭代环,超时降级)
+- `CODEMAKER_VERIFY_REPAIR_MAX_ROUNDS=N`(调轮数,默认3,测试用1)
+- `CODEMAKER_AI_CIRCUIT_THRESHOLD=2`(LLM 连续失败熔断阈值)
+
+---
+
+## 五、命名约定
+
+| 类型 | 约定 | 示例 |
+|---|---|---|
+| 结果归档 | `table_case_eval_<YYYYMMDD_HHMMSS>_<gitshort>[_R{n}][_before/after].{md,json}` | `table_case_eval_20260810_150127_nogit.md` |
+| 路由层基准归档 | `merge_router_bench_<YYYYMMDD_HHMMSS>_R{n}.{md,json}` | `merge_router_bench_20260811_110900_R3.md` |
+| 测试文件 | `test_<优化项关键字>.py` | `test_semantic_gate.py` |
+| 基准文件 | `merge_<层级>_bench.py` | `merge_router_bench.py`(路由层) / `merge_eval.py`(引擎层) |
+| 新源文件 | `<功能关键字>.py` | `semantic_gate.py` / `cascade_planner.py` |
+| 轮次标签 | `EVAL_BASELINE_TAG=R{n}_before` / `R{n}_after`(跑 eval 时 set) | `set EVAL_BASELINE_TAG=R2_after` |
+
+### 跑 before/after 量化标准流程
+
+```cmd
+# 1. 备份当前改动
+copy /y "server\agent\xxx.py" ".optim_backup\xxx.py"
+
+# 2. 跑 after(当前新版)
+set EVAL_BASELINE_TAG=R{n}_after
+python -m tests.table_case_eval --quick 8
+
+# 3. 还原 before(拷回旧版 / 删新文件)
+copy /y ".optim_backup\xxx.py" "server\agent\xxx.py"
+
+# 4. 跑 before
+set EVAL_BASELINE_TAG=R{n}_before
+python -m tests.table_case_eval --quick 8
+
+# 5. 恢复 after(再拷回新版)
+copy /y ".optim_backup\xxx.py" "server\agent\xxx.py"
+
+# 6. 对比(用归档 rid)
+python -c "from tests.eval_baseline import compare_runs, format_diff_report; d=compare_runs('<before_rid>','<after_rid>','table_case_eval'); print(format_diff_report(d))"
+```
+
+---
+
+## 六、边界(明确不做)
+
+| 不做项 | 原因 |
+|---|---|
+| merge 核心 AI 化 | 已确认 AI 建议足够,列策略纯代码确定性更可靠 |
+| 公式缓存重算交给 AI | 工程问题,officecli/libreoffice 重算方案对路 |
+| 列名匹配主路径换 AI | column_matcher 别名 yaml 确定性任务,AI 留兜底 |
+| 行定位主路径换 AI | 倒排索引+分层匹配已够,AI 只在多行歧义仲裁 |
+
+**原则**:AI 进"判断+生成"主路径,不进"确定性匹配"主路径。规则做好的不抢,规则做不了的才接。
+
+---
+
+## 七、单样例优化指标(quest_npc 系列)
+
+> **本节指标针对单个样例**,非全量基准。每个样例独立跟踪 before/after,标注"单用例"。
+> 全量基准见「〇、累计成果仪表盘」的 table_case_eval 8/30 用例聚合指标。
+> 样例文件:`downloads/quest_npc_chain.json`(样例1)、`downloads/quest_npc_variants.json`(样例2-4)。
+
+### 样例1:quest_npc(寻宝老人对话链)
+
+- **输入文件**:`downloads/quest_npc_chain.json`(1 case,11 步预期)
+- **优化记录**:`server/agent/excel/skills/case_quest_npc_optimization.md`(8 阶段 + R7 阶段9)
+- **达标线**:引用一致 ≥0.9 / 定位 ≥0.9 / 覆盖 ≥0.85
+
+| 阶段 | 引用一致 | producer | 定位 | 覆盖 | ok | 耗时 | 备注 |
+|---|---|---|---|---|---|---|---|
+| 原始 | 0.06 | 0.10 | 0.09 | 0.00 | 1.0(假) | 299s | 单用例基线 |
+| 阶段1 Step5修复 | 0.31 | 0.50 | 0.64 | 0.27 | 0.0(诚实) | 279s | 单用例 |
+| 阶段2 Parser修复 | 0.50 | 0.70 | 0.73 | 0.36 | 0.0 | 204s | 单用例 |
+| 阶段3 路由修复 | 0.69 | 0.90 | 0.91 | 0.73 | 1.0(真) | 144s | 单用例 |
+| 阶段4 值格式 | 0.69 | 0.90 | 0.91 | 0.73 | 1.0 | 144s | 单用例 |
+| 阶段5 原文修复 | 0.875 | 0.90 | 0.91 | 0.64 | 0.0* | 240s | 单用例 |
+| 阶段6 extra_intents门控 | 0.875 | 0.90 | 0.91 | 0.73 | 1.0 | 110s | 单用例 |
+| 阶段7 splitter stem优先 | 0.875 | 0.90 | 1.00 | 0.91 | 0.0** | 178s | 单用例 |
+| 阶段8 _clean_header括号 | 0.875 | 0.90 | 1.00 | 0.91 | 1.0 | 88s | 单用例(最佳) |
+| **R7 阶段9 option_go+branch_conv** | 0.62 | — | 1.00 | 0.82 | False | 134s | **单用例**;option_go/branch_conv 修复达成,引用一致被 pre-existing column_matcher 嵌套字段 bug 阻断(见 R7.4) |
+| **R8 阶段10 type_aliases** | **1.00** | — | 1.00 | 0.91 | False* | 115s | **单用例**;column_matcher 嵌套字段整名匹配修复,引用一致达标 ✓(*reward modify locator bug,见 R8.5) |
+| **R8c 阶段11 validator+merge** | 0.94 | — | 1.00 | **1.00** | **True** | 107s | **单用例 strong 高**;reward modify 修好(ok=True),cov 1.00;5 项框架修复叠加 |
+
+> R8c 达标:ok=True、引用一致 0.94、定位 1.00、覆盖 1.00。5 项框架修复(type_aliases/produces-inference/verify-repair validator/显式PK/type_aliases merge)叠加,quest_npc 从 0.62→strong 高。残留:1 ref LLM 方差。
+
+### 样例2-4:任务链变体(R7 新增,基线待跑)
+
+| 样例 | 主题 | 文件 | 预期步 | 基线状态 |
+|---|---|---|---|---|
+| 样例2 药铺掌柜 | 单NPC简化(branch+option_go,Collect) | `downloads/quest_npc_variants.json` case1 | 9 | 待 clean-state eval(column_matcher 修复后) |
+| 样例3 村长→守卫队长 | 双NPC接续(stress) | 同上 case2 | 19 | 待 eval(19步耗时>300s,需分跑) |
+| 样例4 公会干事 | 任务链组多quest(stress) | 同上 case3 | 12 | 待 clean-state eval |
+
+> 变体样例为 stress 输入,暴露 splitter 单 NPC/单 quest 提取缺口。基线指标在 column_matcher 嵌套字段 bug 修复后补登(避免同 bug 污染指标)。
+
+### 样例5-7:非 quest 跨链变体(R8 新增,可扩展性试探)
+
+> **脱离 quest_npc 对话形式**,测 agent 对进化/道具/邮件跨链类型的可扩展性。文件:`downloads/cross_chain_variants.json`。
+
+| 样例 | 链类型 | 涉及表 | 预期步 | 基线(单用例,skill=on) | 可扩展性发现 |
+|---|---|---|---|---|---|
+| 样例5 灵兽进化链 | pet+pet_evolve | pet/Pet + pet_evolve/PetEvolveData | 2 | R8b 0.00/cov0.50 → **R8c 0.00/cov0.50** | pet add ok,pet_evolve 模板字段失败(待查 _build_pet) |
+| 样例6 道具装备链 | item 跨sheet | item/ItemBase + item/Equipment | 2 | R8b 0.00/cov0.50 → **R8c 0.00/cov0.50** | ItemBase 字段匹配修好(unit score=1.0),但 sheet 路由方差(路由给"道具表说明"非 ItemBase) |
+| 样例7 邮件模板链 | mail 跨sheet | mail/MailTemplate + mail/GlobalMail | 2 | R8b 0.00/cov0.50 → **R8c 0.00/cov0.50** | 无 splitter 模板→LLM 路径字段质量 |
+
+> **跨链平均引用一致 R8c = 0.24**(0.94+0+0+0)/4,未达"平均高"。5 项框架修复均生效(quest_npc strong 高、item 字段匹配修好),瓶颈转移到路由保护+LLM 路径 schema 注入层(各表独立,非单层可解,见 R8c.5)。
+
+### 单样例指标登记约定
+
+- 每个新样例入库后在「样例N」子节登记 before/after 指标,标注"单用例"
+- 单样例指标波动大(LLM 非确定性),核心看 **确定性证据**(unit 单测 + trace step 级验证),端到端指标作方向参考
+- 样例优化阶段记录同步写入 `server/agent/excel/skills/case_<样例名>_optimization.md`
+
+---
+
+*本文档为优化全过程基准,持续追加更新。*

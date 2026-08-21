@@ -1,0 +1,155 @@
+"""API 端到端：TestClient 走完整 HTTP 栈验证 stage1 → stage2 综合 → stage3 合回。
+
+不启服务，TestClient 同进程调 app（路由 + pydantic 校验 + 中间件全走）。
+前置: merge/scripts/build_merge_materials.py 已生成干净样本。
+
+用法: python -X utf8 -m server.tests.verify_api_e2e
+"""
+from __future__ import annotations
+
+import copy
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fastapi.testclient import TestClient
+
+from server.main import app
+from routers.merge_stages import TRUNK_DIR, DEVBRANCH_DIR
+
+client = TestClient(app)
+GROUP = "item"
+BRANCH = "devbranch1"
+_passed = 0
+_failed = 0
+
+
+def _clean_artifacts():
+    """清本测试涉及产物：中间版本/综合版本/manifest/trunk 版本化产出，保证从 item_1 起。"""
+    for f in [
+        DEVBRANCH_DIR / f"{GROUP}_merged_{BRANCH}.xlsx",
+        DEVBRANCH_DIR / f"{GROUP}_consolidated.xlsx",
+    ]:
+        if f.is_file():
+            f.unlink()
+    for m in [DEVBRANCH_DIR / "_stage1_manifest.json", DEVBRANCH_DIR / "_stage2_manifest.json"]:
+        if m.is_file():
+            m.unlink()
+    pat = re.compile(rf"^{re.escape(GROUP)}_\d+\.xlsx$")
+    if TRUNK_DIR.is_dir():
+        for fp in TRUNK_DIR.iterdir():
+            if fp.is_file() and pat.match(fp.name):
+                fp.unlink()
+
+
+def _check(name, ok, detail=""):
+    global _passed, _failed
+    _passed += 1 if ok else 0
+    _failed += 0 if ok else 1
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}")
+
+
+def _sheets_from_group(group, resolve=True):
+    """compare 响应 group(dict) → consolidate/apply 请求 sheets list。resolve 清 conflict。"""
+    sheets = []
+    for s in group["sheets"].values():
+        rows = copy.deepcopy(s["rows"])
+        for row in rows:
+            for cell in row["cells"]:
+                if cell.get("conflict") and resolve:
+                    cell["conflict"] = False
+        sheets.append({"name": s["name"], "headers": s["headers"], "rows": rows})
+    return sheets
+
+
+def main():
+    _clean_artifacts()
+    print("=" * 60)
+    print("API 端到端（HTTP 栈）: stage1 → stage2 综合 → stage3 合回")
+    print("=" * 60)
+
+    # 1. stage1 compare
+    print("\n--- 1. POST /api/merge/stage1/compare ---")
+    r = client.post("/api/merge/stage1/compare", json={"branch": BRANCH, "group_name": GROUP})
+    _check("status 200", r.status_code == 200, str(r.status_code))
+    d = r.json()
+    _check("conflict_origin=inter_commit", d.get("conflict_origin") == "inter_commit", d.get("conflict_origin", ""))
+    _check(f"分组含 {GROUP}", GROUP in d.get("groups", {}))
+    g1 = d["groups"][GROUP]
+    _check("阶段1 基准=item_1.xlsx", g1["base_file"] == f"{GROUP}_1.xlsx", g1["base_file"])
+
+    # 2. stage1 consolidate
+    print("\n--- 2. POST /api/merge/stage1/consolidate ---")
+    r = client.post("/api/merge/stage1/consolidate", json={
+        "branch": BRANCH, "group_name": GROUP, "sheets": _sheets_from_group(g1),
+    })
+    _check("consolidate status 200", r.status_code == 200, r.text[:200] if r.status_code != 200 else "")
+    if r.status_code == 200:
+        dc = r.json()
+        inter_file = DEVBRANCH_DIR / f"{GROUP}_merged_{BRANCH}.xlsx"
+        _check("产出中间版本文件存在", inter_file.is_file(), str(inter_file))
+
+    # 3. stage2 综合 compare（跨生产者）
+    print("\n--- 3. POST /api/merge/stage2/compare（跨生产者综合）---")
+    r = client.post("/api/merge/stage2/compare", json={"group_name": GROUP})
+    _check("status 200", r.status_code == 200, r.text[:200] if r.status_code != 200 else "")
+    d = r.json()
+    _check("conflict_origin=cross_producer", d.get("conflict_origin") == "cross_producer", d.get("conflict_origin", ""))
+    g2 = d["groups"][GROUP]
+    _check("stage2 base=fork快照(devbranch1_item.xlsx)", g2["base_file"] == f"{BRANCH}_{GROUP}.xlsx", g2["base_file"])
+
+    # 4. stage2 consolidate（产出综合版本）
+    print("\n--- 4. POST /api/merge/stage2/consolidate ---")
+    r = client.post("/api/merge/stage2/consolidate", json={
+        "group_name": GROUP, "branch": "", "sheets": _sheets_from_group(g2),
+    })
+    _check("consolidate status 200", r.status_code == 200, r.text[:200] if r.status_code != 200 else "")
+    if r.status_code == 200:
+        dc = r.json()
+        cons_file = DEVBRANCH_DIR / f"{GROUP}_consolidated.xlsx"
+        _check("产出综合版本文件存在", cons_file.is_file(), str(cons_file))
+        _check("consolidated 名一致", dc.get("consolidated") == f"{GROUP}_consolidated.xlsx", dc.get("consolidated", ""))
+
+    # 5. stage3 compare（合回 trunk）
+    print("\n--- 5. POST /api/merge/stage3/compare（合回 trunk）---")
+    r = client.post("/api/merge/stage3/compare", json={"group_name": GROUP})
+    _check("status 200", r.status_code == 200, r.text[:200] if r.status_code != 200 else "")
+    d = r.json()
+    _check("conflict_origin=merge_back", d.get("conflict_origin") == "merge_back", d.get("conflict_origin", ""))
+    g3 = d["groups"][GROUP]
+    _check("阶段3 base=merge-base(devbranch1_item.xlsx)", g3["base_file"] == f"{BRANCH}_{GROUP}.xlsx", g3["base_file"])
+    # 验证 versions 三方（merge-base + trunk head + consolidated）
+    mb_name = f"{BRANCH}_{GROUP}.xlsx"
+    found_threeway = False
+    for s in g3["sheets"].values():
+        for row in s["rows"]:
+            for c in row["cells"]:
+                v = c.get("versions") or {}
+                if mb_name in v and len(v) >= 2:
+                    found_threeway = True
+                    break
+    _check("versions 含 merge-base + 衍生（三方数据齐）", found_threeway)
+
+    # 6. stage3 apply（合回写回 trunk）
+    print("\n--- 6. POST /api/merge/stage3/apply ---")
+    r = client.post("/api/merge/stage3/apply", json={
+        "group_name": GROUP, "branch": "", "sheets": _sheets_from_group(g3),
+    })
+    _check("apply status 200", r.status_code == 200, r.text[:200] if r.status_code != 200 else "")
+    if r.status_code == 200:
+        da = r.json()
+        _check("版本化产出 item_1.xlsx", da.get("output") == "item_1.xlsx", da.get("output", ""))
+        trunk_out = TRUNK_DIR / da.get("output", "")
+        _check(f"merge/trunk/{da.get('output','')} 存在", trunk_out.is_file(), str(trunk_out))
+
+    print("\n" + "=" * 60)
+    print(f"结果: {_passed} 通过, {_failed} 失败")
+    print("=" * 60)
+    sys.exit(1 if _failed else 0)
+
+
+if __name__ == "__main__":
+    main()

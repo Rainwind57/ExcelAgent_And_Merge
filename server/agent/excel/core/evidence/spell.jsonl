@@ -1,0 +1,2 @@
+{"ts": "2026-08-17T11:48:07+08:00", "session_id": "", "table_stem": "spell", "sheet": "Assistant", "intent_action": "add", "dry_run": false, "col": {}, "row": {}, "ok": true, "needs_confirm": false, "user_corrected": false, "corrected_to": null, "skill_enabled": true}
+{"ts": "2026-08-17T12:59:45+08:00", "session_id": "", "table_stem": "spell", "sheet": "common_spell", "intent_action": "add", "dry_run": false, "col": {}, "row": {}, "ok": true, "needs_confirm": false, "user_corrected": false, "corrected_to": null, "skill_enabled": true}

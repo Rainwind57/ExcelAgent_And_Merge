@@ -1,0 +1,176 @@
+"""merge 评测种子数据生成：按冲突维度程序化生成可控 xlsx + ground truth JSON。
+
+维度覆盖（capability: merge-evaluation）：
+  - 值冲突：base/dev1/dev2 三方真冲突（id=1 value）
+  - 假冲突：语义等值但类型不同（id=2 value: "100" vs 100 vs 100.0）
+  - 单向变更：仅一方改动（id=3 value、id=5 desc）
+  - 删除：base 有衍生缺（id=4）
+  - 插入：单分支新增（id=1001/1002）
+  - ID 冲突：多分支同主键不同内容（id=2000）
+  - 结构差异：dev1 TestData 增列 extra_col
+
+ground_truth.json 记录已知冲突数 + 假冲突标记 + ID 冲突期望，供 merge_eval
+计算 merge_success_rate / false_conflict_rate / id_remap_accuracy。
+
+大表（big_data_*.xlsx）：4 sheet × 25000 行 = 10w 行，分散造冲突，
+供 --bigdata 分段计时 + 并行比对加速比（4 sheet 并行 vs 串行）。
+
+用法:
+    python -m tests.merge_fixtures.gen_merge_seeds
+    python gen_merge_seeds.py
+输出: server/tests/merge_fixtures/{seeds,bigdata}/
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from openpyxl import Workbook
+
+FIXTURE_DIR = Path(__file__).resolve().parent
+SEED_DIR = FIXTURE_DIR / "seeds"
+BIGDATA_DIR = FIXTURE_DIR / "bigdata"
+
+HEADERS = ["id", "name", "value", "desc", "flag"]
+
+
+# ── 小种子：可控冲突矩阵 ──────────────────────────────────
+# 文件名遵循 group_files 前缀约定：eval_seed.xlsx（base）/ eval_seed_1.xlsx / eval_seed_2.xlsx
+
+# base 行（id 1-5 + 10）— desc 全列保持一致避免非预期冲突
+BASE_ROWS = [
+    [1, "row1", 10, "row1desc", 1],       # 值冲突目标
+    [2, "row2", 100, "row2desc", 1],      # 假冲突目标（base int 100）
+    [3, "row3", 5, "row3desc", 1],        # 单向变更（dev1 改）
+    [4, "row4", "del", "row4desc", 1],    # dev1 删除
+    [5, "row5", "old", "olddesc", 1],     # 单向变更（dev2 改 desc）
+    [10, "row10", 100, "row10desc", 1],
+]
+# dev1：id1 值冲突、id2 假冲突、id3 单改、id4 删除、id2000 ID 冲突、+ id1001 插入
+DEV1_ROWS = [
+    [1, "row1", 20, "row1desc", 1],       # 真冲突（10/20/30）
+    [2, "row2", "100.0", "row2desc", 1],  # 假冲突（str="100.0" != base "100" → changed）
+    [3, "row3", 15, "row3desc", 1],       # 单向变更
+    [5, "row5", "old", "olddesc", 1],     # 不改
+    [10, "row10", 100, "row10desc", 1],
+    [1001, "new1001", 1, "dev1ins", 1],   # 单分支插入
+    [2000, "dev1_2000", 1, "from_dev1", 1],  # ID 冲突
+]
+# dev2：id1 冲突、id2 假冲突（str 与 dev1 不同 → 触发 conflict）、id5 单改 desc、id2000 ID 冲突
+DEV2_ROWS = [
+    [1, "row1", 30, "row1desc", 1],
+    [2, "row2", "1e2", "row2desc", 1],    # 假冲突（str="1e2" 与 dev1 "100.0" 不同 → conflict；语义=100）
+    [3, "row3", 5, "row3desc", 1],
+    [4, "row4", "del", "row4desc", 1],    # 保留 id4
+    [5, "row5", "old", "newdesc", 1],     # 单向变更（desc）
+    [10, "row10", 100, "row10desc", 1],
+    [1002, "new1002", 1, "dev2ins", 1],   # 单分支插入
+    [2000, "dev2_2000", 2, "from_dev2", 1],  # ID 冲突（与 dev1 内容不同）
+]
+
+GROUND_TRUTH = {
+    "group": "eval_seed",
+    "base_file": "eval_seed.xlsx",
+    "derived_files": ["eval_seed_1.xlsx", "eval_seed_2.xlsx"],
+    "sheets": {
+        "TestData": {
+            "headers": HEADERS,
+            "expected_conflict_cells": 2,        # id=1 value（真）+ id=2 value（假）
+            "expected_changed_cells": 2,         # id=3 value、id=5 desc
+            "false_conflict_cells": [["2", "value"]],  # id=2 value（100/100.0/1e2 语义等值被标冲突）
+            "id_conflicts": [
+                {"pk": "2000", "files": ["eval_seed_1.xlsx", "eval_seed_2.xlsx"]},
+            ],
+            "expected_inserted_unique": 2,       # 1001、1002（2000 拆分后 2 条）
+            "expected_deleted": 0,               # id4 dev2 保留 → 非 deleted
+            "expected_id_remap_count": 1,        # 2000 冲突 → 1 条重映射
+        }
+    },
+}
+
+
+def _write_seed_xlsx(path: Path, rows: list, headers: list) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "TestData"
+    ws.append(headers)
+    for r in rows:
+        ws.append(r)
+    wb.save(path)
+
+
+def gen_seeds() -> Path:
+    """生成小种子 xlsx + ground_truth.json。返回 SEED_DIR。"""
+    SEED_DIR.mkdir(parents=True, exist_ok=True)
+    _write_seed_xlsx(SEED_DIR / "eval_seed.xlsx", BASE_ROWS, HEADERS)
+    _write_seed_xlsx(SEED_DIR / "eval_seed_1.xlsx", DEV1_ROWS, HEADERS)
+    _write_seed_xlsx(SEED_DIR / "eval_seed_2.xlsx", DEV2_ROWS, HEADERS)
+    (SEED_DIR / "ground_truth.json").write_text(
+        json.dumps(GROUND_TRUTH, ensure_ascii=False, indent=2), encoding="utf-8")
+    return SEED_DIR
+
+
+# ── 大表：10w 行（4 sheet × 25000）+ 散布冲突 ──────────────
+
+BIG_SHEETS = ["BigData1", "BigData2", "BigData3", "BigData4"]
+BIG_ROWS_PER_SHEET = 25000
+# 冲突行：每 sheet 在 row 5000/12500/20000 造 base/dev1/dev2 三方冲突
+BIG_CONFLICT_ROWS = {5000, 12500, 20000}
+# 单向变更行：row 3000/15000
+BIG_CHANGED_ROWS = {3000, 15000}
+
+
+def _gen_big_rows(sheet_idx: int, variant: str) -> list:
+    """生成单 sheet 25000 行。variant: base/dev1/dev2。"""
+    rows = []
+    for i in range(1, BIG_ROWS_PER_SHEET + 1):
+        pk = sheet_idx * BIG_ROWS_PER_SHEET + i
+        name = f"item_{pk}"
+        value = pk
+        desc = f"d_{pk}"
+        flag = 1
+        if i in BIG_CONFLICT_ROWS:
+            if variant == "base":
+                value = 100
+            elif variant == "dev1":
+                value = 200
+            else:
+                value = 300
+        elif i in BIG_CHANGED_ROWS:
+            if variant == "dev1":
+                value = pk + 1000
+            elif variant == "dev2":
+                desc = f"changed_{pk}"
+        rows.append([pk, name, value, desc, flag])
+    return rows
+
+
+def _write_big_xlsx(path: Path, variant: str) -> None:
+    wb = Workbook()
+    # 删默认 sheet
+    wb.remove(wb.active)
+    for idx, name in enumerate(BIG_SHEETS):
+        ws = wb.create_sheet(title=name)
+        ws.append(HEADERS)
+        for r in _gen_big_rows(idx, variant):
+            ws.append(r)
+    wb.save(path)
+
+
+def gen_bigdata() -> Path:
+    """生成 10w 行级大表（base/dev1/dev2）。返回 BIGDATA_DIR。"""
+    BIGDATA_DIR.mkdir(parents=True, exist_ok=True)
+    _write_big_xlsx(BIGDATA_DIR / "big_data.xlsx", "base")
+    _write_big_xlsx(BIGDATA_DIR / "big_data_1.xlsx", "dev1")
+    _write_big_xlsx(BIGDATA_DIR / "big_data_2.xlsx", "dev2")
+    return BIGDATA_DIR
+
+
+def gen_all() -> None:
+    sd = gen_seeds()
+    bd = gen_bigdata()
+    print(f"种子已生成:\n  小种子: {sd}\n  大表: {bd}")
+
+
+if __name__ == "__main__":
+    gen_all()

@@ -1,0 +1,184 @@
+"""工作流路由：快照、恢复、导出。"""
+import os
+import shutil
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+
+from config import RESOURCES_DIR, SNAPSHOT_DIR, DOWNLOADS_DIR
+from models.agent_models import (
+    SnapshotInfo, SnapshotListResponse, SnapshotCreateRequest,
+)
+
+router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+
+
+def _ensure_snapshot_dir():
+    """确保快照目录存在。"""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+
+def create_snapshot_sync(name: str = "") -> str:
+    """创建当前 resources/ 的快照，返回 snap_id。
+
+    供路由与 AgentService（会话基线快照）复用：把 resources/ 下所有 .xlsx
+    复制到 SNAPSHOT_DIR/{snap_id}/，并写 _meta.json。
+    """
+    _ensure_snapshot_dir()
+
+    snap_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    snap_path = SNAPSHOT_DIR / snap_id
+    os.makedirs(snap_path)
+
+    file_count = 0
+    for f in RESOURCES_DIR.rglob("*.xlsx"):
+        if f.name.startswith("~$"):
+            continue
+        rel = f.relative_to(RESOURCES_DIR)
+        dest = snap_path / rel
+        os.makedirs(dest.parent, exist_ok=True)
+        shutil.copy2(f, dest)
+        file_count += 1
+
+    display_name = name or snap_id
+
+    # 记录快照元数据
+    meta = {
+        "id": snap_id,
+        "name": display_name,
+        "created_at": datetime.now().isoformat(),
+        "file_count": file_count,
+    }
+    import json
+    (snap_path / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+
+    return snap_id
+
+
+def restore_snapshot_sync(snap_id: str) -> dict:
+    """恢复到指定快照，返回 {message, backup_id}。
+
+    恢复前先把当前 resources/ 备份一份（backup_before_{snap_id}），
+    保证恢复本身可逆；恢复后清 AgentService 的 CLI 工作簿缓存 + 刷新索引，
+    否则后续读取仍命中内存旧数据。
+    """
+    snap_path = SNAPSHOT_DIR / snap_id
+    if not snap_path.exists():
+        raise FileNotFoundError(f"快照 '{snap_id}' 不存在")
+
+    # 先备份当前状态
+    backup_id = "backup_before_" + snap_id
+    backup_path = SNAPSHOT_DIR / backup_id
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+    os.makedirs(backup_path)
+
+    for f in RESOURCES_DIR.rglob("*.xlsx"):
+        if f.name.startswith("~$"):
+            continue
+        rel = f.relative_to(RESOURCES_DIR)
+        dest = backup_path / rel
+        os.makedirs(dest.parent, exist_ok=True)
+        shutil.copy2(f, dest)
+
+    # 恢复快照
+    for f in snap_path.rglob("*.xlsx"):
+        if f.name.startswith("~$") or f.name == "_meta.json":
+            continue
+        rel = f.relative_to(snap_path)
+        dest = RESOURCES_DIR / rel
+        os.makedirs(dest.parent, exist_ok=True)
+        shutil.copy2(f, dest)
+
+    # 文件已被外部覆盖，清除 AgentService 的 CLI 工作簿缓存 + 刷新索引，
+    # 否则后续读取仍命中内存中的旧数据（如刚改的值不会被回滚）。
+    try:
+        from services.agent_service import get_agent_service
+        get_agent_service().invalidate_cache()
+    except Exception:
+        pass
+
+    return {
+        "message": f"已恢复到快照 '{snap_id}'",
+        "backup_id": backup_id,
+    }
+
+
+@router.post("/snapshot", response_model=SnapshotInfo)
+async def create_snapshot(req: SnapshotCreateRequest = None):
+    """创建当前 resources/ 的快照。"""
+    snap_id = create_snapshot_sync(req.name if req else "")
+    # 读回 meta 取展示字段
+    import json
+    meta_path = SNAPSHOT_DIR / snap_id / "_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    return SnapshotInfo(
+        id=meta["id"],
+        name=meta["name"],
+        created_at=meta["created_at"],
+        file_count=meta["file_count"],
+    )
+
+
+@router.get("/snapshots", response_model=SnapshotListResponse)
+async def list_snapshots():
+    """列出所有快照。"""
+    _ensure_snapshot_dir()
+
+    snapshots = []
+    for d in sorted(SNAPSHOT_DIR.iterdir(), reverse=True):
+        if d.is_dir():
+            meta_path = d / "_meta.json"
+            if meta_path.exists():
+                import json
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                snapshots.append(SnapshotInfo(
+                    id=meta.get("id", d.name),
+                    name=meta.get("name", d.name),
+                    created_at=meta.get("created_at", ""),
+                    file_count=meta.get("file_count", 0),
+                ))
+            else:
+                snapshots.append(SnapshotInfo(
+                    id=d.name, name=d.name,
+                    created_at=datetime.fromtimestamp(d.stat().st_mtime).isoformat(),
+                    file_count=sum(1 for _ in d.rglob("*.xlsx")),
+                ))
+
+    return SnapshotListResponse(snapshots=snapshots)
+
+
+@router.post("/snapshot/{snap_id}/restore")
+async def restore_snapshot(snap_id: str):
+    """恢复到指定快照。"""
+    try:
+        result = restore_snapshot_sync(snap_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    result["status"] = "ok"
+    return result
+
+
+@router.get("/export")
+async def export_resources():
+    """导出当前 resources/ 为 zip 文件。"""
+    import zipfile
+
+    tmp_path = DOWNLOADS_DIR / f"resources_export_{uuid.uuid4().hex[:8]}.zip"
+
+    with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in RESOURCES_DIR.rglob("*"):
+            if f.name.startswith("~$") or f.name.startswith("."):
+                continue
+            if f.is_file():
+                rel = f.relative_to(RESOURCES_DIR)
+                zf.write(f, str(rel))
+
+    return FileResponse(
+        tmp_path,
+        filename="resources_export.zip",
+        media_type="application/zip",
+    )

@@ -1,0 +1,136 @@
+"""task_chain 数据契约适配层。
+
+把 task_chain.json 的 operation 结构转成框架内部消费的 NLIntent，弥合
+task_chain schema 与 agent/orchestrator 内部契约的错配（核查报告 G1）。
+
+task_chain op schema:
+  {table, sheet, operation(add|modify), produces, row_content, row_key}
+
+NLIntent (框架内部):
+  {action, table_hint, sheet_hint, locator_field, locator_value,
+   target_field, value, extras{fields, produces}}
+
+映射规则:
+  operation "add"     → action "add"
+  operation "modify"  → action "set"
+                        row_key{col:val} → locator_field + locator_value (取首项)
+  table               → table_hint (取 stem，兼容反斜杠路径如 item\\item.xlsx)
+  sheet               → sheet_hint
+  produces            → extras["produces"] (裸名；orchestrator _norm_name 已剥 <>)
+  row_content         → extras["fields"] (含 <占位符> 引用，由 orchestrator
+                        _resolve_placeholders 用前序产出替换)
+  add op 中值引用自身 produces 的字段 → 移除（由 _do_append 自增主键 +
+                        _capture_produced 按 produces 标签捕获真实 id）
+
+链式依赖示例（task_chain 用例1）:
+  op1: add entity_prefab, produces="new_prefab_id", row_content.prefab_id="<new_prefab_id>"
+       → 移除 prefab_id 字段，自增分配，产出 new_prefab_id=真实id
+  op2: add interaction, row_content.interaction_id="<new_interaction_id>"
+       → orchestrator 用 op1 产出的 new_prefab_id 替换（注：此处 interaction_id
+         应引用 new_interaction_id，由 op 自身 produces 声明，同 op1 模式）
+  op8: add spawn_world_entity, row_content.entity_prefab_id="<new_prefab_id>"
+       → orchestrator 用 op1 产出的 new_prefab_id 替换后写入
+"""
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+from typing import Any
+
+from ..parser.nl_parser import NLIntent
+
+
+def _to_stem(table: str) -> str:
+    """表路径 → stem：兼容反斜杠路径。
+
+    task_chain 的 table 字段可能是 "entity_prefab.xlsx" 或 "item\\item.xlsx"
+    （反斜杠目录）。统一转 / 后取 PurePosixPath.stem，跨平台一致。
+    """
+    if not table:
+        return ""
+    norm = str(table).replace("\\", "/").strip("/")
+    # 去掉目录部分，只留文件名 stem
+    return PurePosixPath(norm).stem
+
+
+def _strip_angle(name: str) -> str:
+    """剥首尾尖括号："<new_id>" → "new_id"；裸名原样返回。"""
+    s = str(name or "").strip()
+    if s.startswith("<") and s.endswith(">") and len(s) >= 2:
+        s = s[1:-1].strip()
+    return s
+
+
+def adapt_task_chain_op(op: dict) -> NLIntent:
+    """单条 task_chain operation → NLIntent。
+
+    Args:
+        op: task_chain operation dict，字段：
+            table, sheet, operation("add"|"modify"), produces, row_content, row_key
+
+    Returns:
+        NLIntent，action/table_hint/sheet_hint/locator_field/locator_value/extras 填充。
+    """
+    table = op.get("table") or ""
+    sheet = op.get("sheet") or ""
+    operation = str(op.get("operation") or "").strip().lower()
+    produces = _strip_angle(op.get("produces") or "")
+    row_content = op.get("row_content") or {}
+    row_key = op.get("row_key") or {}
+
+    fields: dict[str, Any] = {}
+    if isinstance(row_content, dict):
+        fields = dict(row_content)
+
+    # add op：移除值引用自身 produces 的字段（主键占位符）。
+    # 该字段表示"由本 op 产出"，不应外部提供；让 _do_append 自增主键，
+    # _capture_produced 按 produces 标签捕获真实 id 写入 produced 上下文。
+    if operation == "add" and produces:
+        self_ph = f"<{produces}>"
+        fields = {k: v for k, v in fields.items() if v != self_ph}
+
+    intent = NLIntent(
+        raw=str(op.get("input") or op.get("raw") or ""),
+        table_hint=_to_stem(table) or None,
+        sheet_hint=sheet or None,
+        extras={
+            "fields": fields,
+            "produces": produces or None,
+        },
+    )
+
+    if operation == "add":
+        intent.action = "add"
+    elif operation == "modify":
+        intent.action = "set"
+        # row_key → locator_field + locator_value（取首项，支持复合主键时取第一列）
+        if isinstance(row_key, dict) and row_key:
+            loc_field, loc_val = next(iter(row_key.items()))
+            intent.locator_field = str(loc_field)
+            intent.locator_value = str(loc_val)
+    else:
+        # 未知 operation 默认 set
+        intent.action = "set"
+        if isinstance(row_key, dict) and row_key:
+            loc_field, loc_val = next(iter(row_key.items()))
+            intent.locator_field = str(loc_field)
+            intent.locator_value = str(loc_val)
+
+    return intent
+
+
+def adapt_task_chain(ops: list[dict]) -> list[NLIntent]:
+    """task_chain operation 列表 → NLIntent 列表（保持顺序，供 orchestrator 拓扑）。
+
+    None/非 dict 项跳过（返回列表可能短于输入）。
+    """
+    out: list[NLIntent] = []
+    if not isinstance(ops, list):
+        return out
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        out.append(adapt_task_chain_op(op))
+    return out
+
+
+__all__ = ["adapt_task_chain_op", "adapt_task_chain", "_to_stem", "_strip_angle"]

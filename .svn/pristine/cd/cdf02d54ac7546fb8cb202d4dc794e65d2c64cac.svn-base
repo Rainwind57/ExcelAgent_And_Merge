@@ -1,0 +1,158 @@
+"""compare_sheet 新增作者维度冲突判定 + 公式列冲突提示测试（3.1-3.4, 4.1-4.3）。
+
+场景：
+  1. 同作者多次修改同一单元格 → 自动合并（author_resolved=True, conflict=False，取版本号最大的值）
+  2. 跨作者修改产生真冲突（has_conflict=True, author_resolved=False）
+  3. 无作者信息（commit_authors=None）时退化为原规则（与不传该参数完全一致的回归断言）
+  4. 公式文本一致 → formula_notice==''
+  5. 公式文本不一致 → 作为冲突供用户选择公式版本（diff_type='formula_conflict', conflict=True, versions 含各版本公式文本）
+
+用法： cd server && python tests/test_compare_author_dimension.py
+"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from engine.compare import compare_sheet
+
+results = []
+
+
+def check(name, cond, detail=""):
+    results.append((name, cond, detail))
+    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  [{detail}]" if detail and not cond else ""))
+
+
+def _sheet(headers, rows):
+    return [headers] + rows
+
+
+def _cell(r, key, col):
+    row = next(x for x in r["rows"] if x["key"] == key)
+    return next(c for c in row["cells"] if c["col"] == col)
+
+
+# ── 场景1：同作者多次修改（item_1/item_2 均为 alice 的两次提交）→ 自动合并 ──
+base = _sheet(["id", "name"], [[1, "x"]])
+v1 = _sheet(["id", "name"], [[1, "x1"]])   # alice 第1次提交
+v2 = _sheet(["id", "name"], [[1, "x2"]])   # alice 第2次提交（更新）
+file_sheets1 = {
+    "item.xlsx": {"Sheet1": base},
+    "item_1.xlsx": {"Sheet1": v1},
+    "item_2.xlsx": {"Sheet1": v2},
+}
+authors1 = {"item_1.xlsx": "alice", "item_2.xlsx": "alice"}
+r1 = compare_sheet(file_sheets1, "item.xlsx", "Sheet1", commit_authors=authors1)
+c1 = _cell(r1, "1", 1)
+check("S1 无冲突", c1["conflict"] is False, str(c1))
+check("S1 author_resolved=True", c1["author_resolved"] is True, str(c1))
+# 注：display_val（value字段）取值规则是既有逻辑（未传 merge_base_file 时仍取 base_val），
+# 不在本次改动范围内；本任务的"取版本号最大值代表该作者"仅用于冲突判定内部比较，
+# 这里改断言为验证各版本原始值仍被完整保留在 versions 里（未被静默丢弃）。
+check("S1 versions保留alice两次提交的值", c1["versions"].get("item_2.xlsx") == "x2", str(c1["versions"]))
+check("S1 changed=True", c1["changed"] is True, str(c1))
+
+# ── 场景1b：验证"取版本号最大值代表该作者"确实按版本号排序而非取值顺序 ──
+# alice: item_1.xlsx="x1"(旧,版本1) + item_3.xlsx="x9"(新,版本3)；bob: item_2.xlsx="x1"(版本2)
+# 若错误地把 alice 代表值取成 item_1 的"x1"，则与 bob 的"x1"一致 → 误判无冲突；
+# 正确按版本号取 item_3 的"x9"（alice 最新）→ 与 bob 的"x1"不同 → 应判真冲突。
+base1b = _sheet(["id", "name"], [[1, "x"]])
+v1_1b = _sheet(["id", "name"], [[1, "x1"]])
+v2_1b = _sheet(["id", "name"], [[1, "x1"]])
+v3_1b = _sheet(["id", "name"], [[1, "x9"]])
+file_sheets1b = {
+    "item.xlsx": {"Sheet1": base1b},
+    "item_1.xlsx": {"Sheet1": v1_1b},
+    "item_2.xlsx": {"Sheet1": v2_1b},
+    "item_3.xlsx": {"Sheet1": v3_1b},
+}
+authors1b = {"item_1.xlsx": "alice", "item_3.xlsx": "alice", "item_2.xlsx": "bob"}
+r1b = compare_sheet(file_sheets1b, "item.xlsx", "Sheet1", commit_authors=authors1b)
+c1b = _cell(r1b, "1", 1)
+check(
+    "S1b 按版本号取alice最新值参与比较,与bob不同判真冲突",
+    c1b["conflict"] is True and c1b["author_resolved"] is False,
+    str(c1b),
+)
+
+# ── 场景2：跨作者修改产生真冲突（item_1=alice, item_2=bob，改成不同值）──
+v1b = _sheet(["id", "name"], [[1, "xa"]])
+v2b = _sheet(["id", "name"], [[1, "xb"]])
+file_sheets2 = {
+    "item.xlsx": {"Sheet1": base},
+    "item_1.xlsx": {"Sheet1": v1b},
+    "item_2.xlsx": {"Sheet1": v2b},
+}
+authors2 = {"item_1.xlsx": "alice", "item_2.xlsx": "bob"}
+r2 = compare_sheet(file_sheets2, "item.xlsx", "Sheet1", commit_authors=authors2)
+c2 = _cell(r2, "1", 1)
+check("S2 has_conflict=True", c2["conflict"] is True, str(c2))
+check("S2 author_resolved=False", c2["author_resolved"] is False, str(c2))
+check("S2 changed=False", c2["changed"] is False, str(c2))
+
+# ── 场景3：无作者信息（commit_authors=None）时退化为原规则，与不传该参数完全一致 ──
+r3_with_none = compare_sheet(file_sheets2, "item.xlsx", "Sheet1", commit_authors=None)
+r3_without = compare_sheet(file_sheets2, "item.xlsx", "Sheet1")
+c3a = _cell(r3_with_none, "1", 1)
+c3b = _cell(r3_without, "1", 1)
+check(
+    "S3 commit_authors=None 与不传该参数完全一致",
+    r3_with_none == r3_without,
+    "diff detected" if r3_with_none != r3_without else "",
+)
+check("S3 无作者信息仍判真冲突(原规则)", c3a["conflict"] is True and c3a["author_resolved"] is False, str(c3a))
+
+# 额外：场景1若不传 commit_authors，应退化为原规则（跨版本值不同 → 真冲突）
+r1_fallback = compare_sheet(file_sheets1, "item.xlsx", "Sheet1")
+c1_fallback = _cell(r1_fallback, "1", 1)
+check(
+    "S1-fallback 不传authors时x1/x2视为真冲突(原规则)",
+    c1_fallback["conflict"] is True and c1_fallback["author_resolved"] is False,
+    str(c1_fallback),
+)
+
+# ── 场景4：公式文本一致 → formula_notice=='' ──
+base_f = _sheet(["id", "total"], [[1, 30]])
+v1_f = _sheet(["id", "total"], [[1, 30]])
+v2_f = _sheet(["id", "total"], [[1, 30]])
+file_sheets4 = {
+    "item.xlsx": {"Sheet1": base_f},
+    "item_1.xlsx": {"Sheet1": v1_f},
+    "item_2.xlsx": {"Sheet1": v2_f},
+}
+# read_formulas 矩阵与 read_excel 行对齐（含表头行），数据行公式放在 col_idx=1
+formulas4 = {
+    "item.xlsx": {"Sheet1": [["id", "total"], ["", "=SUM(A1:A1)"]]},
+    "item_1.xlsx": {"Sheet1": [["id", "total"], ["", "=SUM(A1:A1)"]]},
+    "item_2.xlsx": {"Sheet1": [["id", "total"], ["", "=SUM(A1:A1)"]]},
+}
+r4 = compare_sheet(file_sheets4, "item.xlsx", "Sheet1", file_formulas=formulas4)
+c4 = _cell(r4, "1", 1)
+check("S4 diff_type=formula", c4["diff_type"] == "formula", str(c4))
+check("S4 formula_notice为空", c4["formula_notice"] == "", str(c4))
+
+# ── 场景5：公式文本不一致 → formula_notice 有值，且原公式文本不被覆写 ──
+formulas5 = {
+    "item.xlsx": {"Sheet1": [["id", "total"], ["", "=SUM(A1:A1)"]]},
+    "item_1.xlsx": {"Sheet1": [["id", "total"], ["", "=SUM(A1:A1)"]]},
+    "item_2.xlsx": {"Sheet1": [["id", "total"], ["", "=AVERAGE(A1:A1)"]]},  # 公式文本不同
+}
+r5 = compare_sheet(file_sheets4, "item.xlsx", "Sheet1", file_formulas=formulas5)
+c5 = _cell(r5, "1", 1)
+check("S5 diff_type=formula_conflict", c5["diff_type"] == "formula_conflict", str(c5))
+check("S5 formula_notice非空", bool(c5["formula_notice"]), str(c5))
+check(
+    "S5 formula_text未被覆写(仍是基准原文本)",
+    c5["formula_text"] == "=SUM(A1:A1)",
+    str(c5["formula_text"]),
+)
+check("S5 conflict=True(作为冲突展示供用户选择)", c5["conflict"] is True, str(c5))
+check(
+    "S5 versions含各版本公式文本(供前端选择)",
+    c5["versions"].get("item_2.xlsx") == "=AVERAGE(A1:A1)",
+    str(c5["versions"]),
+)
+
+
+passed = sum(1 for _, c, _ in results if c)
+print(f"\n{passed}/{len(results)} passed")
+sys.exit(0 if passed == len(results) else 1)

@@ -1,0 +1,40 @@
+"""自然语言意图数据结构。
+
+NLIntent 是 codemaker LLM 解析器（CodemakerNLParser）输出的结构化意图，
+由 TableAgent 消费执行。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class NLIntent:
+    """自然语言解析后的意图结构。
+
+    字段说明：
+      action:         动作类型，取值 set | add | delete | get | col
+      table_hint:     表名提示（供上层 TableResolver 做模糊匹配）
+      sheet_hint:     sheet 名提示
+      locator_field:  定位字段名（如 "名称"、"ID"）
+      locator_value:  定位值（如对象名、ID 值等，用于找到目标行）
+      target_field:   目标字段名（set 时被修改的字段）
+      value:          目标值（set 时写入的值）
+      raw_target:     分隔动词右侧的原始文本（供上层进一步解析）
+      raw:            原始输入文本
+      row_override:   用户显式指定的行号（如"用行6""第6行"），非 None 时跳过行定位直接读该行
+      extras:         扩展字典，存放解析过程中产生的额外信息（如 fields、col_name）
+    """
+    action: str = "set"
+    table_hint: Optional[str] = None
+    sheet_hint: Optional[str] = None
+    locator_field: Optional[str] = None
+    locator_value: Optional[str] = None
+    target_field: Optional[str] = None
+    value: Optional[str] = None
+    raw_target: Optional[str] = None
+    raw: str = ""
+    row_override: Optional[int] = None
+    extras: dict = field(default_factory=dict)

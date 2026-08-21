@@ -1,0 +1,1039 @@
+# 行定位别名规则（自动生成）
+# 生成时间: 2026-08-14T19:04:45
+# 来源: 78 张表
+# 
+tables:
+  '*':
+    '*':
+    - locator_column: 名称
+      match: contains
+  ability:
+    Ability:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+    - locator_column: 被动id
+      match: exact
+  activity:
+    Activity:
+    - locator_column: 活动名称
+      match: contains
+    - locator_column: 活动id
+      match: exact
+  assistant:
+    Assistant:
+    - locator_column: 名字
+      match: contains
+    - locator_column: 仙友编号
+      match: exact
+    - locator_column: model_id
+      match: exact
+    - locator_column: 等级模板id
+      match: exact
+  assistant_ability:
+    AssistantAbility:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+  assistant_level:
+    AssistantLevel:
+    - locator_column: 等级
+      match: exact
+    AssistantExpItem:
+    - locator_column: 道具id
+      match: exact
+    AssistantLevelTemplate:
+    - locator_column: 等级模板id
+      match: exact
+  assistant_mystic:
+    AssistantMystic:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 秘法编号
+      match: exact
+    AssistantMysticSlot:
+    - locator_column: 槽位id
+      match: exact
+    AssistantMysticPool:
+    - locator_column: 仙友id
+      match: exact
+  assistant_weapon:
+    AssistantWeapon:
+    - locator_column: 仙器名称
+      match: contains
+    - locator_column: 仙器编号
+      match: exact
+    AssistantWeaponUpgradeCost:
+    - locator_column: 仙器等级
+      match: exact
+    AssistantWeaponLevel:
+    - locator_column: id
+      match: exact
+    - locator_column: 仙器id
+      match: exact
+  bilingual_sample:
+    Fabao:
+    - locator_column: name
+      match: contains
+    - locator_column: fabao_id
+      match: exact
+  building:
+    BuildingType:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: 交互id
+      match: exact
+    BuildingLevel:
+    - locator_column: 建筑图标 ID
+      match: exact
+    - locator_column: 完整模型 ID
+      match: exact
+    - locator_column: 初级破损模型ID
+      match: exact
+    - locator_column: 残破模型 ID
+      match: exact
+    - locator_column: 额外奖励ID
+      match: exact
+    BuildingLevelInit:
+    - locator_column: 建筑类型
+      match: exact
+  city:
+    CityTemplate:
+    - locator_column: 洞府名称
+      match: contains
+    - locator_column: 洞府id
+      match: exact
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    - locator_column: 交互id
+      match: exact
+    - locator_column: 城市场景布局id
+      match: exact
+    CityLayout:
+    - locator_column: 城市布局ID
+      match: exact
+    - locator_column: 场景ID
+      match: exact
+    LayoutBuildingSlot:
+    - locator_column: 槽位 ID
+      match: exact
+    CityLevelData:
+    - locator_column: 城池等级
+      match: exact
+  city_siege:
+    SiegeAttackableBuilding:
+    - locator_column: 编号
+      match: exact
+    CityBuildingSiegeCfg:
+    - locator_column: 交互id
+      match: exact
+    SiegeLayout:
+    - locator_column: 城市布局ID
+      match: exact
+    - locator_column: 场景ID
+      match: exact
+  buff_event_vfx:
+    buff_event_vfx:
+    - locator_column: buff配置ID
+      match: exact
+  combat:
+    combat_data:
+    - locator_column: 名称
+      match: contains
+    - locator_column: combat编号
+      match: exact
+    - locator_column: space编号
+      match: exact
+  pve_combat_npc:
+    PveCombatNpc:
+    - locator_column: 名称
+      match: contains
+    - locator_column: ID
+      match: exact
+  spell:
+    common_spell:
+    - locator_column: 技能名称
+      match: contains
+    - locator_column: 技能编号
+      match: exact
+    spell_data:
+    - locator_column: 主动技能编号
+      match: exact
+    - locator_column: 添加buff_id
+      match: exact
+    passive_data:
+    - locator_column: 被动技能编号
+      match: exact
+    buff_data:
+    - locator_column: 名称
+      match: contains
+    - locator_column: buff编号
+      match: exact
+    anim_montage_override_data:
+    - locator_column: 技能编号
+      match: exact
+    effect_actor_override_data:
+    - locator_column: 技能名称
+      match: contains
+    - locator_column: 技能编号
+      match: exact
+    - locator_column: 角色ModelID
+      match: exact
+  spell_group:
+    SpellGroup:
+    - locator_column: 名称
+      match: contains
+    - locator_column: ID
+      match: exact
+  const:
+    Const:
+    - locator_column: 常量字段名
+      match: exact
+  entity_prefab:
+    Base:
+    - locator_column: 名字
+      match: contains
+    - locator_column: 编号
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    - locator_column: 交互id
+      match: exact
+  exclusive_state:
+    State:
+    - locator_column: 状态类型
+      match: exact
+  fabao:
+    Fabao:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 法宝id
+      match: exact
+    FabaoUpgradeCost:
+    - locator_column: 法宝等级
+      match: exact
+    FabaoLevel:
+    - locator_column: 法宝id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+    FabaoSlotUnlockCost:
+    - locator_column: 法宝类型
+      match: exact
+    FabaoType:
+    - locator_column: 分组ID
+      match: exact
+    FabaoQuality:
+    - locator_column: 法宝境界
+      match: exact
+  gameplay_tags:
+    tags:
+    - locator_column: tag
+      match: exact
+  guild:
+    Const:
+    - locator_column: 常量字段名
+      match: exact
+    Role:
+    - locator_column: 职位
+      match: exact
+    Message:
+    - locator_column: 职位
+      match: exact
+    OpsPermissions:
+    - locator_column: 职位
+      match: exact
+    PersonnelPermissions:
+    - locator_column: 职位
+      match: exact
+    RoleLimit:
+    - locator_column: 职位
+      match: exact
+    GuildHall:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    Vault:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    Store:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    WingRoom:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    Library:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    PetHouse:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: model_id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+    Quest:
+    - locator_column: 任务ID
+      match: exact
+    - locator_column: 物品ID
+      match: exact
+    - locator_column: 奖励ID
+      match: exact
+    QuestCount:
+    - locator_column: 奖励ID
+      match: exact
+    WelcomeMessage:
+    - locator_column: 迎新词ID
+      match: exact
+    SpellData:
+    - locator_column: 技能名称
+      match: contains
+    - locator_column: 技能ID
+      match: exact
+  hero:
+    Hero:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 人物id
+      match: exact
+    - locator_column: 初始门派id
+      match: exact
+    - locator_column: 地图UI图标id
+      match: exact
+  hero_level:
+    HeroLevel:
+    - locator_column: 等级名称
+      match: contains
+    - locator_column: 道具id
+      match: exact
+    HeroLevelGrow:
+    - locator_column: id
+      match: exact
+    ExpItem:
+    - locator_column: 道具id
+      match: exact
+  id_mgr:
+    SETTING:
+    - locator_column: 模块
+      match: exact
+    各模块编号占段表:
+    - locator_column: 模块编号占段表
+      match: exact
+  interaction:
+    Interaction:
+    - locator_column: 编号
+      match: exact
+    - locator_column: 交互效果编号
+      match: exact
+    InteractionConv:
+    - locator_column: 编号
+      match: exact
+    InteractionConvOption:
+    - locator_column: 编号
+      match: exact
+  equipment:
+    EquipmentSlot:
+    - locator_column: 槽位id
+      match: exact
+    EquipmentGemType:
+    - locator_column: 装备宝石类型
+      match: exact
+    EquipmentScore:
+    - locator_column: 条目编号
+      match: exact
+    EquipmentQuality:
+    - locator_column: 装备境界
+      match: exact
+    EquipmentBaseAttr:
+    - locator_column: 装备境界
+      match: exact
+    EquipmentExtraAttr:
+    - locator_column: 装备境界
+      match: exact
+    EquipmentExtraAttrNum:
+    - locator_column: 条目编号
+      match: exact
+  item:
+    ItemType:
+    - locator_column: 类型名称
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    ItemBase:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    Chest:
+    - locator_column: 物品编号
+      match: exact
+    - locator_column: reward ID
+      match: exact
+    Potion:
+    - locator_column: 道具名字
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    - locator_column: 使用效果-buff_id
+      match: exact
+    ResidencePlantAccelerate:
+    - locator_column: 道具名称
+      match: contains
+    - locator_column: 种子道具id
+      match: exact
+    Equipment:
+    - locator_column: 名字
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    - locator_column: 分解获得道具id
+      match: exact
+    Gem:
+    - locator_column: 名字
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    - locator_column: 下一级宝石id
+      match: exact
+    - locator_column: 升级消耗道具id
+      match: exact
+    - locator_column: 升级消耗道具id
+      match: exact
+    - locator_column: 分解获得道具id
+      match: exact
+    GameplayAbilityChoicePool:
+    - locator_column: 条目编号
+      match: exact
+    - locator_column: 随机池编号
+      match: exact
+    - locator_column: 主动技能ID
+      match: exact
+    - locator_column: 被动Buff ID
+      match: exact
+    Fabao:
+    - locator_column: 名字
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+    - locator_column: 法宝技能编号
+      match: exact
+    - locator_column: 附加属性池编号
+      match: exact
+    FabaoAbilityChoicePool:
+    - locator_column: 条目编号
+      match: exact
+    - locator_column: 随机池编号
+      match: exact
+  item_recipe:
+    ItemRecipe:
+    - locator_column: 配方名称
+      match: contains
+    - locator_column: 配方id
+      match: exact
+    RecipeLevel:
+    - locator_column: 唯一id
+      match: exact
+    RecipeMaterial:
+    - locator_column: 材料名称
+      match: contains
+    - locator_column: 材料组id
+      match: exact
+    - locator_column: 道具1 id
+      match: exact
+    - locator_column: 道具2 id
+      match: exact
+    - locator_column: 道具3 id
+      match: exact
+    - locator_column: 道具4 id
+      match: exact
+    - locator_column: 道具5 id
+      match: exact
+  mail:
+    MailTemplate:
+    - locator_column: 模板ID
+      match: exact
+    GlobalMail:
+    - locator_column: 全服邮件ID
+      match: exact
+    - locator_column: 模板ID
+      match: exact
+  map:
+    Icon:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 图标id
+      match: exact
+  material_effect:
+    MaterialEffect:
+    - locator_column: 材质ID
+      match: exact
+  model_prefab:
+    MetaData:
+    - locator_column: name
+      match: contains
+    - locator_column: 编号
+      match: exact
+    Model:
+    - locator_column: 编号
+      match: exact
+    VFX:
+    - locator_column: 编号
+      match: exact
+    City:
+    - locator_column: name
+      match: contains
+    - locator_column: 编号
+      match: exact
+    RigidBodyGeometryType:
+    - locator_column: 盒子
+      match: exact
+  perf_ability_100k:
+    Ability:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+    - locator_column: 被动id
+      match: exact
+  perf_ability_10k:
+    Ability:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+    - locator_column: 被动id
+      match: exact
+  perf_ability_50k:
+    Ability:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+    - locator_column: 被动id
+      match: exact
+  perf_item_100k:
+    ItemBase:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+  perf_item_10k:
+    ItemBase:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+  perf_item_50k:
+    ItemBase:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 物品编号
+      match: exact
+  perf_pet_100k:
+    Pet:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 灵兽id
+      match: exact
+    - locator_column: 灵兽model_id
+      match: exact
+  perf_pet_10k:
+    Pet:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 灵兽id
+      match: exact
+    - locator_column: 灵兽model_id
+      match: exact
+  perf_pet_50k:
+    Pet:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 灵兽id
+      match: exact
+    - locator_column: 灵兽model_id
+      match: exact
+  pet:
+    Pet:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 灵兽id
+      match: exact
+    - locator_column: 灵兽model_id
+      match: exact
+    - locator_column: 灵兽蛋道具id
+      match: exact
+  pet_evolve:
+    PetEvolveData:
+    - locator_column: 灵兽名称
+      match: contains
+    - locator_column: 进化后的灵兽名称
+      match: contains
+    - locator_column: 进化id
+      match: exact
+    - locator_column: 宠物id
+      match: exact
+    - locator_column: 进化后的灵兽ID
+      match: exact
+  pet_level:
+    PetLevel:
+    - locator_column: 等级
+      match: exact
+    PetExpItem:
+    - locator_column: 道具id
+      match: exact
+  pet_refine:
+    PetRefine:
+    - locator_column: 道具id
+      match: exact
+  pet_spell_book:
+    PetSpellBook:
+    - locator_column: 兽决道具id
+      match: exact
+    - locator_column: 获得能力id
+      match: exact
+  player_common:
+    PlayerCommon:
+    - locator_column: 编号
+      match: exact
+  match_stat:
+    SeasonStat:
+    - locator_column: 赛季编号
+      match: exact
+  match_stat_1:
+    SeasonStat:
+    - locator_column: 赛季编号
+      match: exact
+  match_stat_2:
+    SeasonStat:
+    - locator_column: 赛季编号
+      match: exact
+  formula_basic:
+    DanConfig:
+    - locator_column: 段位名称
+      match: contains
+    - locator_column: 段位编号
+      match: exact
+  formula_lookup:
+    MatchDan:
+    - locator_column: match_id
+      match: exact
+    DanRef:
+    - locator_column: dan_id
+      match: exact
+  formula_nested:
+    RewardCalc:
+    - locator_column: 奖励编号
+      match: exact
+  formula_sum:
+    SeasonStat:
+    - locator_column: 赛季编号
+      match: exact
+  quest:
+    QuestGroup:
+    - locator_column: 任务名称
+      match: contains
+    - locator_column: 任务组id
+      match: exact
+    Quest:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 任务ID
+      match: exact
+    - locator_column: 任务组ID
+      match: exact
+    - locator_column: 刷新的npc_id
+      match: exact
+    - locator_column: 剧情id
+      match: exact
+    Sheet1:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 任务ID
+      match: exact
+    - locator_column: 任务组ID
+      match: exact
+    - locator_column: 刷新的npc_id
+      match: exact
+    - locator_column: 剧情id
+      match: exact
+    QuestType:
+    - locator_column: 名称
+      match: contains
+    任务目标配置:
+    - locator_column: 任务目标描述
+      match: exact
+  spawn_quest_entity:
+    SpawnQuestEntity:
+    - locator_column: 实体名字
+      match: contains
+    - locator_column: 刷新ID
+      match: exact
+    - locator_column: 场景ID
+      match: exact
+    - locator_column: 实体Prefab ID
+      match: exact
+  realm_info:
+    RealmInfo:
+    - locator_column: 服务器id
+      match: exact
+  residence:
+    Residence:
+    - locator_column: 洞府名称
+      match: contains
+    - locator_column: 洞府id
+      match: exact
+    - locator_column: 洞府实例Prefab ID
+      match: exact
+    - locator_column: 洞府入口Prefab ID
+      match: exact
+    - locator_column: 洞府分组编号
+      match: exact
+    - locator_column: 洞府内部场景ID
+      match: exact
+    ResidenceLevel:
+    - locator_column: 洞府等级
+      match: exact
+  residence_building:
+    ResidenceBuilding:
+    - locator_column: 建筑名称
+      match: contains
+    - locator_column: 建筑道具id
+      match: exact
+    - locator_column: 建筑图纸道具id
+      match: exact
+    - locator_column: 建筑model_id
+      match: exact
+    - locator_column: 地图图标id
+      match: exact
+    BuildingType:
+    - locator_column: 建筑编号
+      match: exact
+    BuildingCamera:
+    - locator_column: 镜头模式编号
+      match: exact
+    AttributeText:
+    - locator_column: 建筑类型编号
+      match: exact
+    BuildingInteract:
+    - locator_column: 建筑类型编号
+      match: exact
+  residence_entry:
+    State:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 州id
+      match: exact
+    District:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 片区id
+      match: exact
+    - locator_column: 所属州id
+      match: exact
+    ResidenceEntry:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 入口id
+      match: exact
+    - locator_column: 片区id
+      match: exact
+    - locator_column: 洞府id
+      match: exact
+    - locator_column: 候选时的prefab_id
+      match: exact
+    - locator_column: 正式入口prefab_id
+      match: exact
+    - locator_column: 地标表id
+      match: exact
+    StateCountConfig:
+    - locator_column: 州数量
+      match: exact
+  residence_grid:
+    ResidenceObstacle:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 洞府id
+      match: exact
+    - locator_column: 障碍物id
+      match: exact
+    - locator_column: 解锁需要的道具id
+      match: exact
+    - locator_column: 摆放模型的model_id
+      match: exact
+    - locator_column: 小地图图标id
+      match: exact
+    ResidenceGrid:
+    - locator_column: 洞府id
+      match: exact
+    - locator_column: 障碍物id
+      match: exact
+  residence_plant:
+    ResidencePlant:
+    - locator_column: 种子名称
+      match: contains
+    - locator_column: 种子道具id
+      match: exact
+    - locator_column: 收获资源RewardId
+      match: exact
+  residence_putuan:
+    PutuanAcupoint:
+    - locator_column: 穴位名字
+      match: contains
+    - locator_column: 穴位id
+      match: exact
+    PutuanLiangong:
+    - locator_column: 功法名称
+      match: contains
+    - locator_column: 功法id
+      match: exact
+    Sheet1:
+    - locator_column: ''
+      match: exact
+  residence_temple:
+    ResidenceTemple:
+    - locator_column: 种子名称
+      match: contains
+    - locator_column: 关卡id
+      match: exact
+    - locator_column: 战斗id
+      match: exact
+    - locator_column: 土地庙建筑id
+      match: exact
+    - locator_column: 特殊道具id
+      match: exact
+  reward:
+    Reward:
+    - locator_column: 名称
+      match: contains
+    - locator_column: reward_id
+      match: exact
+  school:
+    School:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 大世界model_id
+      match: exact
+    - locator_column: 战斗model_id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+  school_ability:
+    SchoolAbility:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 心法1名称
+      match: contains
+    - locator_column: 心法2名称
+      match: contains
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 心法1被动id
+      match: exact
+    - locator_column: 心法2被动id
+      match: exact
+    SchoolAbilityLevel:
+    - locator_column: id
+      match: exact
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 技能id
+      match: exact
+  school_spirit:
+    SchoolSpirit:
+    - locator_column: 神通id
+      match: exact
+    - locator_column: 门派id
+      match: exact
+    - locator_column: 灵根id
+      match: exact
+  school_talent:
+    SchoolTalent:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 门派id
+      match: exact
+    SchoolTalentLevel:
+    - locator_column: 天赋id
+      match: exact
+    - locator_column: 被动效果buff_id
+      match: exact
+  spirit:
+    Spirit:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 灵根id
+      match: exact
+  anim_montage_sequence:
+    当前可用的Anim_Montage_Sequence:
+    - locator_column: 动画蒙太奇Sequence的名字
+      match: contains
+  effect_actor:
+    effect_actor_data:
+    - locator_column: 特效名称
+      match: contains
+    当前可用的外观Graph:
+    - locator_column: Graph路径
+      match: exact
+    当前可用的驱动类型:
+    - locator_column: 枚举名
+      match: exact
+  space:
+    space_data:
+    - locator_column: 名称
+      match: contains
+    - locator_column: 客户端场景资源名称
+      match: contains
+    - locator_column: Space编号
+      match: exact
+    - locator_column: 大陆id
+      match: exact
+    - locator_column: 客户端GameMode实例ID
+      match: exact
+    - locator_column: 场景BGM事件ID
+      match: exact
+    big_world_space:
+    - locator_column: Space编号
+      match: exact
+    space_map_ui:
+    - locator_column: Space编号
+      match: exact
+    cgm_free:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_simple:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_login:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_round_world:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_turnbased_battle:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_residence:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_guild_space:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_city_space:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+    cgm_siege:
+    - locator_column: 名称
+      match: contains
+    - locator_column: GameMode实例ID
+      match: exact
+  space_landmark:
+    World02:
+    - locator_column: 地图名称
+      match: contains
+    - locator_column: 城市名字
+      match: contains
+    - locator_column: 地标全局ID
+      match: exact
+    - locator_column: 郡ID
+      match: exact
+    - locator_column: 地标本地ID
+      match: exact
+    - locator_column: 关联道路ID
+      match: exact
+    - locator_column: 城池表id
+      match: exact
+  spawn_world_entity:
+    SpawnWorldEntity:
+    - locator_column: 实体名字
+      match: contains
+    - locator_column: 刷新ID
+      match: exact
+    - locator_column: 场景ID
+      match: exact
+    - locator_column: 实体Prefab ID
+      match: exact
+  tips:
+    ui_txt:
+    - locator_column: 分段备注：可以在本表中间插入行，从而使得内容更加聚集，但要记得重新拉一遍左边的顺序id
+      match: exact
+    tips:
+    - locator_column: 分段备注：可以在本表中间插入行，从而使得内容更加聚集
+      match: exact
+  world_buff:
+    buff_dup_op:
+    - locator_column: COEXIST
+      match: exact
+    lifecycle_bind:
+    - locator_column: NO_BIND
+      match: exact
+    world_buff_data:
+    - locator_column: 名称
+      match: contains
+    - locator_column: buff编号
+      match: exact

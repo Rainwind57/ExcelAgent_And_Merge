@@ -1,0 +1,118 @@
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+
+
+# 单个单元格的数据模型，包含多版本值、冲突/变更标记
+class CellData(BaseModel):
+    col: int                            # 列索引（0-based）
+    col_letter: str                     # 列字母（A, B, C...）
+    value: Any = None                   # 显示值（优先取基准文件的值）
+    versions: Dict[str, Any] = {}       # 各文件版本的值，key=文件名
+    conflict: bool = False              # 是否存在冲突（任意两个文件值不同）
+    changed: bool = False              # 是否发生变更（非基准文件与基准不同）
+    diff_type: str = ""                 # 差异类型："content"=内容冲突 | "row_inserted"=行插入 | "formula"=公式列（文本一致，引用值变更触发重算） | "formula_conflict"=公式文本各版本不一致（作为冲突供用户选择公式版本）
+    formula_changed: bool = False       # 公式列：因引用的输入值在冲突选择后变化导致结果需重算（非公式文本变化）
+    formula_source: str = ""           # 公式结果变更的来源文件名（哪个版本改变了引用的输入值）
+    formula_text: str = ""             # 公式列的公式文本（供 inserted 行导出写入公式；matched 行导出跳过保留）
+    comments: Dict[str, Optional[str]] = {}  # M7: 各文件版本的单元格批注文本，key=文件名
+    comment_conflict: bool = False     # M7: 批注是否存在冲突（各版本批注文本不同）
+    author_resolved: bool = False       # D3: 该单元格是否因"同作者多次修改取最后一次值"规则被自动合并（供审计/前端展示，公式列恒为 False）
+    formula_notice: str = ""           # D3/4.1: 公式列各版本公式文本本身不一致时的人工确认提示文案（非公式列恒为空串）
+    formula_resolved: bool = False     # 公式冲突选版本后标记：apply 时据此写回用户选定的公式文本（formula_text），而非跳过保留原公式
+
+
+# 一行数据模型，包含主键和该行所有单元格
+class RowData(BaseModel):
+    key: str = ""                       # 主键值（取自第一列）
+    cells: List[CellData] = []          # 该行所有单元格
+    row_type: str = "matched"           # 行类型："matched"=已匹配 | "inserted"=新增行（基准文件中不存在） | "deleted"=基准有衍生全无（普通删除） | "missing_row"=trunk基准有但衍生全缺（P0漏行，全量覆盖分支场景）
+    id_remapped: bool = False           # 主键是否因多分支编号冲突被重映射（merge 冲突调整编号）
+    original_pk: str = ""               # 重映射前的原编号（仅 id_remapped=True 时有值，用于导出时写批注）
+    restored: bool = False              # missing_row 是否已从 trunk 补回（补回后导出按 matched 处理，保留标记供审计）
+    source_file: str = ""               # R18: inserted 行来源文件名（衍生文件，标注新增来源）
+    source_version: str = ""            # R18: inserted 行来源版本标签（从文件名提取的 _N 数字，无后缀则为空）
+
+
+# 单个Sheet的差异比对结果
+class SheetDiff(BaseModel):
+    name: str                           # Sheet名称
+    headers: List[str] = []             # 表头列表
+    rows: List[RowData] = []            # 比对后的所有行
+    stats: Dict[str, int] = {}          # 统计信息（总行数、冲突数、变更数、新增数、missing_rows漏行数）
+    missing_rows: List[Dict[str, Any]] = []     # M3: 漏行摘要 [{key, pk, sheet}]，供前端快速定位/补回
+    structure_diff: Optional[Dict[str, Any]] = None  # M5: 表头结构差异（列名集合增删/重排），无差异为 None
+    structural_status: str = "common"   # 结构状态：common=三方都有 | source_added | target_added | source_deleted | target_deleted | both_deleted
+    origin: str = ""                    # 增删来源：source | target | both | ""（common）
+    id_resolution: Optional[Dict[str, Any]] = None  # 编号冲突解决报告：{id_mapping, conflicts, pk_conflicts, stats}（compare_sheet 内部已重映射，此处透传供前端展示重编号徽标）
+    ref_integrity: Optional[Dict[str, Any]] = None  # 引用完整性校验：{dangling, remapped_refs, checked}（悬空外键检测）
+    recommendations: List[Dict[str, Any]] = []  # 推荐版本/策略：[{ri, ci, version, reason, strategy}]，前端标 ⭐ 高亮 + 一键采纳
+
+
+# 一个文件分组（同一前缀的多个版本文件）
+class FileGroup(BaseModel):
+    group_name: str                     # 分组名（文件前缀）
+    base_file: str = ""                 # 基准文件名
+    files: List[str] = []               # 该组所有文件名列表
+    sheets: Dict[str, SheetDiff] = {}   # 各Sheet的比对结果
+    missing_sheets: List[Dict[str, Any]] = []  # M6: sheet集合差异 [{sheet, missing_in: [file...]}]，base有衍生无
+    extra_sheets: List[str] = []  # R9.8: 衍生有但 base 无的 sheet（如各分支新增的 DevNote_*），surface 新增 sheet 结构差异
+    structural_status: str = "common"   # 表级结构状态：common | source_added | target_added | source_deleted | target_deleted | both_deleted
+    origin: str = ""                    # 增删来源：source | target | both | ""（common）
+    version_meta: Dict[str, Dict[str, Any]] = {}  # SVN rev 号版本元信息，key=文件名，value={rev, author, date}；demo 模式为空
+    # 跨 sheet 聚合计数（R9：供前端按冲突密度排序/增量渲染，免本地 buildSparseIndex 全扫）：
+    #   conflict_count = sum(sheets[*].stats['conflicts' + 'formula_conflicts' + 'comment_conflicts'])
+    #   changed_count   = sum(sheets[*].stats['changed'])
+    conflict_count: int = 0
+    changed_count: int = 0
+
+
+# 结构增删条目（表/sheet 级，标注来源）
+class StructuralChange(BaseModel):
+    kind: str = "table"                 # "table" | "sheet"
+    table: str = ""                     # 表名（分组前缀）
+    sheet: str = ""                     # sheet 名（kind=sheet 时）
+    status: str = ""                    # source_added | target_added | source_deleted | target_deleted | both_deleted
+    origin: str = ""                    # source | target | both
+    detail: str = ""                    # 人类可读说明
+
+
+# 比对接口的响应模型
+class CompareResponse(BaseModel):
+    groups: Dict[str, FileGroup] = {}   # 所有分组的比对结果，key=分组名
+    session_id: str = ""                # 会话ID，用于merge时取回原文件保留样式
+    conflict_origin: str = ""           # 冲突来源：inter_commit=阶段1提交间 | merge_back=阶段2合回 | 空=旧扁平流程
+    staleness_warning: str = ""         # 阶段2：中间版本产出后 trunk 又被改动时的过期提示（空=无）
+    structural_changes: List[StructuralChange] = []  # 表/sheet 级结构增删（标注来源 source/target）
+
+
+# 合并导出时的单个Sheet数据
+class SheetMergeData(BaseModel):
+    name: str                           # Sheet名称
+    headers: List[str] = []             # 表头
+    rows: List[RowData] = []            # 行数据
+
+
+# 合并导出请求模型
+class MergeRequest(BaseModel):
+    group_name: str                     # 要导出的分组名
+    sheets: List[SheetMergeData] = []   # 前端编辑后的Sheet数据
+    session_id: str = ""                # 会话ID，用于取回原文件保留样式（可选）
+    base_file: str = ""                 # 指定基准文件名（可选，空则自动检测）；merge 文件夹模式下作为克隆来源
+    branch: str = ""                    # 两阶段合并：生产者子目录名（stage1 clone 来源 / stage2 定位中间版本）
+    incremental: bool = False           # 阶段1：增量合入（base=已产出中间版本，仅合并新提交）
+    derived_files: Optional[List[str]] = None  # 阶段1：参与合并的衍生文件（不含 base；None=全部）
+
+
+# 设置基准文件请求模型
+class SetBaseRequest(BaseModel):
+    group_name: str
+    base_file: str
+
+
+# 智能合并请求模型（按 merge_strategies.yaml 自动合并冲突/变更）
+class AutoMergeRequest(BaseModel):
+    group_name: str                     # 分组名（作为 table_stem 查策略）
+    base_file: str                      # 基准文件名
+    files: List[str] = []               # 该组所有文件名
+    sheets: List[SheetMergeData] = []   # 待合并的 Sheet 数据（cells 需带 versions）
+    conflict_mode: str = "split"        # 多分支同主键新增行处理："split"=拆分重映射 | "conflict"=视为同一行冲突待人工

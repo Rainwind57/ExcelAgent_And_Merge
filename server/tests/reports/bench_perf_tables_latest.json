@@ -1,0 +1,76 @@
+{
+  "per_key": {
+    "pet_10k": {
+      "table": "pet",
+      "tier": "10k",
+      "rows": "10k",
+      "n_ops": 2,
+      "success_rate": 1.0,
+      "accuracy": 0.5,
+      "elapsed_ms_avg": 181770.5,
+      "elapsed_ms_p50": 181770.5,
+      "elapsed_ms_p95": 317280.3,
+      "llm_calls_total": 0,
+      "llm_tokens_total": 0
+    }
+  },
+  "overall": {
+    "n_ops": 2,
+    "success_rate": 1.0,
+    "accuracy": 0.5,
+    "elapsed_ms_avg": 181770.5,
+    "elapsed_ms_p50": 181770.5,
+    "elapsed_ms_p95": 317280.3,
+    "llm_calls_total": 0,
+    "llm_tokens_total": 0
+  },
+  "init_ms": 14809.5,
+  "config": {
+    "tables": [
+      "pet"
+    ],
+    "tiers": [
+      "10k"
+    ],
+    "ops": [
+      "get",
+      "set"
+    ],
+    "repeat": 1,
+    "table_hint": true
+  },
+  "results": [
+    {
+      "table": "pet",
+      "tier": "10k",
+      "op": "get",
+      "desc": "查询 id=100005 的 物攻资质",
+      "message": "查询perf_pet_10k表灵兽id为100005的物攻资质",
+      "ok": true,
+      "intent": "get",
+      "elapsed_ms": 31204.1,
+      "llm_calls": 0,
+      "llm_tokens": 0,
+      "by_site": {},
+      "accuracy": true,
+      "error": "",
+      "resp_msg": "[预览] 查询成功。\n\n- **目标**：perf_pet_10k 表，灵兽 ID 100005（Pet 行 7）\n- **结果**：物攻资质 = 1428\n- **失败项**：无\n- **建议**：无需后续处理，如需校验可核对原始配表确认数值来源。"
+    },
+    {
+      "table": "pet",
+      "tier": "10k",
+      "op": "set",
+      "desc": "修改 id=100005 的 物攻资质 → 9999",
+      "message": "把perf_pet_10k表灵兽id为100005的物攻资质改为9999",
+      "ok": true,
+      "intent": "set",
+      "elapsed_ms": 332336.9,
+      "llm_calls": 0,
+      "llm_tokens": 0,
+      "by_site": {},
+      "accuracy": false,
+      "error": "",
+      "resp_msg": "[预览] 配置已成功更新。\n\n- 目标表：perf_pet_10k（Pet sheet）\n- 操作：将灵兽id=100005 的**物攻资质**改为 **9999**\n- 状态：全部成功，无失败项\n\n无异常，无需后续处理。"
+    }
+  ]
+}

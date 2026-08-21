@@ -1,0 +1,314 @@
+{
+  "relations": [
+    {
+      "from_path": "pet/pet_evolve.xlsx",
+      "from_sheet": "PetEvolveData",
+      "from_column": "宠物id",
+      "to_path": "pet/pet.xlsx",
+      "to_sheet": "Pet",
+      "to_column": "灵兽id",
+      "relation_type": "foreign_key",
+      "description": "灵兽进化表通过宠物id关联灵兽主表"
+    },
+    {
+      "from_path": "pet/pet_evolve.xlsx",
+      "from_sheet": "PetEvolveData",
+      "from_column": "进化后的灵兽ID",
+      "to_path": "pet/pet.xlsx",
+      "to_sheet": "Pet",
+      "to_column": "灵兽id",
+      "relation_type": "foreign_key",
+      "description": "进化结果指向灵兽主表"
+    },
+    {
+      "from_path": "entity_prefab/entity_prefab.xlsx",
+      "from_sheet": "Base",
+      "from_column": "交互id",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "Interaction",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "NPC prefab 通过交互id关联 Interaction 链接表（点击触发交互效果）"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "Interaction",
+      "from_column": "effect.data.3006.conv_id",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "InteractionConv",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "Interaction 对话效果(effect.key=3006)引用 InteractionConv 对话内容主键"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "InteractionConv",
+      "from_column": "选项N",
+      "to_path": "interaction/interaction.xlsx",
+      "to_sheet": "InteractionConvOption",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "对话内容引用多个 InteractionConvOption 选项行"
+    },
+    {
+      "from_path": "spawn_world_entity/spawn_world_entity.xlsx",
+      "from_sheet": "SpawnWorldEntity",
+      "from_column": "实体Prefab ID",
+      "to_path": "entity_prefab/entity_prefab.xlsx",
+      "to_sheet": "Base",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "场景刷新实体通过实体Prefab ID引用 entity_prefab 主表"
+    },
+    {
+      "from_path": "item/item.xlsx",
+      "from_sheet": "Equipment",
+      "from_column": "物品编号",
+      "to_path": "item/item.xlsx",
+      "to_sheet": "ItemBase",
+      "to_column": "物品编号",
+      "relation_type": "foreign_key",
+      "description": "装备子表通过物品编号引用 ItemBase 主表（跨 sheet 主从）"
+    },
+    {
+      "from_path": "item/item.xlsx",
+      "from_sheet": "Potion",
+      "from_column": "物品编号",
+      "to_path": "item/item.xlsx",
+      "to_sheet": "ItemBase",
+      "to_column": "物品编号",
+      "relation_type": "foreign_key",
+      "description": "药品子表通过物品编号引用 ItemBase 主表（跨 sheet 主从）"
+    },
+    {
+      "from_path": "item/item.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "物品编号",
+      "to_path": "item/item.xlsx",
+      "to_sheet": "ItemBase",
+      "to_column": "物品编号",
+      "relation_type": "foreign_key",
+      "description": "法宝子表通过物品编号引用 ItemBase 主表（跨 sheet 主从）"
+    },
+    {
+      "from_path": "mail/mail.xlsx",
+      "from_sheet": "GlobalMail",
+      "from_column": "模板ID",
+      "to_path": "mail/mail.xlsx",
+      "to_sheet": "MailTemplate",
+      "to_column": "模板ID",
+      "relation_type": "foreign_key",
+      "description": "全服邮件通过模板ID引用 MailTemplate 模板主表"
+    },
+    {
+      "from_path": "quest/spawn_quest_entity.xlsx",
+      "from_sheet": "SpawnQuestEntity",
+      "from_column": "quest_id",
+      "to_path": "quest/quest.xlsx",
+      "to_sheet": "Quest",
+      "to_column": "quest_id",
+      "relation_type": "foreign_key",
+      "description": "任务刷怪表通过 quest_id 引用 Quest 主表"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "Fabao",
+      "to_column": "法宝id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.法宝id"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "FabaoLevel",
+      "to_column": "技能id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.技能id"
+    },
+    {
+      "from_path": "bilingual_sample/bilingual_sample.xlsx",
+      "from_sheet": "Fabao",
+      "from_column": "fabao_id",
+      "to_path": "fabao/fabao.xlsx",
+      "to_sheet": "FabaoType",
+      "to_column": "分组ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：bilingual_sample.fabao_id → fabao.分组ID"
+    },
+    {
+      "from_path": "interaction/interaction.xlsx",
+      "from_sheet": "Interaction",
+      "from_column": "3002",
+      "to_path": "reward/reward.xlsx",
+      "to_sheet": "Reward",
+      "to_column": "reward_id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：interaction.3002 → reward.reward_id"
+    },
+    {
+      "from_path": "item/item.xlsx",
+      "from_sheet": "Chest",
+      "from_column": "reward ID",
+      "to_path": "reward/reward.xlsx",
+      "to_sheet": "Reward",
+      "to_column": "reward_id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：item.reward ID → reward.reward_id"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "Space编号",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.Space编号"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "大陆id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.大陆id"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "客户端GameMode实例ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.客户端GameMode实例ID"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "space_data",
+      "to_column": "场景BGM事件ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.场景BGM事件ID"
+    },
+    {
+      "from_path": "combat/combat.xlsx",
+      "from_sheet": "combat_data",
+      "from_column": "space编号",
+      "to_path": "space/space.xlsx",
+      "to_sheet": "cgm_free",
+      "to_column": "GameMode实例ID",
+      "relation_type": "foreign_key",
+      "description": "自动发现：combat.space编号 → space.GameMode实例ID"
+    },
+    {
+      "from_path": "_test_item/_test_item.xlsx",
+      "from_sheet": "Chest",
+      "from_column": "reward ID",
+      "to_path": "reward/reward.xlsx",
+      "to_sheet": "Reward",
+      "to_column": "reward_id",
+      "relation_type": "foreign_key",
+      "description": "自动发现：_test_item.reward ID → reward.reward_id"
+    },
+    {
+      "from_path": "residence/residence_building.xlsx",
+      "from_sheet": "ResidenceBuilding",
+      "from_column": "建筑类型",
+      "to_path": "residence/residence_building.xlsx",
+      "to_sheet": "BuildingType",
+      "to_column": "建筑类型编号",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：建筑实例通过 building_type 引用 BuildingType 主表（跨 sheet 主从）"
+    },
+    {
+      "from_path": "residence/residence_building.xlsx",
+      "from_sheet": "BuildingInteract",
+      "from_column": "建筑类型编号",
+      "to_path": "residence/residence_building.xlsx",
+      "to_sheet": "BuildingType",
+      "to_column": "建筑类型编号",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：建筑交互动画通过 building_type 引用 BuildingType（同表多行 idle/collect 都挂同一 type）"
+    },
+    {
+      "from_path": "residence/residence_building.xlsx",
+      "from_sheet": "ResidenceBuilding",
+      "from_column": "建筑model_id",
+      "to_path": "model_prefab/model_prefab.xlsx",
+      "to_sheet": "ModelPrefab",
+      "to_column": "model_id",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：建筑实例 model_id 引用 model_prefab 主表"
+    },
+    {
+      "from_path": "residence/residence_building.xlsx",
+      "from_sheet": "ResidenceBuilding",
+      "from_column": "建筑图纸道具id",
+      "to_path": "item/item.xlsx",
+      "to_sheet": "ItemBase",
+      "to_column": "物品编号",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：建筑图纸 blueprint_item_id 引用 ItemBase 主表"
+    },
+    {
+      "from_path": "residence/residence_entry.xlsx",
+      "from_sheet": "District",
+      "from_column": "州id",
+      "to_path": "residence/residence_entry.xlsx",
+      "to_sheet": "State",
+      "to_column": "州id",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：片区 state_id 引用 State 主表"
+    },
+    {
+      "from_path": "residence/residence_entry.xlsx",
+      "from_sheet": "ResidenceEntry",
+      "from_column": "片区id",
+      "to_path": "residence/residence_entry.xlsx",
+      "to_sheet": "District",
+      "to_column": "片区id",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：洞府入口 district_id 引用 District 片区表"
+    },
+    {
+      "from_path": "residence/residence_entry.xlsx",
+      "from_sheet": "ResidenceEntry",
+      "from_column": "洞府id",
+      "to_path": "residence/residence.xlsx",
+      "to_sheet": "Residence",
+      "to_column": "洞府id",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：洞府入口 residence_id 引用 Residence 洞府主表"
+    },
+    {
+      "from_path": "residence/residence_entry.xlsx",
+      "from_sheet": "ResidenceEntry",
+      "from_column": "候选入口prefab_id",
+      "to_path": "entity_prefab/entity_prefab.xlsx",
+      "to_sheet": "Base",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：洞府入口候选 prefab 引用 entity_prefab 主表"
+    },
+    {
+      "from_path": "residence/residence_entry.xlsx",
+      "from_sheet": "ResidenceEntry",
+      "from_column": "正式入口prefab_id",
+      "to_path": "entity_prefab/entity_prefab.xlsx",
+      "to_sheet": "Base",
+      "to_column": "编号",
+      "relation_type": "foreign_key",
+      "description": "G1 补建：洞府入口正式 prefab 引用 entity_prefab 主表"
+    }
+  ]
+}

@@ -1,0 +1,236 @@
+"""merge 导出公式缓存接入测试（M2，merge-issues-checklist）。
+
+验收：
+- 前缀分组公式表（match_stat 系列）merge 导出 → 产物公式缓存值与重算一致；
+- 非公式表导出不触发重算（fast-path，性能不退化）；
+- 导出产物文件名共享公用前缀（按文件名前缀判同源分组）。
+"""
+import os
+import sys
+import shutil
+import tempfile
+import openpyxl
+from pathlib import Path
+
+# 确保 server/ 在 sys.path（使 config / routers / agent 可导入）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.excel.formula_cache_validator import (
+    FormulaCacheValidator, _has_formulas, snapshot_formulas,
+)
+from engine.parser import extract_prefix, read_excel, read_formulas
+from engine.compare import compare_sheet
+from routers.diff import _export_from_merge_folder, _save_with_formula_cache
+from engine.models import MergeRequest, SheetMergeData, RowData, CellData
+import routers.diff as diff
+
+ROOT = Path(__file__).resolve().parents[2]
+FS = ROOT / "resources/qa_test/formula_merge_samples"
+ITEM = ROOT / "resources/item/item.xlsx"
+
+
+def _setup_merge_dir(prefix_files):
+    """把样本前缀分组复制到临时 merge 目录；仅对基准文件 libreoffice 预重算建缓存。"""
+    tmp = Path(tempfile.mkdtemp(prefix="merge_formula_test_"))
+    v = FormulaCacheValidator()
+    for src in prefix_files:
+        shutil.copy2(src, tmp / src.name)
+    # 基准文件预重算建缓存（模拟原始 match_dan.xlsx 缓存全在的状态）
+    base = tmp / "match_stat.xlsx"
+    if v.libreoffice_available:
+        v._runner.recalculate(base)
+    return tmp
+
+
+def test_m2_formula_merge_export_cache_restored():
+    """前缀分组公式表 merge 导出 → 产物公式缓存与重算一致，文件名共享公用前缀。"""
+    print("\n=== M2.1 前缀分组公式表 merge 导出缓存恢复 ===")
+    files = [FS / "match_stat.xlsx", FS / "match_stat_1.xlsx", FS / "match_stat_2.xlsx"]
+    tmp_merge = _setup_merge_dir(files)
+    orig_merge_dir = diff.MERGE_DIR
+    orig_samples_dir = diff.MERGE_SAMPLES_DIR
+    orig_legacy_dir = diff.MERGE_LEGACY_DIR
+    # 隔离导出落盘 + 命名扫描到 tmp_merge（含 match_stat_1/2 → 下一版本 match_stat_3），
+    # 避免污染真实 merge/legacy/ 目录导致跨运行自增版本号。
+    diff.MERGE_DIR = tmp_merge
+    diff.MERGE_SAMPLES_DIR = tmp_merge
+    diff.MERGE_LEGACY_DIR = tmp_merge
+    try:
+        base = "match_stat.xlsx"
+        assert _has_formulas(tmp_merge / base), "基准表应含公式"
+        before = snapshot_formulas(tmp_merge / base)
+        print(f"  基准公式数: {len(before)}, 有缓存: {sum(1 for v in before.values() if v is not None)}")
+
+        # merge 结果：season1 c1 改为 99（v1 内容变更）+ 新增 season6（v2 行插入）
+        req = MergeRequest(
+            group_name="match_stat",
+            session_id=diff.MERGE_FOLDER_SESSION,
+            base_file=base,
+            sheets=[SheetMergeData(
+                name="SeasonStat",
+                headers=["赛季编号", "场次1", "场次2", "场次3", "场次4", "总场次", "平均场次", "最高单场"],
+                rows=[
+                    RowData(key="1", row_type="matched", cells=[
+                        CellData(col=1, col_letter="B", value=99, versions={base: 10}),
+                    ]),
+                    RowData(key="6", row_type="inserted", cells=[
+                        CellData(col=0, col_letter="A", value=6),
+                        CellData(col=1, col_letter="B", value=60),
+                        CellData(col=2, col_letter="C", value=65),
+                        CellData(col=3, col_letter="D", value=63),
+                        CellData(col=4, col_letter="E", value=68),
+                    ]),
+                ],
+            )],
+        )
+        resp = _export_from_merge_folder(req)
+        export_path = Path(resp.headers["X-Export-Path"])
+        export_name = resp.headers["X-Export-Name"]
+        needs_fix = resp.headers.get("X-Formula-Cache-Needs-Fix", "0")
+        print(f"  导出: {export_name}  needs_fix={needs_fix}")
+        print(f"  cache_message: {resp.headers.get('X-Formula-Cache-Message', '')}")
+
+        # 文件名共享公用前缀（按前缀判同源）
+        assert extract_prefix(export_name) == "match_stat", "导出文件名应共享公用前缀 match_stat"
+        assert export_name == "match_stat_3.xlsx", f"应为下一版本 match_stat_3.xlsx，实际 {export_name}"
+
+        # 公式缓存校验（libreoffice 可用时）
+        v = FormulaCacheValidator()
+        if not v.libreoffice_available:
+            print("  [SKIP] libreoffice 不可用，跳过缓存恢复断言（导出+前缀分组已验证）")
+            print("  PASS（降级）")
+            return
+        assert needs_fix == "0", "公式缓存应恢复，不需人工修复"
+        assert _has_formulas(export_path), "导出产物应仍含公式"
+        after = snapshot_formulas(export_path)
+        restored = sum(1 for val in after.values() if val is not None)
+        print(f"  导出公式数: {len(after)}, 有缓存: {restored}")
+        assert restored == len(after), f"所有公式应有缓存值，{restored}/{len(after)}"
+        print("  PASS")
+    finally:
+        diff.MERGE_DIR = orig_merge_dir
+        diff.MERGE_SAMPLES_DIR = orig_samples_dir
+        diff.MERGE_LEGACY_DIR = orig_legacy_dir
+        shutil.rmtree(tmp_merge, ignore_errors=True)
+
+
+def test_m2_nonformula_fastpath():
+    """非公式表 merge 导出 → fast-path 跳过重算，性能不退化。"""
+    print("\n=== M2.2 非公式表 fast-path ===")
+    src_dir = Path(tempfile.mkdtemp(prefix="nf_src_"))
+    src = src_dir / "item.xlsx"
+    shutil.copy2(ITEM, src)
+    assert not _has_formulas(src), "item.xlsx 应无公式"
+    wb = openpyxl.load_workbook(src, data_only=False)
+    ws = wb["ItemBase"]
+    ws.cell(row=2, column=1, value=999999)
+    dest = src_dir / "item_1.xlsx"
+    info = _save_with_formula_cache(wb, src, dest)
+    print(f"  needs_manual_fix={info['needs_manual_fix']}  msg='{info['cache_message']}'")
+    assert not info["needs_manual_fix"], "非公式表不应触发人工修复"
+    assert "fast-path" in info["cache_message"], "应有 fast-path 标记"
+    shutil.rmtree(src_dir, ignore_errors=True)
+    print("  PASS")
+
+
+def test_m3_formula_column_not_overwritten():
+    """公式列各版本公式文本一致 → 标 formula 不采纳 → 导出保留公式重算（M8 修复）。
+
+    回归：diff 读 data_only 缓存值会把公式列误判 changed，前端 adoptChangedValues
+    采纳成缓存值 → 导出覆写公式为纯值。修复后 compare 识别公式列标 formula，导出保留公式。
+    """
+    print("\n=== M3 公式列不被覆写（diff 层根治）===")
+    base = "match_stat.xlsx"
+    files = [FS / base, FS / "match_stat_1.xlsx"]
+    tmp_merge = Path(tempfile.mkdtemp(prefix="merge_formula_m3_"))
+    orig_merge_dir = diff.MERGE_DIR
+    orig_samples_dir = diff.MERGE_SAMPLES_DIR
+    orig_legacy_dir = diff.MERGE_LEGACY_DIR
+    diff.MERGE_DIR = tmp_merge
+    diff.MERGE_SAMPLES_DIR = tmp_merge
+    diff.MERGE_LEGACY_DIR = tmp_merge
+    try:
+        for src in files:
+            shutil.copy2(src, tmp_merge / src.name)
+        v = FormulaCacheValidator()
+        if v.libreoffice_available:
+            v._runner.recalculate(tmp_merge / base)
+
+        fs = {base: read_excel(tmp_merge / base),
+              "match_stat_1.xlsx": read_excel(tmp_merge / "match_stat_1.xlsx")}
+        fml = {base: read_formulas(tmp_merge / base),
+               "match_stat_1.xlsx": read_formulas(tmp_merge / "match_stat_1.xlsx")}
+        r = compare_sheet(fs, base, "SeasonStat", fml)
+        row = [x for x in r['rows'] if x['key'] == '1'][0]
+        by_col = {c['col']: c for c in row['cells']}
+        # 输入列 B(1) 真改 → changed；公式列 F/G/H(5/6/7) → formula 不采纳
+        print(f"  B(场次1): changed={by_col[1]['changed']} diff_type={by_col[1]['diff_type']!r}")
+        print(f"  F(总场次): changed={by_col[5]['changed']} diff_type={by_col[5]['diff_type']!r}")
+        assert by_col[1]['changed'] is True, "输入列 B 应 changed"
+        assert by_col[5]['diff_type'] == 'formula', "公式列 F 应标 formula"
+        assert by_col[6]['diff_type'] == 'formula' and by_col[7]['diff_type'] == 'formula'
+        assert by_col[5]['changed'] is False, "公式列 F 不应 changed"
+        assert r['stats']['formula'] == 15, f"应识别 15 个公式单元格，实际 {r['stats']['formula']}"
+
+        # 公式列预览重算值（后端 _eval_row_formula 用各版本输入值算，不依赖 libreoffice）：
+        # F3=SUM(B3:E3)=99+15+13+18=145, G3=AVERAGE=36.25, H3=MAX=99
+        assert by_col[5]['value'] == 145, f"F3 预览应为 145，实际 {by_col[5]['value']}"
+        assert by_col[6]['value'] == 36.25, f"G3 预览应为 36.25，实际 {by_col[6]['value']}"
+        assert by_col[7]['value'] == 99, f"H3 预览应为 99，实际 {by_col[7]['value']}"
+        assert by_col[5]['formula_changed'] is True, "F3 应 formula_changed=True"
+        assert by_col[5]['formula_source'] == 'match_stat_1.xlsx', f"F3 source 应 match_stat_1.xlsx，实际 {by_col[5]['formula_source']!r}"
+        assert r['stats']['formula_changed'] == 3, f"应 3 个公式单元格结果改变（season1 F/G/H），实际 {r['stats']['formula_changed']}"
+
+        # 模拟前端 adoptChangedValues（只采纳 changed）后导出
+        rows = []
+        for rr in r['rows']:
+            cells = []
+            for c in rr['cells']:
+                val = c['value']
+                if c['changed'] and not c['conflict']:
+                    base_str = str(c['versions'].get(base))
+                    for fn, vv in c['versions'].items():
+                        if fn == base:
+                            continue
+                        if str(vv) != base_str:
+                            val = vv
+                            break
+                cells.append(CellData(col=c['col'], col_letter=c['col_letter'], value=val, versions=c['versions'], diff_type=c['diff_type']))
+            rows.append(RowData(key=rr['key'], row_type=rr['row_type'], cells=cells))
+        req = MergeRequest(group_name="match_stat", session_id=diff.MERGE_FOLDER_SESSION,
+                           base_file=base,
+                           sheets=[SheetMergeData(name="SeasonStat", headers=r['headers'], rows=rows)])
+        resp = _export_from_merge_folder(req)
+        out = Path(resp.headers["X-Export-Path"])
+        print(f"  导出 {resp.headers['X-Export-Name']} needs_fix={resp.headers.get('X-Formula-Cache-Needs-Fix')}")
+
+        ws_f = openpyxl.load_workbook(out, data_only=False)["SeasonStat"]
+        # 公式文本保留（不依赖 libreoffice）：F3/G3/H3 仍是 =SUM/=AVERAGE/=MAX
+        for col in ("F", "G", "H"):
+            txt = ws_f[f"{col}3"].value
+            assert isinstance(txt, str) and txt.startswith("="), f"{col}3 应保留公式，实际 {txt!r}"
+        # 缓存重算值依赖 libreoffice；不可用时降级跳过（公式文本保留已验证）
+        v = FormulaCacheValidator()
+        if not v.libreoffice_available:
+            print("  [SKIP] libreoffice 不可用，跳过缓存重算值断言（公式文本保留 + 预览值已验证）")
+            print("  PASS（降级）")
+            return
+        ws_v = openpyxl.load_workbook(out, data_only=True)["SeasonStat"]
+        # B3 采纳新值 99（输入列写入）；F3/G3/H3 保留公式且重算
+        assert ws_v["B3"].value == 99, f"B3 应为 99，实际 {ws_v['B3'].value}"
+        for col, expect in [("F", 145), ("G", 36.25), ("H", 99)]:
+            assert ws_v[f"{col}3"].value == expect, f"{col}3 缓存应为 {expect}，实际 {ws_v[f'{col}3'].value}"
+            print(f"  {col}3: 公式 {ws_f[f'{col}3'].value} → 缓存 {ws_v[f'{col}3'].value}")
+        print("  PASS")
+    finally:
+        diff.MERGE_DIR = orig_merge_dir
+        diff.MERGE_SAMPLES_DIR = orig_samples_dir
+        diff.MERGE_LEGACY_DIR = orig_legacy_dir
+        shutil.rmtree(tmp_merge, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    test_m2_formula_merge_export_cache_restored()
+    test_m2_nonformula_fastpath()
+    test_m3_formula_column_not_overwritten()
+    print("\n=== merge 公式缓存接入测试完成 ===")

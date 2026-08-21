@@ -1,0 +1,33 @@
+# 自然语言解析器配置
+# agent.py / nl_parser.py 从本文件加载，不硬编码。
+
+# 前导动词：在提取业务值之前剥离的介词
+lead_verbs: [给, 将, 把, 为, 让, 使, 对]
+
+# 非业务 sheet 标记：包含任一字符串的 sheet 跳过
+non_business_markers: [说明, Sheet1, 程序用勿删, 程序用, 勿删, 备注, CONFIG]
+
+# 可识别的自然语言表名关键词（agent 额外快速提取用）
+# 注：表定位主流程由 TableResolver 基于 _table_index.json 自动匹配，此处仅作辅助。
+
+# 管道模式判定关键词（pipeline.should_trigger_pipeline 用）
+# 文件路径检测另行正则，此处仅多表/流程强信号词
+pipeline_keywords: [跨表, 多张表, 多表, 流程, 并行, 剧本]
+
+# 短句确认意图词表（agent_service.chat 文字确认分支用）
+# 命中即作 yes/no 快路径；未命中且 CODEMAKER_CONFIRM_LLM=1 时交 LLM 裁决
+confirm_affirm: [无误, 确认, 确定, 是的, 是, 好的, 好, 继续, 执行, 没问题, 可以, ok, yes, y, 嗯, 对, 删除]
+confirm_deny: [取消, 不要, 不删, 否, 不, 停止, no, n, cancel]
+
+# 跨表模式判定词表（cross_table_splitter.detect_cross_table_action 用）
+# 词表成员以 | join 拼 regex；组合判定（evolve/combat_reward/residence 等）保留代码逻辑
+# 加载失败回退默认（同原硬编码值），保证零回归
+cross_table:
+  add_prefix: [新增, 增加, 添加, 加一个, 加一件, 加一条, 加一颗, 加一本, 加一件新]
+  entity_types: [NPC, 商人, 守卫, 传送员, 传送使者, 导师, 教习, 任务NPC, 对话NPC]
+  pet_types: [灵兽, 宠物, 召唤兽]
+  item_types: [武器, 药品, 法宝, 装备, 道具, 防具, 饰品]
+  mail_types: [邮件, 邮件模板]
+  quest_types: [支线, 主线, 日常, 环式]
+  school_types: [神通, 门派神通]
+  quantity: [把, 个, 件, 颗, 本, 条, 支, 张]

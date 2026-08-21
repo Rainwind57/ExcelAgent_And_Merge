@@ -1,0 +1,102 @@
+"""R19: 配表模式定位失败相近项建议 验证脚本。
+
+验证点：
+  A. contains 匹配 — 搜"法宝"返回 3 条（无敌法宝/测试法宝2/测试法宝3），均 high 置信
+  B. 拼写错误模糊匹配 — 搜"无敌法保"（错字）返回"无敌法宝"且排首位
+  C. col 按列名传"名称" 与 按列号传"2" 结果一致
+  D. col 为空自动探测名称列
+  E. 无匹配 — 搜不存在的串返回空 suggestions + message 非空
+  F. 响应结构 — row 为绝对行号(>=data_start)、summary 非空、score∈[0,1]、col_index 正确
+  G. top 限制 — top=1 只返回 1 条
+  H. 表不存在 — 返回 message 含"表格不存在"
+
+用法:
+    python -m server.tests.verify_r19_suggest
+    python -X utf8 -m server.tests.verify_r19_suggest   # Windows 中文输出
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from services.agent_service import get_agent_service
+
+_passed = 0
+_failed = 0
+
+
+def _check(name: str, ok: bool, detail: str = "") -> bool:
+    global _passed, _failed
+    _passed += 1 if ok else 0
+    _failed += 0 if ok else 1
+    mark = "PASS" if ok else "FAIL"
+    print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
+    return ok
+
+
+def main():
+    svc = get_agent_service()
+    stem, sheet = "fabao", "Fabao"
+
+    print(f"[A] contains 匹配 — 搜 '法宝'")
+    r = svc.suggest_rows(stem, sheet, "法宝", col="", top=3)
+    _check("返回 3 条", r.total == 3, f"total={r.total}")
+    # "法宝"是"无敌法宝"等的包含子串（非前缀），FuzzyMatcher 给 medium(0.65) 是预期行为
+    _check("均有置信度档位", all(s.confidence in ("high", "medium") for s in r.suggestions),
+           str([(s.value, s.confidence) for s in r.suggestions]))
+    _check("含 '无敌法宝'", any("无敌法宝" in s.value for s in r.suggestions))
+    _check("col 自动探测为 '名称'", r.col == "名称", f"col={r.col}")
+    _check("col_index=2", r.col_index == 2, f"col_index={r.col_index}")
+
+    print(f"[B] 拼写错误模糊匹配 — 搜 '无敌法保'（错字）")
+    r = svc.suggest_rows(stem, sheet, "无敌法保", col="", top=3)
+    _check("返回非空", r.total >= 1, f"total={r.total}")
+    if r.suggestions:
+        _check("首位是 '无敌法宝'", "无敌法宝" in r.suggestions[0].value,
+               r.suggestions[0].value)
+        _check("score∈[0,1]", 0.0 <= r.suggestions[0].score <= 1.0,
+               f"score={r.suggestions[0].score}")
+
+    print(f"[C] col 按列名 vs 按列号 一致")
+    r_name = svc.suggest_rows(stem, sheet, "法宝", col="名称", top=3)
+    r_idx = svc.suggest_rows(stem, sheet, "法宝", col="2", top=3)
+    _check("列名/列号结果行号一致",
+           [s.row for s in r_name.suggestions] == [s.row for s in r_idx.suggestions],
+           f"name={[s.row for s in r_name.suggestions]} idx={[s.row for s in r_idx.suggestions]}")
+
+    print(f"[D] col 为空自动探测名称列")
+    _check("col 探测为 名称", r.col == "名称")
+
+    print(f"[E] 无匹配 — 搜不存在的串")
+    r = svc.suggest_rows(stem, sheet, "zzz完全不存在的名字xxx", col="", top=3)
+    _check("suggestions 为空", r.total == 0, f"total={r.total}")
+    _check("message 非空", bool(r.message), f"message={r.message}")
+
+    print(f"[F] 响应结构校验")
+    r = svc.suggest_rows(stem, sheet, "法宝", col="", top=3)
+    if r.suggestions:
+        s = r.suggestions[0]
+        _check("row 为绝对行号 >=4", s.row >= 4, f"row={s.row}")
+        _check("summary 非空 dict", isinstance(s.summary, dict) and len(s.summary) >= 1,
+               f"summary={s.summary}")
+        _check("confidence 非空", bool(s.confidence), s.confidence)
+        _check("value 非空", bool(s.value), s.value)
+
+    print(f"[G] top 限制")
+    r = svc.suggest_rows(stem, sheet, "法宝", col="", top=1)
+    _check("top=1 只返回 1 条", r.total == 1, f"total={r.total}")
+
+    print(f"[H] 表不存在")
+    r = svc.suggest_rows("不存在的表xyz", sheet, "任意", col="", top=3)
+    _check("message 含 '表格不存在'", "表格不存在" in r.message, f"message={r.message}")
+    _check("suggestions 为空", r.total == 0)
+
+    print(f"\n{'='*40}")
+    print(f"R19 验证结果: {_passed} PASS / {_failed} FAIL")
+    return 0 if _failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

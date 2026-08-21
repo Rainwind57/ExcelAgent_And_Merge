@@ -1,0 +1,11 @@
+# 自然语言解析器配置
+# agent.py / nl_parser.py 从本文件加载，不硬编码。
+
+# 前导动词：在提取业务值之前剥离的介词
+lead_verbs: [给, 将, 把, 为, 让, 使, 对]
+
+# 非业务 sheet 标记：包含任一字符串的 sheet 跳过
+non_business_markers: [说明, Sheet1, 程序用勿删, 程序用, 勿删, 备注, CONFIG]
+
+# 可识别的自然语言表名关键词（agent 额外快速提取用）
+# 注：表定位主流程由 TableResolver 基于 _table_index.json 自动匹配，此处仅作辅助。

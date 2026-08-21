@@ -1,0 +1,810 @@
+[
+  {
+    "input": "新增一个道具商人叫'云游商人'，model_id 1021，放在space_id 10001坐标(30,0,40)，玩家点击后弹出对话'欢迎光临，要不要看看我的货物？'，选项'好的，看看'和'下次再来'，点击'好的看看'后获得reward_id 10066的奖励包",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1021,
+          "entity_name": "云游商人",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "欢迎光临，要不要看看我的货物？",
+          "options[0]": "<option_1_id>",
+          "options[1]": "<option_2_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_1_id",
+        "row_content": {
+          "option_id": "<option_1_id>",
+          "option_text": "好的，看看",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_reward_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_reward_conv_id",
+        "row_content": {
+          "conv_id": "<new_reward_conv_id>",
+          "prompt_text": "云游商人递给你一份见面礼，请收好。",
+          "options[0]": "<option_3_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_3_id",
+        "row_content": {
+          "option_id": "<option_3_id>",
+          "option_text": "多谢",
+          "option_function.function_type": 1,
+          "option_function.data.1.reward_id": 10066
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_2_id",
+        "row_content": {
+          "option_id": "<option_2_id>",
+          "option_text": "下次再来",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10001,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "云游商人",
+          "entity_num_max": 1,
+          "pos_list": [[30, 0, 40]]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个擂台NPC叫'剑修挑战者'，model_id 1012，放在space_id 10008坐标(45,0,55)，玩家点击后进入战斗combat_id 102",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1012,
+          "entity_name": "剑修挑战者",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3001,
+          "effect.data.3001.combat_id": 102
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "剑修挑战者",
+          "entity_num_max": 1,
+          "pos_list": [[45, 0, 55]]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个传送NPC叫'回城传送阵'，model_id 1016，放在space_id 10008坐标(10,0,10)，玩家点击后传送到space_id 10001的坐标(100,0,200)，朝向0度",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1016,
+          "entity_name": "回城传送阵",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3005,
+          "effect.data.3005.to_space_id": 10001,
+          "effect.data.3005.to_pos": [100, 0, 200],
+          "effect.data.3005.to_dir": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "回城传送阵",
+          "entity_num_max": 1,
+          "pos_list": [[10, 0, 10]]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个奖励NPC叫'签到使者'，model_id 1018，放在space_id 10008坐标(80,0,80)，玩家点击后获得reward_id 10030的奖励，同时修改reward_id 10030名称为'每日签到奖励'",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1018,
+          "entity_name": "签到使者",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3002,
+          "effect.data.3002.reward_id": 10030
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "签到使者",
+          "entity_num_max": 1,
+          "pos_list": [[80, 0, 80]]
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "modify",
+        "row_key": {"id": 10030},
+        "row_content": {"name": "每日签到奖励"}
+      }
+    ]
+  },
+  {
+    "input": "新增一把武器叫'七星剑'，品质2，图标'Icon_weapon_qixingjian'，装备部位1，装备类型1，可用门派1、2、3，基础物攻WorldAttackCon范围80-100，随机词条池1003，分解获得item_id 10020数量1，基础评分150",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_item_id",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "name": "七星剑",
+          "quality": 2,
+          "item_type": 5,
+          "icon": "Icon_weapon_qixingjian",
+          "max_stack": 1,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Equipment",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "equip_slot": 1,
+          "equip_type": 1,
+          "equip_sch_list": [1, 2, 3],
+          "equip_base_attrs[0]": ["WorldAttackCon", 80, 100],
+          "rand_ga_pool": 1003,
+          "salvage_item_id": 10020,
+          "salvage_item_num": 1,
+          "base_score": 150
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个药品叫'聚气丹'，品质1，图标'Icon_potion_juqid'，最大堆叠99，可丢弃，使用效果id为10002，回复真元MPMaxCon 500点，效果描述'回复500真元'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_item_id",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "name": "聚气丹",
+          "quality": 1,
+          "item_type": 3,
+          "icon": "Icon_potion_juqid",
+          "max_stack": 99,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Potion",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "desc": "回复500真元",
+          "usage_effect.id": 10002,
+          "usage_effect.args.MPMaxCon": 500
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个法宝叫'玄阳镜'，品质3，图标'Icon_fabao_xuanyang'，法宝类型3，法宝技能编号4002，附加属性池200002，阴阳权重0.6，阳属性描述'法宝状态下，对敌方火系目标造成20%额外伤害'，阴属性描述'法宝状态下，受到火系攻击减免20%伤害'",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_item_id",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "name": "玄阳镜",
+          "quality": 3,
+          "item_type": 6,
+          "icon": "Icon_fabao_xuanyang"
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "fabao_type": 3,
+          "fabao_spell_id": 4002,
+          "attr_mod_id": 200002,
+          "yinyang_rate": 0.6,
+          "yang_desc": "法宝状态下，对敌方火系目标造成20%额外伤害",
+          "yin_desc": "法宝状态下，受到火系攻击减免20%伤害"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一只灵兽叫'寒冰凤'，model_id 1065，品质3，元素类型ice，灵兽蛋道具item_id 28005，出战所需人物等级30，默认加点2，体力资质5000，物攻资质1800，法攻资质1600，物防资质1100，法防资质1300，并配置进化路径进化为pet_id 2065的'究极寒冰凤'，消耗道具item_id 10004数量2",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "add",
+        "produces": "new_pet_id",
+        "row_content": {
+          "pet_id": "<new_pet_id>",
+          "name": "寒冰凤",
+          "model_id": 1065,
+          "quality": 3,
+          "elemental_type": "ice",
+          "item_id": 28005,
+          "hero_level": 30,
+          "auto_attr_point_alloc_type": 2,
+          "aptitude_base.StrPotCon": 5000,
+          "aptitude_base.PhyatkPotCon": 1800,
+          "aptitude_base.MagatkPotCon": 1600,
+          "aptitude_base.PhydefPotCon": 1100,
+          "aptitude_base.MagdefPotCon": 1300
+        }
+      },
+      {
+        "table": "pet\\pet_evolve.xlsx",
+        "sheet": "PetEvolveData",
+        "operation": "add",
+        "row_content": {
+          "pet_id": "<new_pet_id>",
+          "evolved_pet_id": 2065,
+          "cost_item_id": 10004,
+          "cost_item_num": 2
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个邮件模板叫'周年庆奖励邮件'，template_id 30099，标题'周年庆奖励发放'，内容'亲爱的玩家，周年庆福利已到，请查收附赠的丰厚奖励'，同时配全服邮件global_id 6使用该模板，发送人'系统'，附带奖励reward_id 10088",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "row_content": {
+          "template_id": 30099,
+          "title": "周年庆奖励发放",
+          "content": "亲爱的玩家，周年庆福利已到，请查收附赠的丰厚奖励"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 6,
+          "mail_type": 1,
+          "template_id": 30099,
+          "sender": "系统",
+          "reward_id": 10088
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个支线任务叫'护送商队'，任务ID 250012，任务组group_id 250，描述'护送商队安全抵达目的地'，目标类型Escort，目标数据'escort_id:[30001],need_arrive:1,count:1'，奖励reward_id 10090，同时要求击杀npc_id为5023的怪物，在space_id 10008坐标(50,0,60)刷新该怪物",
+    "expected_answer": [
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "row_content": {
+          "quest_id": 250012,
+          "group_id": 250,
+          "name": "护送商队",
+          "desc": "护送商队安全抵达目的地",
+          "target.key": "Escort",
+          "target.data": "escort_id:[30001],need_arrive:1,count:1",
+          "npc_ids": [5023],
+          "rewards": [10090]
+        }
+      },
+      {
+        "table": "quest\\spawn_quest_entity.xlsx",
+        "sheet": "SpawnQuestEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": 5023,
+          "pos_list": [[50, 0, 60]]
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一场PVE战斗叫'赤炎洞窟首战'，combat_id 5001，战斗类型pve，战斗模式1，场景space_id 10008，胜利奖励reward_id 20001，失败奖励reward_id 20002，平局奖励reward_id 20003，主怪npc_id 4001，位置1放npc_id 4002，位置3放npc_id 4003",
+    "expected_answer": [
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "row_content": {
+          "combat_id": 5001,
+          "name": "赤炎洞窟首战",
+          "combat_type": "pve",
+          "combat_mode": 1,
+          "space_id": 10008,
+          "win_reward": 20001,
+          "lose_reward": 20002,
+          "draw_reward": 20003,
+          "npc_ids[0]": 4001,
+          "npc_ids[1]": 4002,
+          "npc_ids[3]": 4003
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个PVE战斗怪物叫'烈焰护卫'，npc_id 4002，model_id 1050，技能组1和2，技能列表[5001,5002,5003]，回合开始行为'bt_combat_flame'，等级公式'level+5'，气血斜率100气血基础5000，物攻斜率10物攻基础200，速度斜率5速度基础80，死亡不击飞",
+    "expected_answer": [
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "row_content": {
+          "npc_id": 4002,
+          "name": "烈焰护卫",
+          "model_id": 1050,
+          "spell_groups": [1, 2],
+          "spell_ids": [5001, 5002, 5003],
+          "round_ai_name": "bt_round_guard",
+          "combat_ai_name": "bt_combat_flame",
+          "level_formula": "level+5",
+          "attribute_base_slopes.HPMaxCon[0]": 100,
+          "attribute_base_slopes.HPMaxCon[1]": 5000,
+          "attribute_base_slopes.WorldAttackCon[0]": 10,
+          "attribute_base_slopes.WorldAttackCon[1]": 200,
+          "attribute_base_slopes.WorldSpeedCon[0]": 5,
+          "attribute_base_slopes.WorldSpeedCon[1]": 80,
+          "combat_host_common.is_npc_die_remove": false
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个主动技能叫'寒冰刺'，技能id 5001，技能类型attack，技能效果类型damage，技能元素ice，是门派技能，施法CD 3秒，施法消耗1消耗mp 50点，目标过滤敌方存活单位，目标排序规则1，结算目标数量3，结算方式1，伤害基础倍率1.5，添加buff_id 6001，逻辑效果1命名为'apply_damage'，动画Sequence'Anim_Spell_IceSpike'",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "row_content": {
+          "id": 5001,
+          "spell_type": "attack",
+          "spell_effect_type": "damage",
+          "spell_element": "ice",
+          "is_from_school": true,
+          "cast_cd": 3,
+          "cast_costs[0]": ["mp", 50],
+          "target_filter.relation.include": ["enemy"],
+          "target_filter.alive_status.include": ["alive"],
+          "target_sorting_rule": 1,
+          "target_num_limit": 3,
+          "settlement_method": 1,
+          "damage_base_rate": 1.5,
+          "add_buff_id": 6001,
+          "action1.name": "apply_damage",
+          "anim_montage_sequence_name": "Anim_Spell_IceSpike"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个战斗buff叫'冻伤'，buff_id 6001，描述'受到冰系伤害时额外承受10%伤害'，图标'Icon_Buff_Frostbite'，显示，是减益，非封印类，可驱散，可药品驱散，驱散概率100，持续3回合，最大层数5，属性修改WorldMagicDefCon为-0.1，附加互斥状态2，逻辑效果1命名为'on_hit_extra_damage'",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "buff_data",
+        "operation": "add",
+        "row_content": {
+          "buff_id": 6001,
+          "name": "冻伤",
+          "desc": "受到冰系伤害时额外承受10%伤害",
+          "icon": "Icon_Buff_Frostbite",
+          "is_display": true,
+          "is_gain": false,
+          "is_seal": false,
+          "allow_dispel_or_cleanse": true,
+          "allow_item_dispel": true,
+          "dispel_pct": 100,
+          "timeout": 3,
+          "max_stack": 5,
+          "attribute_modify": {"WorldMagicDefCon": -0.1},
+          "exclusive_state": 2,
+          "action1.name": "on_hit_extra_damage"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个被动技能叫'玄冰体'，被动id 7001，显示，是门派被动，来源'school_ice'，互斥分组2，互斥优先级10，世界属性修改WorldMagicDefCon为200，战中属性修改WorldMagicCon为150，附加状态3，逻辑效果1命名为'attr_bonus'",
+    "expected_answer": [
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "passive_data",
+        "operation": "add",
+        "row_content": {
+          "id": 7001,
+          "is_display": true,
+          "is_from_school": true,
+          "source": "school_ice",
+          "conflict_group": 2,
+          "conflict_priority": 10,
+          "world_attribute_modify": {"WorldMagicDefCon": 200},
+          "combat_attribute_modify": {"WorldMagicCon": 150},
+          "state": 3,
+          "action1.name": "attr_bonus"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个互斥状态'深度冰封'，状态类型200，优先级5，与休息状态冲突，与普通封印冲突，与可叠加封印冲突，与混乱冲突，与法宝封印冲突，免疫技穷，免疫缴械",
+    "expected_answer": [
+      {
+        "table": "exclusive_state.xlsx",
+        "sheet": "State",
+        "operation": "add",
+        "row_content": {
+          "excl_state": 200,
+          "priority": 5,
+          "conflict.1": 1,
+          "conflict.2": 1,
+          "conflict.3": 1,
+          "conflict.105": 1,
+          "conflict.106": 1,
+          "conflict.107": 0,
+          "conflict.108": 0
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个世界buff叫'福泽天下'，buff_id 8001，描述'活动期间全服玩家气血上限+500'，绑定战斗buff 6002，同步模式1，持续3600秒，tick间隔0，添加时立即tick，最大层数1，合并方式refresh，生命周期绑定player，属性修改HPMaxCon为500",
+    "expected_answer": [
+      {
+        "table": "world_buff.xlsx",
+        "sheet": "world_buff_data",
+        "operation": "add",
+        "row_content": {
+          "world_buff_id": 8001,
+          "name": "福泽天下",
+          "desc": "活动期间全服玩家气血上限+500",
+          "bind_combat_buff": 6002,
+          "sync_mode": 1,
+          "timeout": 3600.0,
+          "tick_interval": 0.0,
+          "init_do_tick": true,
+          "max_stack": 1,
+          "dup_op": "refresh",
+          "lifecycle_bind": "player",
+          "attribute_modify": {"HPMaxCon": 500}
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个限时活动叫'七日登录豪礼'，活动id 1001，活动类型1，活动描述'连续登录七天领取丰厚奖励'，活动图标'Icon_Activity_7Day'，开始时间'2026-08-01 00:00:00'，结束时间'2026-08-07 23:59:59'，展示开始时间'2026-07-31 00:00:00'，展示结束时间'2026-08-08 00:00:00'，开启条件'player_level>=10'",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 1001,
+          "activity_type": 1,
+          "name": "七日登录豪礼",
+          "desc": "连续登录七天领取丰厚奖励",
+          "icon": "Icon_Activity_7Day",
+          "start_time": "2026-08-01 00:00:00",
+          "end_time": "2026-08-07 23:59:59",
+          "open_time": "2026-07-31 00:00:00",
+          "close_time": "2026-08-08 00:00:00",
+          "open_condition": "player_level>=10"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个场景叫'玄冰秘境'，space_id 10020，类型'dungeon'，描述'玄冰秘境场景'，服务端场景资源名'Map_IceRealm'，客户端场景资源名'Map_IceRealm_C'，进入场景位置(50,0,50)，镜头Yaw 45度，Pitch 30度，距离800，fov 60，从物理生成寻路网格，加载寻路，进入朝向0，大陆id 2，区域配置文件['areatag_icerealm_1']，客户端GameMode类型'cgm_round_world'，实例ID 10020，BGM事件ID 2001",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "add",
+        "row_content": {
+          "space_id": 10020,
+          "_desc": "玄冰秘境场景",
+          "name": "玄冰秘境",
+          "space_type": "dungeon",
+          "server_map_res_name": "Map_IceRealm",
+          "client_map_res_name": "Map_IceRealm_C",
+          "enter_pos": [50.0, 0.0, 50.0],
+          "camera.yaw": 45.0,
+          "camera.pitch": 30.0,
+          "camera.arm_length": 800.0,
+          "camera.fov": 60.0,
+          "navmesh_from_physic": 1,
+          "is_load_navmesh": 1,
+          "enter_yaw": 0.0,
+          "continent_id": 2,
+          "areatag_maps": ["areatag_icerealm_1"],
+          "client_gamemode_type": "cgm_round_world",
+          "client_gamemode_instance_id": 10020,
+          "bgm_event_id": 2001
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个地标叫'冰原驿站'，全局ID 'LM_10020_001'，所属城市'玄冰城'，郡ID 'CNTY_ICE'，地标类型'teleport'，本地ID 1，坐标(120,0,200)，朝向[0,180,0]，关联道路ID ['road_ice_1']，城池表id 5，可抵达全局id分别为'LM_10020_002'、'LM_10020_003'、'LM_10020_004'",
+    "expected_answer": [
+      {
+        "table": "space_landmark.xlsx",
+        "sheet": "World02",
+        "operation": "add",
+        "row_content": {
+          "map_name": "玄冰秘境",
+          "city_name": "玄冰城",
+          "GlobalID": "LM_10020_001",
+          "CountyID": "CNTY_ICE",
+          "LandmarkType": "teleport",
+          "LocalID": 1,
+          "bInvalid": false,
+          "Location": [120.0, 0.0, 200.0],
+          "Rotation": [0.0, 180.0, 0.0],
+          "RelatedRoad": ["road_ice_1"],
+          "city_id": 5,
+          "targets[0]": "LM_10020_002",
+          "targets[1]": "LM_10020_003",
+          "targets[2]": "LM_10020_004"
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个炼丹配方叫'回气丹配方'，配方id 3001，配方名称'回气丹'，交互显示1，配方类型2炼丹，境界3，解锁所需建筑等级5，消耗金币1000，材料组1(材料id 10001,数量5,必须)，材料组2(材料id 10002,数量3,必须)，凡品道具10030，良品道具10031，上品道具10032，珍品道具10033，绝品道具10034，额外奖励1，获得经验值50",
+    "expected_answer": [
+      {
+        "table": "item\\item_recipe.xlsx",
+        "sheet": "ItemRecipe",
+        "operation": "add",
+        "row_content": {
+          "recipe_id": 3001,
+          "name": "回气丹",
+          "show_type": 1,
+          "recipe_type": 2,
+          "stage": 3,
+          "unlock_building_level": 5,
+          "cost_num": 1000,
+          "material[1]": [10001, 5, true],
+          "material[2]": [10002, 3, true],
+          "quality_rewards.1": 10030,
+          "quality_rewards.2": 10031,
+          "quality_rewards.3": 10032,
+          "quality_rewards.4": 10033,
+          "quality_rewards.5": 10034,
+          "extra_reward1": 1,
+          "exp": 50
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个帮派任务'帮派押镖'，quest_id 5001，权重10，完成获得item_id 10050数量2，奖励reward_id 20050",
+    "expected_answer": [
+      {
+        "table": "guild.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "row_content": {
+          "quest_id": 5001,
+          "weight": 10,
+          "item_id": 10050,
+          "item_num": 2,
+          "reward_id": 20050
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个帮派技能'凝气决'，spell_id 6001，等级1，技能名称'凝气决'，详细效果'提升自身气血上限'，当前等级研发所需进度100，学习所需角色等级20，学习所需道具1类型(帮贡道具id)10060，数量100，学习所需道具2类型(银币道具id)10061，数量500，气血上限加成0.05，真元上限加成0.03",
+    "expected_answer": [
+      {
+        "table": "guild.xlsx",
+        "sheet": "SpellData",
+        "operation": "add",
+        "row_content": {
+          "spell_id": 6001,
+          "level": 1,
+          "spell_name": "凝气决",
+          "spell_desc": "提升自身气血上限",
+          "required_develop": 100,
+          "required_player_level": 20,
+          "upgrade_costs[0][0]": 10060,
+          "upgrade_costs[0][1]": 100,
+          "upgrade_costs[1][0]": 10061,
+          "upgrade_costs[1][1]": 500,
+          "hp_max_rate": 0.05,
+          "mp_max_rate": 0.03
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个种子道具'灵稻种'，item_id 10070，描述'种在农田可收获灵米'，名称'灵稻种'，农田类型[1,2]，每分钟生长值10，成熟阶段1生长值100，成熟阶段0模型'Model_Plant_Stage0'，成熟阶段1模型'Model_Plant_Stage1'，玩家动作1，收获reward_id 20060",
+    "expected_answer": [
+      {
+        "table": "residence\\residence_plant.xlsx",
+        "sheet": "ResidencePlant",
+        "operation": "add",
+        "row_content": {
+          "item_id": 10070,
+          "_desc": "种在农田可收获灵米",
+          "name": "灵稻种",
+          "building_type": [1, 2],
+          "per_second_growth": 10,
+          "growth_values[0]": 100,
+          "growth_models[0]": "Model_Plant_Stage0",
+          "growth_models[1]": "Model_Plant_Stage1",
+          "action": 1,
+          "reward_id": 20060
+        }
+      }
+    ]
+  },
+  {
+    "input": "新增一个奖励包'玄铁宝箱奖励'，reward_id 20070，名称'玄铁宝箱奖励'，每日领取上限1，每日上限警告0，经验概率0经验公式'level*10'，金币概率50金币公式'level*100'，银币概率100银币公式'level*500'，必得道具1 item_id 10080数量1，必得道具2 item_id 10081数量2，随机道具1 item_id 10082数量1概率30，随机道具2 item_id 10083数量1概率10",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "row_content": {
+          "id": 20070,
+          "name": "玄铁宝箱奖励",
+          "day_limit": 1,
+          "day_warning": 0,
+          "exp_prob": 0,
+          "exp_formula": "level*10",
+          "gold_prob": 50,
+          "gold_formula": "level*100",
+          "silver_prob": 100,
+          "silver_formula": "level*500",
+          "must_items[1].item_ids": [10080],
+          "must_items[1].num": 1,
+          "must_items[2].item_ids": [10081],
+          "must_items[2].num": 2,
+          "weight_items[1].item_ids": [10082],
+          "weight_items[1].num": 1,
+          "weight_items[1].weight": 30,
+          "weight_items[2].item_ids": [10083],
+          "weight_items[2].num": 1,
+          "weight_items[2].weight": 10
+        }
+      }
+    ]
+  }
+]

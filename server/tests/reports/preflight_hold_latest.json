@@ -1,0 +1,63 @@
+{
+  "round": "R9-B1",
+  "date": "2026-08-17",
+  "method": "B Pre-flight hold 漏行预检 + pre_commit_hold 事件通道（后端首版）",
+  "wave": "第二波 P0 + hold 通道基建",
+  "scope": "apply 写盘前漏行预检 + CODEMAKER_PREFLIGHT_HOLD 环境开关阻断 + audit 留痕 + SSE 事件产出函数就位",
+  "ca_overview_ref": "§2.3.1 testbranch 全量覆盖丢 id=10500——有 detection 无 prevention",
+  "changes": [
+    {
+      "file": "server/routers/precommit_hold.py（新建）",
+      "items": [
+        "PreCommitHoldEvent dataclass（kind/severity/count/sheets/message/recommendation，to_dict 含 type=pre_commit_hold）",
+        "PreflightReport dataclass（lost_rows/will_silently_drop/holds，to_dict 可 JSON 序列化供 409 detail）",
+        "preflight_row_manifest(mr, base_pks) -> PreflightReport：base_ids - mergeset_ids = lost_ids，复用 collect_disk_sheet_pks 落盘文件全量主键集",
+        "record_hold_audit(auditor, event, path) 复用 BackupAuditor.record（merge_branch 路径用 _append_audit 模式记，调用方自并入）",
+        "emit_hold_sse(task_emit_fn, task_id, event) 复用 _compare_task_emit pattern（前端无消费分支，事件产出就位待前端接）"
+      ]
+    },
+    {
+      "file": "server/routers/merge_branch.py",
+      "items": [
+        "BranchApplyRequest 加 force: bool = False（pre_commit_hold override）",
+        "import collect_disk_sheet_pks（engine.fast_apply）+ preflight_row_manifest/record_hold_audit（routers.precommit_hold）+ import os",
+        "apply 路径（1612 后 1614 前）插 preflight：CODEMAKER_PREFLIGHT_HOLD 默认 off 零回归；on 命中 + 无 force → raise 409 阻断；audit 模式 + force override → 不阻断记 audit",
+        "audit_tables entry 加 preflight_holds 字段（命中时记 holds 清单）"
+      ]
+    },
+    {
+      "file": "server/tests/test_merge_preflight.py（新建）",
+      "items": ["7 用例：无漏行 / 漏行命中 / §2.3.1 id=10500 / 多 sheet / base_pks 空跳过 / event to_dict 格式 / report 可序列化"]
+    }
+  ],
+  "env_switch": {
+    "CODEMAKER_PREFLIGHT_HOLD": "off(默认)=跳过零回归 | on=命中阻断(raise 409,需 force override) | audit=命中不阻断记 audit",
+    "default": "off"
+  },
+  "metrics": {
+    "preflight_hit_rate_section_2_3_1": 1.0,
+    "on_mode_block_rate": 1.0,
+    "off_mode_regression": 0.0,
+    "new_tests": 7,
+    "new_tests_pass": 7,
+    "regression_tests": 31,
+    "regression_tests_pass": 31,
+    "regression_status": "zero_regression",
+    "regression_scope": "test_merge_eval + test_merge_formula_cache + test_merge_progress_snapshot + test_formula_gate(5) + test_comment_guard(5) + test_formula_cache(6)"
+  },
+  "scope_first_version": {
+    "done": "后端漏行预检（preflight_row_manifest）+ 环境开关阻断（on/audit/off）+ audit 留痕（audit_tables preflight_holds）+ SSE 事件产出函数就位（emit_hold_sse）+ force override 机制",
+    "deferred_frontend": "前端拦截卡（MergeGuideView.vue 弹窗 + index-*.js minified 需重建）— 前端无 pre_commit_hold 消费分支，事件产出后静默忽略",
+    "deferred_agent_serve": "agent serve 场景 hold（_step_sink 加 etype=pre_commit_hold 分支）留后续",
+    "deferred_stage3": "stage3 apply/apply-batch 是同步 HTTP 无 SSE 通道且不调 _validate_apply_refs，盲区留后续"
+  },
+  "data_access": "MergeRequest 不含 base 原始行数据，复用 collect_disk_sheet_pks(ours_path) 读落盘 base 文件全量主键集 {sheet_name: set}",
+  "wiring_design": "apply 路径写盘前（1612 后 1614 前）插 preflight。当前 apply 是写后校验（1616 _validate_apply_refs），preflight 写前阻断 + ref_report 写后 warning 两套并存。默认 off 保证零回归。",
+  "verification": "python -m pytest tests/test_merge_preflight.py tests/test_merge_eval.py tests/test_merge_formula_cache.py tests/test_merge_progress_snapshot.py tests/test_formula_gate.py tests/test_comment_guard.py tests/test_formula_cache.py → 38 passed",
+  "next_upgrades": [
+    "前端 MergeGuideView.vue 加 pre_commit_hold 拦截卡（需前端项目重建）",
+    "agent serve 场景：_step_sink 加 etype=pre_commit_hold 分支 + agent.py SSE 输出端 yield",
+    "方法 A/D 升级：needs_manual_fix=True / comment still_lost>0 接 pre_commit_hold（kind=formula_loss / comment_loss）",
+    "stage3 apply 覆盖：stage3 apply/apply-batch 加 preflight + 推送通道"
+  ]
+}

@@ -1,0 +1,248 @@
+"""表格定位器（层3）：自然语言描述 → 文件路径 + Sheet 名。
+
+采用 5 级递进定位策略，每级带置信度：
+  1. 精确文件名匹配（100%）：输入 == "pet.xlsx" 或 == stem
+  2. 别名匹配（90%）：输入含已注册别名（如"灵兽" → pet.xlsx）
+  3. 文件名模糊匹配（80%）：输入是 stem 子串或超串（如"pet"匹配 pet.xlsx）
+  4. Sheet 名匹配（75%）：输入含某 sheet 名
+  5. 列名语义匹配（60%）：输入含某列名（header_name）
+
+歧义消解：同一置信度出现多个匹配时，返回候选列表供上层交互确认，不自动猜测。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from .alias_mapping import AliasMapping
+from .fuzzy_matcher import FuzzyMatcher, levenshtein_ratio
+from .table_index import TableMeta, SheetMeta, load_index
+
+
+@dataclass
+class LocateResult:
+    """单条定位结果。
+
+    Attributes:
+        path: 相对 workspace 的文件路径（如 pet.xlsx）
+        stem: 文件名无后缀
+        sheet: 命中的 sheet 名（级别 4/5 时可能为空，由调用方再消歧）
+        confidence: 置信度 [0,1]
+        level: 命中级别标签 "exact_file" | "alias" | "fuzzy_file" | "sheet_name" | "column_semantic"
+        matched_term: 实际匹配到的字符串
+    """
+    path: str
+    stem: str
+    sheet: Optional[str] = None
+    confidence: float = 0.0
+    level: str = ""
+    matched_term: str = ""
+
+
+@dataclass
+class LocateOutcome:
+    """定位器整体输出：最佳结果 + 歧义候选列表。"""
+    best: Optional[LocateResult] = None
+    ambiguous: list[LocateResult] = field(default_factory=list)
+
+    @property
+    def is_ambiguous(self) -> bool:
+        """最佳结果与次优结果置信度接近（差 < 0.05）时视为歧义。"""
+        return bool(self.ambiguous)
+
+
+class TableLocator:
+    """5 级递进表格定位器。
+
+    依赖表格注册中心（table_index）的元数据 + 别名映射（alias_mapping）。
+    """
+
+    # 5 级置信度常量
+    C_EXACT_FILE = 1.00
+    C_ALIAS = 0.90
+    C_FUZZY_FILE = 0.80
+    C_EDIT_FILE = 0.70
+    C_SHEET_NAME = 0.75
+    C_COLUMN = 0.60
+
+    # 歧义判定：同级别多匹配，或次优与最优置信度差值小于该阈值
+    _AMBIGUITY_GAP = 0.05
+
+    # 编辑距离补级阈值：ratio >= 该值才纳入候选（应对输错/近似文件名）
+    _EDIT_THRESHOLD = 0.60
+
+    def __init__(self, index: list[TableMeta] | None = None,
+                 alias_mapping: AliasMapping | None = None,
+                 fuzzy_matcher: FuzzyMatcher | None = None):
+        self.index = index if index is not None else load_index()
+        self.alias_mapping = alias_mapping or AliasMapping.load()
+        self.fuzzy = fuzzy_matcher or FuzzyMatcher(top_k=5)
+
+    # ── 各级匹配 ──────────────────────────────────────────────
+
+    def _level1_exact_file(self, text: str) -> list[LocateResult]:
+        """级别1：输入完全等于文件名或 stem。"""
+        out: list[LocateResult] = []
+        t = text.strip()
+        if not t:
+            return out
+        t_l = t.lower()
+        for tm in self.index:
+            # 匹配 stem（不区分大小写）或完整文件名
+            if t_l == tm.stem.lower() or t_l == Path(tm.path).name.lower():
+                out.append(LocateResult(
+                    path=tm.path, stem=tm.stem, confidence=self.C_EXACT_FILE,
+                    level="exact_file", matched_term=t,
+                ))
+        return out
+
+    def _level2_alias(self, text: str) -> list[LocateResult]:
+        """级别2：文本包含已注册别名。一个别名可能指向同一文件，去重后返回。"""
+        out: list[LocateResult] = []
+        hits = self.alias_mapping.lookup_in_text(text)
+        if not hits:
+            return out
+        # alias → file，同一文件只保留最长别名命中
+        seen_file: dict[str, str] = {}
+        for alias, fp in hits:
+            seen_file.setdefault(fp, alias)
+        # 别名命中需要文件确实在索引中
+        stem_by_path = {tm.path: tm for tm in self.index}
+        for fp, alias in seen_file.items():
+            tm = stem_by_path.get(fp)
+            if tm is None:
+                # 别名指向的文件不在索引，尝试按 stem 兜底
+                tm = next((t for t in self.index if t.stem == Path(fp).stem), None)
+            if tm is not None:
+                out.append(LocateResult(
+                    path=tm.path, stem=tm.stem, confidence=self.C_ALIAS,
+                    level="alias", matched_term=alias,
+                ))
+        return out
+
+    def _level3_fuzzy_file(self, text: str) -> list[LocateResult]:
+        """级别3：输入是 stem 的子串或超串。"""
+        out: list[LocateResult] = []
+        t = text.strip()
+        if not t:
+            return out
+        t_l = t.lower()
+        for tm in self.index:
+            s_l = tm.stem.lower()
+            if not s_l or not t_l:
+                continue
+            if t_l == s_l:
+                continue  # 已在级别1处理
+            if t_l in s_l or s_l in t_l:
+                # 取实际命中的串作为 matched_term
+                matched = t if t_l in s_l else tm.stem
+                out.append(LocateResult(
+                    path=tm.path, stem=tm.stem, confidence=self.C_FUZZY_FILE,
+                    level="fuzzy_file", matched_term=matched,
+                ))
+        return out
+
+    def _level4_sheet_name(self, text: str) -> list[LocateResult]:
+        """级别4：文本包含某 sheet 名（精确包含 + 编辑距离模糊）。"""
+        out: list[LocateResult] = []
+        t = text.strip()
+        if not t:
+            return out
+        t_l = t.lower()
+        seen: set[tuple] = set()
+        for tm in self.index:
+            for s in tm.sheets:
+                sn = s.name or ""
+                if not sn or len(sn) < 2:
+                    continue
+                sn_l = sn.lower()
+                hit = sn_l in t_l or t_l in sn_l
+                if not hit and len(t_l) >= 2:
+                    hit = levenshtein_ratio(t_l, sn_l) >= 0.6
+                if hit and (tm.path, sn) not in seen:
+                    seen.add((tm.path, sn))
+                    out.append(LocateResult(
+                        path=tm.path, stem=tm.stem, sheet=sn,
+                        confidence=self.C_SHEET_NAME, level="sheet_name",
+                        matched_term=sn,
+                    ))
+        return out
+
+    def _level5_column(self, text: str) -> list[LocateResult]:
+        """级别5：文本包含某列名（header_name）。"""
+        out: list[LocateResult] = []
+        t = text.strip()
+        if not t:
+            return out
+        for tm in self.index:
+            for s in tm.sheets:
+                for hn in s.header_names:
+                    if not hn or len(hn) < 2:
+                        continue
+                    if hn in t:
+                        out.append(LocateResult(
+                            path=tm.path, stem=tm.stem, sheet=s.name,
+                            confidence=self.C_COLUMN, level="column_semantic",
+                            matched_term=hn,
+                        ))
+                        break  # 同 sheet 命中一个列名即可
+        return out
+
+    # ── 主入口 ────────────────────────────────────────────────
+
+    def locate_all(self, text: str) -> list[LocateResult]:
+        """执行全部 5 级匹配，返回合并后按置信度降序的结果列表。"""
+        if not text:
+            return []
+        results: list[LocateResult] = []
+        results.extend(self._level1_exact_file(text))
+        results.extend(self._level2_alias(text))
+        results.extend(self._level3_fuzzy_file(text))
+        results.extend(self._level4_sheet_name(text))
+        results.extend(self._level5_column(text))
+
+        # 同一 (path, sheet) 去重：保留置信度最高者
+        best_by_key: dict[tuple, LocateResult] = {}
+        for r in results:
+            key = (r.path, r.sheet or "")
+            cur = best_by_key.get(key)
+            if cur is None or r.confidence > cur.confidence:
+                best_by_key[key] = r
+        out = list(best_by_key.values())
+        out.sort(key=lambda r: r.confidence, reverse=True)
+        return out
+
+    def locate(self, text: str) -> LocateOutcome:
+        """定位主入口：返回最佳结果 + 歧义候选。
+
+        歧义规则：最高置信度级别有多个匹配，或次优结果与最优置信度差 < _AMBIGUITY_GAP，
+        则把次优及同档结果放入 ambiguous，调用方应交互确认。
+        """
+        all_results = self.locate_all(text)
+        if not all_results:
+            return LocateOutcome(best=None, ambiguous=[])
+        best = all_results[0]
+        # 同档（同 confidence）的其它结果视为歧义候选
+        same_conf = [r for r in all_results[1:] if r.confidence == best.confidence]
+        # 接近档（差值小于阈值）也纳入歧义候选
+        close = [r for r in all_results[1:]
+                 if best.confidence - r.confidence < self._AMBIGUITY_GAP
+                 and r.confidence < best.confidence]
+        ambiguous = same_conf + close
+        # 去重并按置信度降序
+        seen: set[tuple] = set()
+        dedup: list[LocateResult] = []
+        for r in ambiguous:
+            k = (r.path, r.sheet or "")
+            if k not in seen:
+                seen.add(k)
+                dedup.append(r)
+        dedup.sort(key=lambda r: r.confidence, reverse=True)
+        return LocateOutcome(best=best, ambiguous=dedup)
+
+    def locate_best(self, text: str) -> Optional[LocateResult]:
+        """便捷方法：返回最高置信度结果，歧义时仍返回首个（调用方应优先用 locate() 做确认）。"""
+        out = self.locate(text)
+        return out.best

@@ -1,0 +1,37 @@
+{
+  "summary": {
+    "branch_speedup": 1.11,
+    "subdir_speedup": 2.33,
+    "dirs_cache_speedup": 0.0,
+    "results_match": true,
+    "false_source_deleted": 0
+  },
+  "details": {
+    "dirs_load": {
+      "tables_listed": 5,
+      "cold_ms_median": 128.3,
+      "warm_ms_median": 0.0,
+      "cache_speedup": 0.0
+    },
+    "preview_base": {
+      "src": "dev1",
+      "tgt": "trunk",
+      "ms_median": 245.6
+    },
+    "branch_compare_ab": {
+      "tables": 74,
+      "baseline_ms_median": 99524.3,
+      "optimized_ms_median": 89513.4,
+      "speedup": 1.11,
+      "result_match": true
+    },
+    "subdir_compare_ab": {
+      "tables": 0,
+      "baseline_ms_median": 21785.4,
+      "optimized_ms_median": 9342.1,
+      "speedup": 2.33,
+      "result_match": true,
+      "false_source_deleted": 0
+    }
+  }
+}

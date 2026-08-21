@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 配表助手 · 文档中心</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">文档中心 · v1</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav">
+        <a class="active" href="index.html">首页</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">后端 Agent（Web 端）</div>
+      <nav class="nav">
+        <a href="user-manual.html"><span class="badge planner">用户</span> 用户手册</a>
+        <a href="tech-manual.html"><span class="badge tech">技术</span> 技术文档</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">CodeMaker 配表模式</div>
+      <nav class="nav">
+        <a href="codemaker-user-manual.html"><span class="badge planner">用户</span> 用户手册</a>
+        <a href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 技术文档</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">操作案例</div>
+      <nav class="nav">
+        <a href="cases.html">Case 文档（18 例）</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <section class="hero">
+      <h1>AI 配表助手 · 文档中心</h1>
+      <p>自然语言操作 Excel 游戏配表。项目提供两种形态：<strong>后端 Agent（Web 端）</strong>——功能全，含 AI 增删改查、智能问答、版本比对合并、表格浏览；<strong>CodeMaker 配表模式</strong>——在 CodeMaker 插件里轻量对话配表。每种形态均有用户手册与技术文档。</p>
+    </section>
+
+    <h2>四份文档</h2>
+    <div class="role-grid">
+      <div class="role-card planner">
+        <h3>后端 Agent · 用户手册</h3>
+        <div class="role-tag">Web 端使用者 · 策划 / 数值 / 运营</div>
+        <ul>
+          <li>自然语言查 / 改 / 增 / 删配表</li>
+          <li>复合指令、表格型增加、批量操作、智能问答</li>
+          <li>版本比对合并 + 三阶段引导合并</li>
+          <li>表格浏览与常见问题</li>
+        </ul>
+        <a class="go" href="user-manual.html">进入用户手册 →</a>
+      </div>
+
+      <div class="role-card tech">
+        <h3>后端 Agent · 技术文档</h3>
+        <div class="role-tag">开发 / 运维 · Web 端后端</div>
+        <ul>
+          <li>双进程架构（FastAPI :8000 + serve :8666）</li>
+          <li>启动、环境变量、CRUD 数据流</li>
+          <li>API 端点总览、Excel 分层引擎</li>
+          <li>启动初始化与故障排查</li>
+        </ul>
+        <a class="go" href="tech-manual.html">进入技术文档 →</a>
+      </div>
+
+      <div class="role-card planner">
+        <h3>配表模式 · 用户手册</h3>
+        <div class="role-tag">CodeMaker 插件使用者</div>
+        <ul>
+          <li>启动后端、进入 / 退出配表模式</li>
+          <li>查 / 改 / 删 / 增（二段提交）</li>
+          <li>相近项建议与拒答机制</li>
+          <li>能力边界与使用提示</li>
+        </ul>
+        <a class="go" href="codemaker-user-manual.html">进入用户手册 →</a>
+      </div>
+
+      <div class="role-card tech">
+        <h3>配表模式 · 技术文档</h3>
+        <div class="role-tag">开发 / 运维 · 第二形态</div>
+        <ul>
+          <li>两形态对比、安装 / 激活机制</li>
+          <li>行为规则、知识库、原子 API</li>
+          <li>R 系列关键规则、安全规则</li>
+          <li>故障排查</li>
+        </ul>
+        <a class="go" href="codemaker-tech-manual.html">进入技术文档 →</a>
+      </div>
+    </div>
+
+    <h2>操作案例（Case 文档）</h2>
+    <p>按形态分两组共 18 例，每例含输入 + 预期结果 + 真实截图。</p>
+
+    <table>
+      <thead>
+        <tr><th>#</th><th>Case</th><th>说明</th><th>形态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td><a href="cases.html#case-1">查询</a></td><td>查单行 / 单字段（多匹配）</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>2</td><td><a href="cases.html#case-2">修改</a></td><td>改字段值</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>3</td><td><a href="cases.html#case-3">新增</a></td><td>新增一行</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>4</td><td><a href="cases.html#case-4">删除</a></td><td>按名称删行</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>5</td><td><a href="cases.html#case-5">复合指令</a></td><td>多字段 / 多操作</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>6</td><td><a href="cases.html#case-6">表格型增加</a></td><td>弹出表单校验合并</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>7</td><td><a href="cases.html#case-7">智能问答</a></td><td>问表结构 / 列用途</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>8</td><td><a href="cases.html#case-8">公式表操作</a></td><td>改 / 删含公式表，结果保正</td><td><span class="badge planner">Web</span> <span class="badge tech">技术</span></td></tr>
+        <tr><td>9</td><td><a href="cases.html#case-9">批量操作</a></td><td>一句串联查→改→查→删</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>10</td><td><a href="cases.html#case-10">版本比对合并</a></td><td>比对、冲突裁决、导出</td><td><span class="badge planner">Web</span> <span class="badge tech">技术</span></td></tr>
+        <tr><td>11</td><td><a href="cases.html#case-11">三阶段引导合并</a></td><td>本地→跨生产者→合回 trunk</td><td><span class="badge planner">Web</span> <span class="badge tech">技术</span></td></tr>
+        <tr><td>12</td><td><a href="cases.html#case-12">表格浏览</a></td><td>浏览 + 单元格 / 快速编辑</td><td><span class="badge planner">Web</span></td></tr>
+        <tr><td>13</td><td><a href="cases.html#case-13">查看项目文件夹，进入配表模式</a></td><td>插件内激活</td><td><span class="badge ok">配表模式</span></td></tr>
+        <tr><td>14</td><td><a href="cases.html#case-14">查询</a></td><td>查全部匹配行</td><td><span class="badge ok">配表模式</span></td></tr>
+        <tr><td>15</td><td><a href="cases.html#case-15">修改（相近项）</a></td><td>R19 相近项建议</td><td><span class="badge ok">配表模式</span></td></tr>
+        <tr><td>16</td><td><a href="cases.html#case-16">删除</a></td><td>按名称删行</td><td><span class="badge ok">配表模式</span></td></tr>
+        <tr><td>17</td><td><a href="cases.html#case-17">新增（二段提交）</a></td><td>R23 预览后写盘</td><td><span class="badge ok">配表模式</span></td></tr>
+        <tr><td>18</td><td><a href="cases.html#case-18">拒答与退出</a></td><td>权限隔离 + 退出</td><td><span class="badge ok">配表模式</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout ok">
+      <span class="ctitle">截图说明</span>
+      全部 case 均已配真实界面截图（图片来源 <code>doc/html/img/</code>，索引见 <code>agent_img.md</code> / <code>codemaker_img.md</code>）。<strong>点击任一截图可在新窗口打开原图</strong>。
+    </div>
+
+    <h2>快速链接</h2>
+    <ul>
+      <li><a href="user-manual.html">后端 Agent 用户手册</a> — Web 端日常配表</li>
+      <li><a href="tech-manual.html">后端 Agent 技术文档</a> — 架构、API、部署</li>
+      <li><a href="codemaker-user-manual.html">配表模式用户手册</a> — CodeMaker 插件内配表</li>
+      <li><a href="codemaker-tech-manual.html">配表模式技术文档</a> — 原理、原子 API、规则</li>
+      <li><a href="cases.html">Case 文档</a> — 18 个操作案例</li>
+    </ul>
+  </main>
+</div>
+</body>
+</html>

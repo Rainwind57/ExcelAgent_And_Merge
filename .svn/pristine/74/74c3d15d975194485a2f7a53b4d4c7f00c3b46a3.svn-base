@@ -1,0 +1,379 @@
+"""修复策略 playbook：ErrorType -> RepairStrategy 路由表 + Level 1 规则修复原语。
+
+设计动机：
+    替换 `_collect_error_feedback`（agent.py:4115）的泛化错误反馈堆栈。每个 ErrorType
+    映射到定向 RepairStrategy，声明修复级别（Level 1 规则 / Level 2 LLM）、修复原语、
+    所需上下文、最大轮数。
+
+边界：
+    Level 1 handlers 为纯函数（difflib + 引擎纯函数 + task_ctx），不依赖 cli/agent 实例，
+    便于单测。需要 cli/表状态的修复（如新 ID 分配）返回 fix_payload 指令由 agent 应用。
+    Level 2 ReAct 循环（LLM + skill tools）在 agent.py 实现，本模块仅声明 needs_llm。
+
+策略清单：
+    column_not_found   → 列名候选重注 + 模糊匹配扩展（Level 1，纯）
+    row_not_found      → row_aliases 扩展 + re-resolve 候选（Level 1 失败升级 LLM）
+    type_mismatch      → 类型强转 + value_constraints 校验（Level 1，纯）
+    id_conflict        → 请求新 ID 分配（Level 1 指令，agent 应用）
+    pk_misplaced       → 清空主键走自增（Level 1，纯）
+    cross_ref_broken   → cascade_resolver 依赖图检查（Level 1 失败升级 LLM）
+    formula_error      → formula_ref_shifter 公式引用修复（Level 1，纯）
+    unknown            → 通用 error_feedback retry（Level 1，退化为现有逻辑）
+"""
+from __future__ import annotations
+
+import difflib
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Optional
+
+from .error_classifier import ClassifiedError, ErrorType
+
+
+class RepairLevel(str, Enum):
+    RULE = "level1_rule"  # 规则修复，零 LLM
+    LLM = "level2_llm"    # LLM 诊断 + skill tools re-plan
+
+
+class RepairActionKind(str, Enum):
+    RE_EXECUTE = "re_execute"      # 应用 fix_payload 后重新执行
+    ESCALATE_LLM = "escalate_llm"  # 升级 Level 2 LLM re-plan
+    ABORT = "abort"                # 中止，上报结构化失败
+
+
+@dataclass
+class RepairAction:
+    """策略产出的修复动作。"""
+
+    kind: RepairActionKind
+    fix_payload: dict = field(default_factory=dict)
+    reason: str = ""
+
+
+@dataclass
+class RepairTaskCtx:
+    """任务级上下文（agent 填充）。纯数据，便于单测构造。"""
+
+    table_stem: str = ""
+    sheet: str = ""
+    path: str = ""
+    headers: list[str] = field(default_factory=list)
+    col_types: dict[str, str] = field(default_factory=dict)        # col -> type
+    column_aliases: dict[str, str] = field(default_factory=dict)   # alias -> canonical col
+    row_aliases: dict[str, list[str]] = field(default_factory=dict)  # row desc -> candidate ids
+    intent: Any = None
+    extra: dict = field(default_factory=dict)
+
+
+@dataclass
+class RepairStrategy:
+    """单类错误的修复策略。"""
+
+    name: str
+    error_type: ErrorType
+    level: RepairLevel
+    max_rounds: int = 2
+    needs_llm: bool = False
+    handler: Optional[Callable[[ClassifiedError, RepairTaskCtx], RepairAction]] = None
+
+
+# ----------------- Level 1 纯函数修复原语 -----------------
+
+
+def _best_column_match(failed_col: str, headers: list[str], aliases: dict[str, str]) -> Optional[str]:
+    """列名候选：先查 column_aliases，再 difflib 模糊匹配 headers。"""
+    if not failed_col:
+        return None
+    # 1. 别名精确命中
+    if failed_col in aliases:
+        cand = aliases[failed_col]
+        if cand in headers:
+            return cand
+    # 2. 别名键的模糊命中（别名键可能是用户术语）
+    for alias, canonical in aliases.items():
+        if failed_col.lower() == alias.lower() and canonical in headers:
+            return canonical
+    # 3. difflib 对 headers 模糊匹配
+    matches = difflib.get_close_matches(failed_col, headers, n=1, cutoff=0.6)
+    if matches:
+        return matches[0]
+    # 4. 大小写/去空格归一
+    norm = failed_col.strip().lower()
+    for h in headers:
+        if h.strip().lower() == norm:
+            return h
+    return None
+
+
+def _coerce_value(value: str, target_type: str) -> tuple[Optional[Any], str]:
+    """类型强转。返回 (coerced, error)。error 非空表示无法强转。"""
+    if value is None:
+        return None, "值为空"
+    t = (target_type or "").strip().lower()
+    try:
+        if t in ("int", "integer", "long"):
+            return int(float(str(value).strip())), ""
+        if t in ("float", "double", "number"):
+            return float(str(value).strip()), ""
+        if t in ("bool", "boolean"):
+            s = str(value).strip().lower()
+            if s in ("1", "true", "是", "yes"):
+                return True, ""
+            if s in ("0", "false", "否", "no"):
+                return False, ""
+            return None, f"bool 无法识别 '{value}'"
+        if t in ("str", "string", "text"):
+            return str(value), ""
+    except (ValueError, TypeError) as e:
+        return None, f"类型强转失败：{e}"
+    # 未知类型原样返回
+    return value, ""
+
+
+# ---- 各 ErrorType 的 Level 1 handler ----
+
+
+def _h_column_not_found(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    cand = _best_column_match(err.failed_col or "", ctx.headers, ctx.column_aliases)
+    if cand and cand != err.failed_col:
+        return RepairAction(
+            kind=RepairActionKind.RE_EXECUTE,
+            fix_payload={"column_remap": {err.failed_col: cand}},
+            reason=f"列名候选重注：{err.failed_col} → {cand}",
+        )
+    return RepairAction(
+        kind=RepairActionKind.ESCALATE_LLM,
+        reason="列名候选零命中，升级 LLM 调 get_table_structure 探查",
+    )
+
+
+def _h_row_not_found(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    candidates: list[str] = []
+    if err.failed_val and ctx.row_aliases:
+        candidates = ctx.row_aliases.get(err.failed_val, [])
+    if candidates:
+        return RepairAction(
+            kind=RepairActionKind.RE_EXECUTE,
+            fix_payload={"row_re_resolve_candidates": candidates},
+            reason=f"row_aliases 扩展命中 {len(candidates)} 个候选",
+        )
+    return RepairAction(
+        kind=RepairActionKind.ESCALATE_LLM,
+        reason="row_aliases 零命中，升级 LLM 调 fuzzy_search_value 探查",
+    )
+
+
+def _h_type_mismatch(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    col = err.failed_col or ""
+    target_type = ctx.col_types.get(col, "")
+    if not target_type:
+        # 从 root_cause 提取期望类型（"期望 int" 之类）
+        lower = (err.root_cause or "").lower()
+        for t in ("int", "float", "bool", "string"):
+            if t in lower:
+                target_type = t
+                break
+    coerced, cerr = _coerce_value(err.failed_val or "", target_type)
+    if cerr:
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason=f"类型强转失败（{cerr}），升级 LLM 诊断",
+        )
+    return RepairAction(
+        kind=RepairActionKind.RE_EXECUTE,
+        fix_payload={"value_coerce": {col: coerced}},
+        reason=f"类型强转：{col} = {coerced!r}（{target_type or '未知类型'}）",
+    )
+
+
+def _h_id_conflict(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    # 新 ID 分配需 cli/表状态，发指令由 agent._allocate_pk 应用
+    return RepairAction(
+        kind=RepairActionKind.RE_EXECUTE,
+        fix_payload={"allocate_new_id": True, "conflict_value": err.failed_val},
+        reason="请求分配新主键 ID（agent._allocate_pk 应用）",
+    )
+
+
+def _h_pk_misplaced(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    return RepairAction(
+        kind=RepairActionKind.RE_EXECUTE,
+        fix_payload={"clear_pk": True, "misplaced_value": err.failed_val},
+        reason="清空误塞主键，走自增分配",
+    )
+
+
+def _h_cross_ref_broken(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    # 引擎纯函数：查依赖图，定位缺失依赖表
+    try:
+        from .cascade_resolver import get_add_dependencies, get_cascade_hints
+        deps = get_add_dependencies(ctx.table_stem) if ctx.table_stem else []
+        hints = get_cascade_hints(ctx.table_stem) if ctx.table_stem else {}
+    except Exception as e:  # noqa: BLE001
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason=f"cascade_resolver 查询失败（{e}），升级 LLM 诊断",
+        )
+    if deps:
+        return RepairAction(
+            kind=RepairActionKind.RE_EXECUTE,
+            fix_payload={"add_dependency": deps, "cascade_hints": hints},
+            reason=f"依赖图检查：需先建 {len(deps)} 个依赖表行",
+        )
+    return RepairAction(
+        kind=RepairActionKind.ESCALATE_LLM,
+        reason="依赖图无显式依赖，升级 LLM 诊断外键来源",
+    )
+
+
+def _h_formula_error(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    # 引擎纯函数：公式引用位移（增删行列场景）
+    formula = ctx.extra.get("formula", "")
+    axis = ctx.extra.get("axis", "row")
+    idx = ctx.extra.get("idx", 0)
+    amount = ctx.extra.get("amount", 0)
+    target_sheet = ctx.extra.get("target_sheet", ctx.sheet)
+    if not formula:
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason="无公式上下文，升级 LLM 调 formula_semantics 诊断",
+        )
+    try:
+        from .formula_ref_shifter import shift_formula
+        new_formula, has_ref, skipped = shift_formula(
+            formula, axis, idx, amount, target_sheet, current_sheet=ctx.sheet
+        )
+    except Exception as e:  # noqa: BLE001
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason=f"formula_ref_shifter 失败（{e}），升级 LLM 诊断",
+        )
+    if has_ref or skipped:
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason=f"公式含 #REF! 或动态函数跳过，升级 LLM 调 formula_semantics 诊断",
+        )
+    return RepairAction(
+        kind=RepairActionKind.RE_EXECUTE,
+        fix_payload={"formula_fix": {"cell": ctx.extra.get("cell"), "new_formula": new_formula}},
+        reason=f"公式引用修复：{formula[:20]}... → {new_formula[:20]}...",
+    )
+
+
+def _h_unknown(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    # 退化为通用 error_feedback retry（Level 1 = 现有 _retry_with_error_feedback 行为）
+    return RepairAction(
+        kind=RepairActionKind.ESCALATE_LLM,
+        reason="未知错误类型，走通用 error_feedback retry（Level 2 LLM re-parse）",
+    )
+
+
+def _h_semantic_outlier(err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+    """值语义离群修复：用 semantic_gate 给的 suggested_fix 做 value_coerce；无建议则升级 LLM。
+
+    Level 1 纯函数：从 verify_signals.semantic_issues 取所有有建议值的列，一次产
+    value_coerce fix_payload（agent._apply_repair_fix 消费，支持多列）。避免只修第一个
+    导致 re-verify 时第二个违例仍在 → 重复策略 → 死循环。LLM 诊断在 Level 2。
+    """
+    sem_issues = (err.verify_signals or {}).get("semantic_issues", []) or []
+    if not sem_issues:
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason="无语义离群明细，升级 LLM 诊断值合理性",
+        )
+    # 收集所有有 suggested_fix 的列，一次性 coerce（_apply_repair_fix 支持多列 dict）
+    coerce_map: dict[str, Any] = {}
+    reasons: list[str] = []
+    no_fix_reasons: list[str] = []
+    for si in sem_issues:
+        if not isinstance(si, dict):
+            continue
+        col = si.get("column")
+        suggested = si.get("suggested_fix")
+        reason = si.get("reason", "值语义离群")
+        if not col:
+            continue
+        if suggested is None:
+            no_fix_reasons.append(f"{col}({reason})")
+            continue
+        coerce_map[col] = suggested
+        reasons.append(f"{col}={suggested!r}（{reason}）")
+    if not coerce_map:
+        # 所有违例都无自动建议 → 升级 LLM
+        return RepairAction(
+            kind=RepairActionKind.ESCALATE_LLM,
+            reason=f"语义离群无自动建议（{'; '.join(no_fix_reasons or reasons)}），升级 LLM 诊断或反问用户",
+        )
+    detail = "; ".join(reasons)
+    if no_fix_reasons:
+        detail += f"；无建议项: {'; '.join(no_fix_reasons)}"
+    return RepairAction(
+        kind=RepairActionKind.RE_EXECUTE,
+        fix_payload={"value_coerce": coerce_map},
+        reason=f"值语义修正：{detail}",
+    )
+
+
+# ----------------- Playbook 路由表 -----------------
+
+
+_STRATEGY_TABLE: dict[ErrorType, RepairStrategy] = {
+    ErrorType.COLUMN_NOT_FOUND: RepairStrategy(
+        name="column_candidate_remap", error_type=ErrorType.COLUMN_NOT_FOUND,
+        level=RepairLevel.RULE, max_rounds=2, handler=_h_column_not_found,
+    ),
+    ErrorType.ROW_NOT_FOUND: RepairStrategy(
+        name="row_alias_resolve", error_type=ErrorType.ROW_NOT_FOUND,
+        level=RepairLevel.RULE, max_rounds=2, needs_llm=True, handler=_h_row_not_found,
+    ),
+    ErrorType.TYPE_MISMATCH: RepairStrategy(
+        name="type_coerce", error_type=ErrorType.TYPE_MISMATCH,
+        level=RepairLevel.RULE, max_rounds=2, handler=_h_type_mismatch,
+    ),
+    ErrorType.ID_CONFLICT: RepairStrategy(
+        name="id_reallocate", error_type=ErrorType.ID_CONFLICT,
+        level=RepairLevel.RULE, max_rounds=2, handler=_h_id_conflict,
+    ),
+    ErrorType.PK_MISPLACED: RepairStrategy(
+        name="pk_clear_autoinc", error_type=ErrorType.PK_MISPLACED,
+        level=RepairLevel.RULE, max_rounds=2, handler=_h_pk_misplaced,
+    ),
+    ErrorType.CROSS_REF_BROKEN: RepairStrategy(
+        name="cascade_dep_check", error_type=ErrorType.CROSS_REF_BROKEN,
+        level=RepairLevel.RULE, max_rounds=2, needs_llm=True, handler=_h_cross_ref_broken,
+    ),
+    ErrorType.FORMULA_ERROR: RepairStrategy(
+        name="formula_ref_fix", error_type=ErrorType.FORMULA_ERROR,
+        level=RepairLevel.RULE, max_rounds=2, needs_llm=True, handler=_h_formula_error,
+    ),
+    ErrorType.SEMANTIC_OUTLIER: RepairStrategy(
+        name="semantic_value_coerce", error_type=ErrorType.SEMANTIC_OUTLIER,
+        level=RepairLevel.RULE, max_rounds=2, needs_llm=True, handler=_h_semantic_outlier,
+    ),
+    ErrorType.UNKNOWN: RepairStrategy(
+        name="generic_error_feedback", error_type=ErrorType.UNKNOWN,
+        level=RepairLevel.LLM, max_rounds=1, needs_llm=True, handler=_h_unknown,
+    ),
+}
+
+
+class RepairPlaybook:
+    """ErrorType -> RepairStrategy 路由表。"""
+
+    def __init__(self, table: Optional[dict[ErrorType, RepairStrategy]] = None) -> None:
+        self._table = table or dict(_STRATEGY_TABLE)
+
+    def select(self, error_type: ErrorType) -> RepairStrategy:
+        """按错误类型选策略。未命中走 unknown 兜底。"""
+        return self._table.get(error_type) or self._table[ErrorType.UNKNOWN]
+
+    def apply(self, error_type: ErrorType, err: ClassifiedError, ctx: RepairTaskCtx) -> RepairAction:
+        """选策略并执行 handler 产出 RepairAction。"""
+        strat = self.select(error_type)
+        if strat.handler is None:
+            return RepairAction(kind=RepairActionKind.ESCALATE_LLM, reason=f"策略 {strat.name} 无 handler")
+        return strat.handler(err, ctx)
+
+    def register(self, strategy: RepairStrategy) -> None:
+        """注册/覆盖策略（扩展点）。"""
+        self._table[strategy.error_type] = strategy

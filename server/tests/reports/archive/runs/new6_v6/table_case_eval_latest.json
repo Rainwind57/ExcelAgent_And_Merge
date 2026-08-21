@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "n": 6,
+    "n_total": 6,
+    "n_excluded": 0,
+    "fixture_error_rate": 0.0,
+    "ok_rate": 0.1667,
+    "truth_ok_rate": 0.0,
+    "error_rate": 0.8333,
+    "confirm_rate": 0.0,
+    "locate_rate": 0.3206,
+    "coverage": 0.1619,
+    "field_accuracy": 0.1305,
+    "strict_pass_rate": 0.0,
+    "avg_extra_ops": 5.5,
+    "avg_elapsed_ms": 153787.5,
+    "p50_elapsed_ms": 165547.9,
+    "p95_elapsed_ms": 193399.8,
+    "total_elapsed_s": 922.7,
+    "error_type_distribution": {
+      "unknown": 5
+    },
+    "total_llm_calls": 120,
+    "total_tokens": 116040,
+    "avg_llm_calls": 20,
+    "success_path_calls": 120,
+    "failure_path_calls": 0
+  },
+  "round": "on-only",
+  "cases": "106-111",
+  "vs_v5_on": {
+    "n": 6,
+    "n_total": 6,
+    "n_excluded": 0,
+    "fixture_error_rate": 0.0,
+    "ok_rate": 0.0,
+    "truth_ok_rate": 0.0,
+    "error_rate": 1.0,
+    "confirm_rate": 0.0,
+    "locate_rate": 0.3817,
+    "coverage": 0.2369,
+    "field_accuracy": 0.3593,
+    "strict_pass_rate": 0.0,
+    "avg_extra_ops": 5.8333,
+    "avg_elapsed_ms": 159638.9,
+    "p50_elapsed_ms": 174249.2,
+    "p95_elapsed_ms": 240687.3,
+    "total_elapsed_s": 957.8,
+    "error_type_distribution": {
+      "unknown": 6
+    },
+    "total_llm_calls": 113,
+    "total_tokens": 94473,
+    "avg_llm_calls": 18.8,
+    "success_path_calls": 113,
+    "failure_path_calls": 0
+  }
+}

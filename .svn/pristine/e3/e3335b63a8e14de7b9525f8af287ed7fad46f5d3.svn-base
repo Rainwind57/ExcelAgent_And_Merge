@@ -1,0 +1,5 @@
+{
+  "copyfrom_path": "",
+  "copyfrom_rev": "",
+  "note": "trunk 基准版本 r1（含嵌套 config/skill.xlsx + 10w行 big_data.xlsx）"
+}

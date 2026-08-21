@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>后端 Agent · 用户手册 · AI 配表助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">AI 配表助手</div>
+    <div class="brand-sub">后端 Agent · 用户手册</div>
+    <div class="nav-group">
+      <div class="nav-title">入口</div>
+      <nav class="nav"><a href="index.html">← 返回首页</a></nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">手册</div>
+      <nav class="nav">
+        <a class="active" href="user-manual.html"><span class="badge planner">用户</span> 后端 Agent</a>
+        <a href="tech-manual.html"><span class="badge tech">技术</span> 后端 Agent</a>
+        <a href="codemaker-user-manual.html"><span class="badge planner">用户</span> 配表模式</a>
+        <a href="codemaker-tech-manual.html"><span class="badge tech">技术</span> 配表模式</a>
+      </nav>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title">本页章节</div>
+      <nav class="nav">
+        <a href="#open">1. 打开工具</a>
+        <a href="#chat">2. AI 表格处理助手</a>
+        <a href="#merge">3. 版本比对合并</a>
+        <a href="#stage">4. 三阶段引导合并</a>
+        <a href="#browse">5. 表格浏览</a>
+        <a href="#faq">6. 常见问题</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main class="content">
+    <p class="muted"><span class="badge planner">用户 · 后端 Agent</span></p>
+    <h1>后端 Agent 用户使用手册</h1>
+    <p class="lead">面向配表策划 / 数值 / 运营等使用者。全程用自然语言完成对 <code>resources/</code> 下 60+ 个 Excel 配表的增删查改、版本比对合并与表格浏览，无需编写代码。</p>
+
+    <div class="callout">
+      <span class="ctitle">适用对象</span>
+      本手册面向 Web 端「AI 配表助手」的日常使用者。运行环境由技术人员部署，使用时只需在浏览器打开页面。环境未就绪请转交 <a href="tech-manual.html">后端 Agent 技术文档</a>。
+    </div>
+
+    <h2 id="open">1. 打开工具</h2>
+    <p>后端服务启动后，浏览器访问 <code>http://127.0.0.1:8000</code>，进入 AI 表格处理助手主界面。界面分三大功能区：<strong>AI 表格处理助手</strong>（对话框）、<strong>版本比对</strong>、<strong>表格浏览</strong>。</p>
+    <div class="figure">
+      <img src="img/image-69.png" alt="进入网址后的界面">
+      <div class="fcaption">图 1-1　进入网址后的初始界面</div>
+    </div>
+
+    <h2 id="chat">2. AI 表格处理助手</h2>
+    <p>在对话框中直接输入自然语言指令，支持查询、修改、新增、删除、复合指令、表格型增加、智能问答、公式表操作、批量操作等。</p>
+
+    <h3>2.1 查询功能</h3>
+    <pre><code>查询建筑炼金台的所有属性</code></pre>
+    <div class="figure">
+      <img src="img/image.png" alt="查询建筑炼金台全属性">
+      <div class="fcaption">图 2-1　查询建筑“炼金台”，返回该行全部字段</div>
+    </div>
+    <p>若结果有多个匹配，会以卡片列出，可点击切换查看具体内容：</p>
+    <pre><code>查询神通能力名称为再生的神通描述</code></pre>
+    <div class="figure">
+      <img src="img/image-1.png" alt="查询再生-多匹配">
+      <div class="fcaption">图 2-2　查询“再生”，命中 3 条匹配</div>
+    </div>
+    <p>点击“高级再生”即显示其对应信息：</p>
+    <div class="figure">
+      <img src="img/image-2.png" alt="查询再生-高级再生">
+      <div class="fcaption">图 2-3　点击“高级再生”查看具体内容</div>
+    </div>
+
+    <h3>2.2 修改功能</h3>
+    <pre><code>将灵兽蕊花仙的体力资质修改为4443</code></pre>
+    <div class="figure">
+      <img src="img/image-3.png" alt="修改蕊花仙体力资质">
+      <div class="fcaption">图 2-4　修改灵兽“蕊花仙”的体力资质为 4443</div>
+    </div>
+    <pre><code>将人物男角色的面板物理攻击修改为5554</code></pre>
+    <div class="figure">
+      <img src="img/image-4.png" alt="修改男角色物理攻击">
+      <div class="fcaption">图 2-5　修改人物“男角色”的面板物理攻击为 5554</div>
+    </div>
+
+    <h3>2.3 新增功能</h3>
+    <pre><code>新增活动名称为新周年庆，id是10006，活动开始时间是2026/5/21</code></pre>
+    <div class="figure">
+      <img src="img/image-5.png" alt="新增活动新周年庆">
+      <div class="fcaption">图 2-6　新增活动“新周年庆”，id=10006，开始时间 2026/5/21</div>
+    </div>
+    <pre><code>新增法宝名称为测试法宝4，法宝描述为TEST</code></pre>
+    <div class="figure">
+      <img src="img/image-6.png" alt="新增法宝测试法宝4">
+      <div class="fcaption">图 2-7　新增法宝“测试法宝4”，描述为 TEST</div>
+    </div>
+
+    <h3>2.4 删除功能</h3>
+    <pre><code>删除活动新周年庆</code></pre>
+    <div class="figure">
+      <img src="img/image-7.png" alt="删除活动新周年庆">
+      <div class="fcaption">图 2-8　删除活动“新周年庆”</div>
+    </div>
+    <pre><code>删除法宝名称为测试法宝4</code></pre>
+    <div class="figure">
+      <img src="img/image-8.png" alt="删除法宝测试法宝4">
+      <div class="fcaption">图 2-9　删除法宝“测试法宝4”</div>
+    </div>
+
+    <h3>2.5 复合指令</h3>
+    <p>一句话内包含多个操作或多字段赋值也能识别。</p>
+    <pre><code>增加建筑名称为瞭望塔v2，建筑类型为654</code></pre>
+    <div class="figure">
+      <img src="img/image-9.png" alt="复合-新增建筑瞭望塔v2">
+      <div class="fcaption">图 2-10　新增建筑“瞭望塔v2”并指定建筑类型 654</div>
+    </div>
+    <pre><code>将门派名称为火法的大世界model_id改为1028，战斗model_id改为1068</code></pre>
+    <div class="figure">
+      <img src="img/image-10.png" alt="复合-多字段修改门派火法">
+      <div class="fcaption">图 2-11　一条指令同时修改门派“火法”的两个 model_id</div>
+    </div>
+    <div class="callout"><span class="ctitle">定位失败时</span>第一次定位表格出错时可选择“搜索其他表格”（耗时相应变长），定位成功后返回相应信息。</div>
+
+    <h3>2.6 表格型增加</h3>
+    <p>输入 <strong>「增加灵兽」</strong>，助手会定位到对应表并弹出待填表单：</p>
+    <div class="figure">
+      <img src="img/image-11.png" alt="表格型增加-弹出待填表单">
+      <div class="fcaption">图 2-12　输入“增加灵兽”后弹出待填表格</div>
+    </div>
+    <p>填好内容后点击“校验”或“确认新增”。确认新增会先经过一次校验，无误后自动把新行合并进主表：</p>
+    <div class="figure">
+      <img src="img/image-12.png" alt="表格型增加-校验合并">
+      <div class="fcaption">图 2-13　校验通过后自动合并到主表（已新增 Pet 行 53）</div>
+    </div>
+
+    <h3>2.7 智能问答</h3>
+    <pre><code>建筑相关的表格有哪些</code></pre>
+    <div class="figure">
+      <img src="img/image-13.png" alt="问答-建筑相关表">
+      <div class="fcaption">图 2-14　列出与“建筑”相关的所有表</div>
+    </div>
+    <pre><code>item表格有哪些列</code></pre>
+    <div class="figure">
+      <img src="img/image-14.png" alt="问答-item列">
+      <div class="fcaption">图 2-15　列出 item 表所有列名及含义</div>
+    </div>
+    <pre><code>邮件相关的表格有哪些</code></pre>
+    <div class="figure">
+      <img src="img/image-15.png" alt="问答-邮件相关表">
+      <div class="fcaption">图 2-16　列出与“邮件”相关的所有表</div>
+    </div>
+
+    <h3>2.8 公式相关表格</h3>
+    <p>对含公式的表操作时，助手会保护公式并保证结果正确。</p>
+    <pre><code>将formula_basic表格中的段位名称为测试段位6的基础分修改为600</code></pre>
+    <div class="figure">
+      <img src="img/image-30.png" alt="公式-修改基础分">
+      <div class="fcaption">图 2-17　修改测试段位6 的基础分为 600</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-31.png" alt="公式-修改结果">
+      <div class="fcaption">图 2-18　修改后公式结果同步正确</div>
+    </div>
+    <pre><code>将formula_sum中赛季编号是7的行进行删除</code></pre>
+    <div class="figure">
+      <img src="img/image-32.png" alt="公式-删除行">
+      <div class="fcaption">图 2-19　删除赛季编号为 7 的行</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-33.png" alt="公式-删除后结果正确">
+      <div class="fcaption">图 2-20　删除后最终公式结果无误</div>
+    </div>
+
+    <h3>2.9 批量操作</h3>
+    <p>一条指令内可串联多步操作，助手按顺序逐条执行（查询 → 修改 → 查询 → 删除）。</p>
+    <pre><code>查询建筑瞭望塔v2的所有信息；将建筑瞭望塔v2的地图图标修改为4444，代码中建筑实体类型名为CityTest；查询建筑瞭望塔v2的所有信息；删除灵兽玄武龟v2</code></pre>
+    <div class="figure">
+      <img src="img/image-16.png" alt="批量-查询瞭望塔v2">
+      <div class="fcaption">图 2-21　① 查询建筑“瞭望塔v2”</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-66.png" alt="批量-修改瞭望塔v2">
+      <div class="fcaption">图 2-22　② 修改地图图标为 4444、实体类型名为 CityTest</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-67.png" alt="批量-再次查询瞭望塔v2">
+      <div class="fcaption">图 2-23　③ 再次查询确认修改结果</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-68.png" alt="批量-删除玄武龟v2">
+      <div class="fcaption">图 2-24　④ 删除灵兽“玄武龟v2”</div>
+    </div>
+
+    <h2 id="merge">3. 版本比对合并</h2>
+    <p>点击“版本比对”进入初始界面：</p>
+    <div class="figure">
+      <img src="img/image-39.png" alt="版本比对初始界面">
+      <div class="fcaption">图 3-1　版本比对初始界面</div>
+    </div>
+    <p>可点击“从 merge 文件夹加载”或“选择本地文件比对”。后续项目会基于文件夹选择，目前暂用 merge 文件夹代替。选好文件比对后进入比对界面：</p>
+    <div class="figure">
+      <img src="img/image-40.png" alt="比对界面">
+      <div class="fcaption">图 3-2　比对界面</div>
+    </div>
+    <p>可通过“全部 sheet”“仅冲突”“仅增删改”筛选 Sheet：</p>
+    <div class="figure">
+      <img src="img/image-41.png" alt="筛选Sheet">
+      <div class="fcaption">图 3-3　筛选 Sheet</div>
+    </div>
+    <p>选中某个 sheet 后，可选择展示全部 / 冲突 / 修改 / 新增 / 删除：</p>
+    <div class="figure">
+      <img src="img/image-20.png" alt="Sheet内容筛选1">
+      <div class="fcaption">图 3-4　Sheet 内行类型筛选</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-21.png" alt="Sheet内容筛选2">
+      <div class="fcaption">图 3-5　筛选后展示</div>
+    </div>
+    <p>点击出现冲突的单元格进入冲突处理页，页面由该冲突所在列拼接而成，并高亮当前正在处理的冲突：</p>
+    <div class="figure">
+      <img src="img/image-22.png" alt="冲突处理页">
+      <div class="fcaption">图 3-6　冲突处理页</div>
+    </div>
+    <p>把鼠标移到某个版本对应位置即可选择该版本的值：</p>
+    <div class="figure">
+      <img src="img/image-23.png" alt="选择某版本的值">
+      <div class="fcaption">图 3-7　悬停选定某版本的值</div>
+    </div>
+    <p>也可点击“整行用此版本”一次性采用该版本整行：</p>
+    <div class="figure">
+      <img src="img/image-24.png" alt="整行用此版本">
+      <div class="fcaption">图 3-8　“整行用此版本”一键采纳整行</div>
+    </div>
+    <p>解决一个冲突后，页面会移除已解决项，仅显示剩余冲突：</p>
+    <div class="figure">
+      <img src="img/image-25.png" alt="仅显示剩余冲突">
+      <div class="fcaption">图 3-9　仅显示剩余冲突</div>
+    </div>
+    <p>若操作出错，可点击“已解决”查看已处理冲突并跳回重新选择：</p>
+    <div class="figure">
+      <img src="img/image-26.png" alt="查看已解决">
+      <div class="fcaption">图 3-10　“已解决”可回溯重选</div>
+    </div>
+    <div class="callout">
+      <span class="ctitle">编号冲突自动处理</span>
+      合并时若出现编号冲突，会按版本先后自动合并，编号自动改为当前最大编号 +1，并按主键（通常第一列 id）自动 sort 排序。
+    </div>
+    <div class="figure">
+      <img src="img/image-28.png" alt="编号冲突自动处理">
+      <div class="fcaption">图 3-11　编号冲突自动重映射并按主键排序</div>
+    </div>
+    <p>所有冲突 sheet 全部解决后，“导出全部表格”按钮变绿，代表可导出合并版本。导出后会在 merge 文件夹新增文件，下载栏也会出现新增文件：</p>
+    <div class="figure">
+      <img src="img/image-27.png" alt="导出合并版本">
+      <div class="fcaption">图 3-12　导出按钮变绿，导出合并版本</div>
+    </div>
+
+    <h2 id="stage">4. 三阶段引导合并</h2>
+    <p>点击“三阶段引导合并”进入初始界面，先选择一个生产者分支：</p>
+    <div class="figure">
+      <img src="img/image-42.png" alt="三阶段-初始界面">
+      <div class="fcaption">图 4-1　三阶段引导合并初始界面</div>
+    </div>
+
+    <h3>4.1 第一阶段：本地合并提交</h3>
+    <p>进入后显示各表格，在右侧选择是否参与合并、选基准版本、勾选衍生文件，点击“合并此分组”：</p>
+    <div class="figure">
+      <img src="img/image-43.png" alt="阶段1-选择分组">
+      <div class="fcaption">图 4-2　选择分组与基准版本，点击“合并此分组”</div>
+    </div>
+    <p>进入比对界面处理冲突后，点击右上方“产生中间版本”回到原界面：</p>
+    <div class="figure">
+      <img src="img/image-44.png" alt="阶段1-产生中间版本">
+      <div class="fcaption">图 4-3　处理冲突后“产生中间版本”</div>
+    </div>
+    <p>需要提交的表格合并完成后，点击右下角“合并完成，进入阶段 2”：</p>
+    <div class="figure">
+      <img src="img/image-45.png" alt="阶段1-进入阶段2">
+      <div class="fcaption">图 4-4　合并完成，进入阶段 2</div>
+    </div>
+    <p>也可切换生产者继续阶段 1：</p>
+    <div class="figure">
+      <img src="img/image-46.png" alt="阶段1-切换生产者">
+      <div class="fcaption">图 4-5　切换生产者继续阶段 1</div>
+    </div>
+
+    <h3>4.2 第二阶段：跨生产者综合</h3>
+    <p>模拟多个不同来源的提交进行合并，同样处理比对后生成“跨生产者综合”的中间版本：</p>
+    <div class="figure">
+      <img src="img/image-47.png" alt="阶段2-跨生产者综合">
+      <div class="fcaption">图 4-6　跨生产者综合</div>
+    </div>
+
+    <h3>4.3 第三阶段：逐分组合回 trunk</h3>
+    <p>将跨生产者综合的中间版与 trunk 比对（生产者 base 的 trunk 可能不是当前 trunk）：</p>
+    <div class="figure">
+      <img src="img/image-48.png" alt="阶段3-合回trunk">
+      <div class="fcaption">图 4-7　逐分组合回 trunk</div>
+    </div>
+    <p>点击“确认合回全部”后弹出修改清单：</p>
+    <div class="figure">
+      <img src="img/image-49.png" alt="阶段3-修改清单">
+      <div class="fcaption">图 4-8　修改清单</div>
+    </div>
+    <p>确认后进入结算页面：</p>
+    <div class="figure">
+      <img src="img/image-50.png" alt="阶段3-结算页面">
+      <div class="fcaption">图 4-9　结算页面</div>
+    </div>
+
+    <h2 id="browse">5. 表格浏览</h2>
+    <p>进入表格浏览初始界面：</p>
+    <div class="figure">
+      <img src="img/image-29.png" alt="表格浏览初始界面">
+      <div class="fcaption">图 5-1　表格浏览初始界面</div>
+    </div>
+    <p>点击具体表格，查看该表相应信息：</p>
+    <div class="figure">
+      <img src="img/image-34.png" alt="查看表格信息">
+      <div class="fcaption">图 5-2　查看具体表格信息</div>
+    </div>
+    <p>双击表体单元格可进行单元格编辑：</p>
+    <div class="figure">
+      <img src="img/image-35.png" alt="单元格编辑">
+      <div class="fcaption">图 5-3　双击单元格进入编辑</div>
+    </div>
+    <p>修改后确认即完成单元格编辑：</p>
+    <div class="figure">
+      <img src="img/image-36.png" alt="确认编辑">
+      <div class="fcaption">图 5-4　确认完成单元格编辑</div>
+    </div>
+    <p>也可点击页面右上角“快速编辑”，对整个表体做快速编辑：</p>
+    <div class="figure">
+      <img src="img/image-37.png" alt="快速编辑1">
+      <div class="fcaption">图 5-5　点击“快速编辑”</div>
+    </div>
+    <div class="figure">
+      <img src="img/image-38.png" alt="快速编辑2">
+      <div class="fcaption">图 5-6　整个表体进入快速编辑</div>
+    </div>
+    <div class="callout warn"><span class="ctitle">搜索较慢</span>页面上方有搜索框，键入关键词即可全文搜索，但搜索整体耗时较长。定位数据建议优先用智能问答 + 浏览，或 AI Chat 查询语句。</div>
+
+    <h2 id="faq">6. 常见问题</h2>
+    <table>
+      <thead><tr><th>现象</th><th>说明 / 处理</th></tr></thead>
+      <tbody>
+        <tr><td>提示“AI 服务未启动”</td><td>codemaker serve（LLM 底座）未运行，联系管理员启动</td></tr>
+        <tr><td>提示“底层模型调用失败”</td><td>模型额度耗尽或不支持，按提示更换模型</td></tr>
+        <tr><td>查询出现多个匹配</td><td>点击卡片切换查看，选中目标项</td></tr>
+        <tr><td>搜索很慢</td><td>全文搜索需扫描所有表，属正常，尽量用精确指令</td></tr>
+        <tr><td>公式列结果</td><td>助手会保护公式列，删除/修改后自动保持结果正确</td></tr>
+      </tbody>
+    </table>
+
+    <hr class="hr">
+    <p class="muted">本手册面向使用者，技术细节见 <a href="tech-manual.html">后端 Agent 技术文档</a>；轻量的 CodeMaker 配表模式见 <a href="codemaker-user-manual.html">配表模式用户手册</a>。</p>
+  </main>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.figure img').forEach(function (img) {
+      img.title = '点击查看原图';
+      img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+    });
+  });
+</script>
+</body>
+</html>

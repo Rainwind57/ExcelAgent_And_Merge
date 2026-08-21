@@ -1,0 +1,363 @@
+"""定位 SubAgent:全输入走,产候选表 + sheet + 跨 sheet FK 链。
+
+替代原 detect_cross_table_action 关键词闸门 + table_locator 单表定位 +
+_llm_chain_decompose 内联候选收集三处散落逻辑。
+
+职责边界(与 DecomposeAgent/ValidatorAgent 严格分层):
+  - LocatorAgent: 输入 text → 输出候选表(stem/sheet/conf) + FK 边
+  - DecomposeAgent: 消费 Locator 输出 + schema → 产 SplitIntent[]
+  - ValidatorAgent: 消费 SplitIntent[] → 校验引用闭环 + 修正
+
+全输入走设计(原则11):
+  关键词闸门有覆盖盲区(新链型漏检),全部输入交 LocatorAgent 探候选表,
+  ≥2 表或含 FK 链时触发 DecomposeAgent 跨表链分解;<2 走单表路径。
+  无关键词依赖 → 真正泛化。
+
+内部主路径用 TableLocator 5 级递进定位(规则),歧义时 LLM 裁决。
+FK 边用 RelationGraph 声明式数据(table_relations.json)。
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from .base import SubAgent
+from .llm_agent import LLMSubAgent
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CandidateTable:
+    """单候选表定位结果。
+
+    Attributes:
+        stem: 表 stem(如 pet)
+        sheet: 命中 sheet(如 Pet),空表示仅文件级命中
+        confidence: 置信度 [0,1]
+        level: 命中级别标签(透传 TableLocator 的 level)
+        matched_term: 实际匹配到的字符串
+    """
+    stem: str
+    sheet: str = ""
+    confidence: float = 0.0
+    level: str = ""
+    matched_term: str = ""
+
+
+@dataclass
+class FKEdge:
+    """单条外键边(供 DecomposeAgent 决定 produces/consumes)。
+
+    Attributes:
+        from_stem: 源表 stem(consumer)
+        from_sheet: 源 sheet
+        from_column: 源表 FK 列名
+        to_stem: 目标表 stem(producer)
+        to_sheet: 目标 sheet
+        to_column: 目标被引用列名
+    """
+    from_stem: str
+    from_sheet: str
+    from_column: str
+    to_stem: str
+    to_sheet: str
+    to_column: str
+
+
+@dataclass
+class LocatorResult:
+    """LocatorAgent 整体输出。
+
+    Attributes:
+        candidates: 候选表列表(按置信度降序)
+        fk_edges: 候选表之间的 FK 边(仅含两端均在 candidates 内的边)
+        ambiguous: 是否歧义(同档多匹配,需上层确认)
+    """
+    candidates: list[CandidateTable] = field(default_factory=list)
+    fk_edges: list[FKEdge] = field(default_factory=list)
+    ambiguous: bool = False
+
+    @property
+    def is_cross_table(self) -> bool:
+        """是否触发跨表链路径:≥2 候选表 或 含 FK 边。"""
+        return len(self.candidates) >= 2 or bool(self.fk_edges)
+
+
+def _stem_of_path(p: str) -> str:
+    """relation path → stem:'pet/pet.xlsx' → 'pet'。"""
+    s = str(p).replace("\\", "/").rstrip("/")
+    if s.endswith(".xlsx"):
+        s = s[:-5]
+    return s.rsplit("/", 1)[-1]
+
+
+class LocatorAgent(LLMSubAgent):
+    """定位 Agent:全输入探候选表 + FK 链。
+
+    流程:
+      1. TableLocator 5 级递进(规则主路径)产候选
+      2. 歧义时 LLM 裁决(复用 _call_llm)
+      3. RelationGraph 抽候选表间 FK 边
+    """
+
+    def __init__(self, parser=None, thinking_sink=None, cli=None,
+                 locator=None, relation_graph=None):
+        super().__init__("LocatorAgent", parser=parser,
+                         thinking_sink=thinking_sink,
+                         prompt_template="定位候选表 + FK 链")
+        self._cli = cli
+        self._locator = locator
+        self._relation_graph = relation_graph
+
+    def locate(self, text: str) -> LocatorResult:
+        """主入口:text → LocatorResult。
+
+        失败返回空 LocatorResult(上层降级走单表路径)。
+        """
+        if not text or not text.strip():
+            return LocatorResult()
+        self.add_thinking("定位", f"LocatorAgent 开始探测候选表")
+        complex_input = self._is_complex_input(text)
+        # 1. 规则主路径:TableLocator 5 级
+        outcome = self._rule_locate(text)
+        candidates: list[CandidateTable] = []
+        ambiguous = False
+        if outcome and outcome.best:
+            for r in self._merge_candidates(outcome):
+                candidates.append(CandidateTable(
+                    stem=r.stem, sheet=r.sheet or "",
+                    confidence=r.confidence, level=r.level,
+                    matched_term=r.matched_term,
+                ))
+            ambiguous = outcome.is_ambiguous
+        # 1b. 复杂输入:FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
+        #     把 alias 未直接命中但语义相关的表(如 interaction/spawn_world_entity)
+        #     纳入候选,而不用 locate_all 全量列名匹配(会引入 40+ 噪声表膨胀 DecomposeAgent 上下文)。
+        if complex_input:
+            for c in self._expand_by_fk(candidates):
+                if not any(x.stem == c.stem for x in candidates):
+                    candidates.append(c)
+        # 2. LLM 裁决:歧义或无命中时(复杂输入保留多候选交 DecomposeAgent,不走收敛)
+        if (not complex_input) and (ambiguous or not candidates) and self.parser:
+            llm_stem = self._llm_resolve(text,
+                [c.stem for c in candidates] if candidates else None)
+            if llm_stem:
+                # LLM 裁定的 stem 若不在候选内,补一个低置信度候选
+                if not any(c.stem == llm_stem for c in candidates):
+                    candidates.append(CandidateTable(
+                        stem=llm_stem, confidence=0.5,
+                        level="llm_inferred", matched_term=llm_stem,
+                    ))
+                # 歧义消解:仅保留 LLM 裁定的 + 同 stem 的
+                candidates = [c for c in candidates
+                              if c.stem == llm_stem or c.confidence >= 0.90]
+                ambiguous = False
+        # 3. FK 边:候选表之间的 relation graph 边
+        fk_edges = self._collect_fk_edges(candidates)
+        self.add_thinking("定位",
+                          f"LocatorAgent 产出 {len(candidates)} 候选表, "
+                          f"{len(fk_edges)} FK 边, cross={bool(fk_edges)}"
+                          + (" (复杂输入汇集)" if complex_input else ""))
+        return LocatorResult(candidates=candidates, fk_edges=fk_edges,
+                             ambiguous=ambiguous)
+
+    # ── 内部 ───────────────────────────────────────────────────
+
+    def _rule_locate(self, text: str):
+        """TableLocator 5 级递进定位。"""
+        locator = self._get_locator()
+        if locator is None:
+            return None
+        try:
+            return locator.locate(text)
+        except Exception:
+            logger.debug("TableLocator.locate 失败", exc_info=True)
+            return None
+
+    def _merge_candidates(self, outcome) -> list:
+        """合并 best + ambiguous 为候选列表(去重同 path+sheet)。
+
+        接受 TableLocator.LocateOutcome(有 best/ambiguous 属性)。
+        """
+        out = []
+        seen = set()
+        if outcome.best:
+            out.append(outcome.best)
+            seen.add((outcome.best.stem, outcome.best.sheet or ""))
+        for r in getattr(outcome, "ambiguous", []) or []:
+            key = (r.stem, r.sheet or "")
+            if key not in seen:
+                out.append(r)
+                seen.add(key)
+        # 按置信度降序
+        out.sort(key=lambda r: getattr(r, "confidence", 0.0), reverse=True)
+        return out
+
+    def _is_complex_input(self, text: str) -> bool:
+        """复杂多表输入信号:对话/选项/支线/采集/完成奖励 或多 id/引号名。
+
+        复杂输入交 DecomposeAgent(LLM)做意图分解,LocatorAgent 不在定位层 LLM 收敛,
+        避免单一高置信别名(如旧版"奖励"误路由)把跨表链短路成单候选,
+        使 is_cross_table=False 漏触发 DecomposeAgent。
+        """
+        if any(k in text for k in (
+            '选项', '对话', '支线', '主线', '采集', '完成奖励', '任务奖励',
+            '接下', '接取', '领取', '提交任务',
+        )):
+            return True
+        # 多 id 引用(reward_id/group_id/spawn_id 等交叉表信号)
+        ids = re.findall(r'\b[A-Za-z_]+_id\b\s*[:：]?\s*\d+', text)
+        if len(ids) >= 2:
+            return True
+        # 多引号名称(NPC名 + 任务名 + 对话文本 等)
+        q = re.findall(r"['\"][^'\"]{2,30}['\"]", text)
+        if len(q) >= 2:
+            return True
+        return False
+
+    def _expand_by_fk(self, candidates: list[CandidateTable]) -> list[CandidateTable]:
+        """FK 关系驱动扩表:relation graph 中任一端 stem 在候选内则补对端 stem。
+
+        用途:复杂输入经 alias 命中 entity_prefab/quest/reward 后,补
+        interaction(经 entity_prefab.交互id↔Interaction.编号、Interaction.3002↔reward)
+        与 spawn_world_entity(经 实体Prefab ID↔entity_prefab)等关联表,
+        使 DecomposeAgent 看到完整跨表链而非仅 3 个别名表。
+        新补表置信度 0.50(level=fk_expanded),交 DecomposeAgent LLM 决策。
+        """
+        rg = self._get_relation_graph()
+        if rg is None or not candidates:
+            return []
+        cand_stems = {c.stem for c in candidates}
+        new_stems: set[str] = set()
+        for r in rg.relations:
+            fs = _stem_of_path(r.from_path)
+            ts = _stem_of_path(r.to_path)
+            if fs == ts or (fs not in cand_stems and ts not in cand_stems):
+                continue
+            if fs in cand_stems and ts not in cand_stems:
+                new_stems.add(ts)
+            elif ts in cand_stems and fs not in cand_stems:
+                new_stems.add(fs)
+        return [CandidateTable(stem=s, confidence=0.50,
+                               level="fk_expanded", matched_term="fk")
+                for s in new_stems if s]
+
+    def _collect_all_level_hits(self, text: str) -> list:
+        """复杂输入:返回 TableLocator.locate_all 全部级别命中(含 0.60 列名命中)。
+
+        保留供调试/兜底;主路径用 _expand_by_fk 做 FK 精准扩表以避免噪声。
+        """
+        locator = self._get_locator()
+        if locator is None:
+            return []
+        try:
+            return locator.locate_all(text)
+        except Exception:
+            logger.debug("locate_all 复杂输入收集失败", exc_info=True)
+            return []
+
+    def _llm_resolve(self, text: str, candidates: list[str] = None) -> Optional[str]:
+        """歧义/未命中时 LLM 选表 stem。复用 StepAIEnhancer.ai_resolve_table prompt 风格。"""
+        all_tables = []
+        try:
+            if self._cli and hasattr(self._cli, "list_tables"):
+                all_tables = [p.stem for p in self._cli.list_tables()]
+        except Exception:
+            pass
+        cand_desc = "、".join(candidates) if candidates else "无"
+        pool = "、".join(all_tables[:40]) if all_tables else "（未提供全表）"
+        scenario = "多候选歧义" if candidates else "规则未命中"
+        prompt = f"""你是配表路由专家。根据用户指令选最合适的目标表 stem。
+
+## 用户指令
+{text}
+
+## 场景
+{scenario}:候选 = {cand_desc}
+
+## 可用表池
+{pool}
+
+## 路由提示
+- NPC/怪物/宠物 → entity_prefab
+- 道具/装备 → item
+- 邮件 → mail
+- 交互/对话 → interaction
+- 任务 → quest
+- 生成点 → spawn_world_entity
+
+只输出表 stem(如 entity_prefab),无其他文字。"""
+        raw = self._call_llm(prompt, timeout=30)
+        if not raw:
+            return None
+        stem = raw.strip().splitlines()[0].strip()
+        # 校验 LLM 输出在表池内(防幻觉)
+        pool_check = (candidates or []) + all_tables
+        if pool_check and stem not in pool_check:
+            for p in pool_check:
+                if stem in p or p in stem:
+                    return p
+            return None
+        return stem
+
+    def _collect_fk_edges(self, candidates: list[CandidateTable]) -> list[FKEdge]:
+        """从 RelationGraph 抽候选表之间的 FK 边。
+
+        仅保留两端 stem 均在 candidates 内的边(聚焦跨表链)。
+        """
+        rg = self._get_relation_graph()
+        if rg is None or not candidates:
+            return []
+        cand_stems = {c.stem for c in candidates}
+        edges: list[FKEdge] = []
+        for r in rg.relations:
+            fs = _stem_of_path(r.from_path)
+            ts = _stem_of_path(r.to_path)
+            if fs in cand_stems and ts in cand_stems and fs != ts:
+                edges.append(FKEdge(
+                    from_stem=fs, from_sheet=r.from_sheet, from_column=r.from_column,
+                    to_stem=ts, to_sheet=r.to_sheet, to_column=r.to_column,
+                ))
+        return edges
+
+    def _get_locator(self):
+        if self._locator is not None:
+            return self._locator
+        try:
+            from ..locator.table_locator import TableLocator
+            self._locator = TableLocator()
+        except Exception as e:
+            logger.debug("TableLocator 初始化失败: %s", e, exc_info=True)
+            return None
+        return self._locator
+
+    def _get_relation_graph(self):
+        if self._relation_graph is not None:
+            return self._relation_graph
+        try:
+            from ..table_relations import RelationGraph
+            self._relation_graph = RelationGraph.load()
+        except Exception as e:
+            logger.debug("RelationGraph.load 失败: %s", e, exc_info=True)
+            return None
+        return self._relation_graph
+
+    def _run_impl(self, prompt: str, skill_docs: list, context: dict):
+        """SubAgent 接口适配:从 context 取 text,产 LocatorResult dict。"""
+        text = context.get("text") or prompt
+        result = self.locate(text)
+        return {
+            "sql_or_ops": [],
+            "locator_result": result,
+            "produces": None,
+            "references": [],
+            "target_table": "",
+            "target_sheet": "",
+        }
+
+
+__all__ = ["LocatorAgent", "LocatorResult", "CandidateTable", "FKEdge"]
