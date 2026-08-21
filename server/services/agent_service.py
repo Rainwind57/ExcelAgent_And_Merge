@@ -1976,9 +1976,29 @@ class AgentService:
                 # 中断反问回调（#41：env CODEMAKER_INTERACTIVE_REPAIR=0 关闭 →
                 # _ask_callback 不注入，阻断错误走原 ABORT 路径，防非交互场景卡死）
                 if os.getenv("CODEMAKER_INTERACTIVE_REPAIR", "1") != "0":
+                    # dry_run / 无 reply_queue 时默认"接受建议"（非 skip）：
+                    # - PK 冲突（_ask_pk_conflict）：返 accept_suggest=True → validator
+                    #   调 _apply_pk_to_intent 写入 suggested_id，标 _pk_resolved
+                    # - 通用硬 issue（_ask_hard_issue）：返 mode=field + value=suggestion
+                    #   → _apply_issue_fix_to_intent 改写 fields[col]
+                    # 语义：链路完整性优先，不跳过子任务（用户要求默认接受建议）。
+                    # 真 skip 仅由用户在交互 UI 主动点击产生。
+                    _accept_suggestion = os.getenv(
+                        "CODEMAKER_DRY_RUN_ACCEPT_SUGGEST", "1") == "1"
                     def _ask_callback(question: dict):
                         q.put(("ask", question))
                         if reply_queue is None:
+                            if _accept_suggestion:
+                                _sug = question.get("suggested_id")
+                                if _sug is None:
+                                    _sug = question.get("suggestion")
+                                return {
+                                    "mode": "field",
+                                    "accept_suggest": True,
+                                    "value": _sug,
+                                    "custom_id": _sug,
+                                    "text": _sug,
+                                }
                             return {"mode": "skip"}
                         _ce = getattr(self.agent, "_cancel_event", None)
                         while True:
@@ -2010,6 +2030,9 @@ class AgentService:
                 # token 级流式：LLM 同步调用期间经 /event SSE 推 llm_token
                 set_token_sink(lambda kind, delta: q.put(
                     ("llm_token", {"kind": kind, "delta": delta})))
+                # dry_run 标志下传 agent（Step2 _step2_validate_intents 读此，
+                # dry_run 时硬 issue 复位放行不真过滤，保链路完整走通预览）。
+                self.agent._dry_run_flag = bool(dry_run)
                 resp = self.chat(text=text, session_id=session_id, dry_run=dry_run,
                                   table_hint=table_hint, confirm_token=confirm_token,
                                   confirm_cascade=confirm_cascade)
@@ -2658,17 +2681,34 @@ class AgentService:
                 _v = getattr(self.agent, _attr, None)
                 if _v is not None:
                     setattr(tmp_agent, _attr, _v)
-            # dry_run 非交互：注入立即返 skip 的 ask_callback（O3 后 validate_two_layer
-            # 已不调 ask_user、非阻断，此注入 dormant，保留以兼容旧路径/未来 C 交互）
-            _skip_cb = lambda question: {"mode": "skip"}
-            tmp_agent._ask_callback = _skip_cb
+            # dry_run 非交互：注入"接受建议"ask_callback（非 skip）。
+            # §链路完整性：dry_run 预览应完整走通 4-Step，硬 issue 默认接受建议
+            # 放行不 skip（用户要求默认接受建议，不跳过子任务）。PK 冲突 accept_suggest，
+            # 通用硬 issue 返 mode=field + value=suggestion → validator 改写 fields。
+            _accept_suggestion = os.getenv(
+                "CODEMAKER_DRY_RUN_ACCEPT_SUGGEST", "1") == "1"
+            def _dry_ask_cb(question: dict):
+                if _accept_suggestion:
+                    _sug = question.get("suggested_id")
+                    if _sug is None:
+                        _sug = question.get("suggestion")
+                    return {
+                        "mode": "field",
+                        "accept_suggest": True,
+                        "value": _sug,
+                        "custom_id": _sug,
+                        "text": _sug,
+                    }
+                return {"mode": "skip"}
+            tmp_agent._ask_callback = _dry_ask_cb
+            tmp_agent._dry_run_flag = True  # Step2 读此走复位放行分支
             _va = getattr(self.agent, "_validator_agent", None)
             if _va is not None:
                 tmp_agent._validator_agent = _va
-                # 临时覆盖共享 validator 的 ask_callback 为 skip（run 后恢复）
+                # 临时覆盖共享 validator 的 ask_callback 为 accept（run 后恢复）
                 _orig_va_cb = getattr(_va, "_ask_callback", None)
                 if hasattr(_va, "set_ask_callback"):
-                    _va.set_ask_callback(_skip_cb)
+                    _va.set_ask_callback(_dry_ask_cb)
             # dry_run V2 复用主 agent 的 locator/decompose agent（用主 cli 拉真实 resources
             # schema），避免 tmp_cli(workspace=临时空目录) list_tables 只1表致 decompose 产空
             _la = getattr(self.agent, "_locator_agent", None)

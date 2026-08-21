@@ -85,6 +85,8 @@ class DecomposeAgent(LLMSubAgent):
         single_threshold = int(_os.environ.get(
             "CODEMAKER_DECOMPOSE_SINGLE_PROMPT_THRESHOLD", "3"))
         use_single = len(candidates) <= single_threshold
+        # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
+        self._last_column_signal = column_signal
 
         self.add_thinking("细分",
             f"DecomposeAgent {'单 prompt' if use_single else '并发'}主路径"
@@ -115,6 +117,16 @@ class DecomposeAgent(LLMSubAgent):
         self.add_thinking("细分",
             f"DecomposeAgent 产出 {len(all_intents)} 条意图"
             f"({'单 prompt' if use_single else '并发'})")
+        # §零 LLM 兜底：LLM 路径产空（serve 慢/超时/非 JSON）时不返空，
+        # 改用确定性 splitter_baseline（cross_table_splitter 11 模板，0 LLM）。
+        # 保链路完整走通——LLM 不稳时仍能产可执行 intent，不依赖 serve 健康。
+        if not all_intents:
+            fb = self._splitter_baseline(text, candidates, locator_result.fk_edges)
+            if fb:
+                self.add_thinking("细分",
+                    f"DecomposeAgent LLM 路径产空,零 LLM 兜底产 {len(fb)} 条"
+                    f"(splitter_baseline 11 模板)")
+                all_intents = fb
         return all_intents
 
     def decompose_segment(self, seg: str, locator_result: LocatorResult) -> list:
@@ -141,10 +153,88 @@ class DecomposeAgent(LLMSubAgent):
         candidates = locator_result.candidates
         fk_block = self._build_fk_block(locator_result.fk_edges)
         column_signal = getattr(locator_result, "column_signal", None)
+        # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
+        self._last_column_signal = column_signal
         self.add_thinking("细分",
             f"DecomposeAgent 段分解({len(candidates)} 候选,timeout={per_to}s)")
-        return self._decompose_single_prompt(
+        intents = self._decompose_single_prompt(
             seg, candidates, fk_block, per_to, column_signal=column_signal)
+        # §零 LLM 兜底：段分解产空时走 _splitter_baseline（与主流程一致），
+        # 保段级覆盖（多段指令某段 LLM 产空不漏）。
+        if not intents:
+            fb = self._splitter_baseline(seg, candidates, locator_result.fk_edges)
+            if fb:
+                self.add_thinking("细分",
+                    f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
+                intents = fb
+        return intents
+
+    def _splitter_baseline(self, text: str, candidates: list,
+                           fk_edges: list) -> list:
+        """零 LLM 兜底：LLM 路径产空时产确定性 intent。
+
+        两路径合并（保覆盖）：
+          a. cross_table_splitter 11 模板（detect_cross_table_action 命中则用，
+             覆盖 npc/item/mail/quest/pet/school/combat/residence 等已知链型）
+          b. ColumnExtractor 候选表 → 每表产 1 条 add intent（fields 用指令
+             文本提到的列值，无值留空）+ FK 边 → produces/consumes 占位符连线
+
+        不调 LLM，不依赖 serve 健康。产空仍返 []（极少见，splitter 模板
+        不命中 + 候选表无 FK 边），由 Step1 外层再回退。
+        """
+        all_fb: list = []
+        # a. splitter 11 模板
+        try:
+            from ..core.cross_table_splitter import (
+                CrossTableIntentSplitter, detect_cross_table_action)
+            if detect_cross_table_action(text):
+                sp = CrossTableIntentSplitter()
+                sp_intents = sp.split(text)
+                if sp_intents:
+                    all_fb.extend(sp_intents)
+        except Exception:  # noqa: BLE001
+            logger.warning("DecomposeAgent splitter_baseline 模板失败",
+                           exc_info=True)
+        # b. ColumnExtractor 信号兜底：每候选表产 1 条 add intent
+        # 候选表已含列名信号，从 text 提取列值填 fields
+        if len(all_fb) < len(candidates):
+            # column_signal 在 LocatorResult 上（非 CandidateTable），从外层传入
+            cs = getattr(self, "_last_column_signal", None)
+            sig_hits = []
+            if cs is not None:
+                sig_hits = getattr(cs, "hits", []) or []
+            # 按 stem 聚合命中列
+            sig_by_stem: dict[str, list] = {}
+            for h in sig_hits:
+                stem = getattr(h, "stem", "") or ""
+                if stem:
+                    sig_by_stem.setdefault(stem, []).append(h)
+            existing_stems = {(getattr(i, "table_hint", "") or "").lower()
+                              for i in all_fb}
+            SI = _SplitIntent()
+            import re as _re
+            for cand in candidates:
+                stem = getattr(cand, "stem", "") or ""
+                if not stem or stem.lower() in existing_stems:
+                    continue
+                fields: dict = {}
+                for h in sig_by_stem.get(stem, []):
+                    col = getattr(h, "column", "") or ""
+                    if not col:
+                        continue
+                    # 从 text 扫 "col 值" 或 "col=值" 模式
+                    _pat = _re.compile(
+                        rf"{_re.escape(col)}[^\d\u4e00-\u9fff]*([\d\u4e00-\u9fff]+)",
+                        _re.IGNORECASE)
+                    _m = _pat.search(text)
+                    if _m:
+                        fields[col] = _m.group(1)
+                all_fb.append(SI(
+                    text=text, table_hint=stem, action="add",
+                    fields=fields,
+                    produces=f"new_{stem}_id" if stem else None,
+                ))
+        return all_fb
 
     def _decompose_single_prompt(self, text: str, candidates: list[CandidateTable],
                                   fk_block: str, per_to: int,

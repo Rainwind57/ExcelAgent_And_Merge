@@ -332,7 +332,7 @@ class ParseAgent:
             extras["column_extract_hits"] = [
                 {"column": h.column, "stem": h.stem, "sheet": h.sheet,
                  "score": h.score, "source": h.source}
-                for h in self._last_column_extraction.hits
+                for h in (_ce.hits if _ce else [])
             ]
         return NLIntent(
             action=getattr(si, "action", "add") or "add",

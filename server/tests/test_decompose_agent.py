@@ -317,17 +317,48 @@ def test_consume_broken_link():
     print("PASS consume_broken_link: 检出 new_reward_id 断链")
 
 
-# ── 样例8: 空/畸形 LLM 返回降级 ─────────────────────────────
+# ── 样例8: 空/畸形 LLM 返回降级（零 LLM 兜底） ────────────────
 def test_malformed_llm_fallback():
+    """LLM 返非 JSON 时走 _splitter_baseline 零 LLM 兜底，不返空。
+
+    pet 进化链文本触发 detect_cross_table_action=evolve → splitter 11 模板产 intent。
+    保链路完整走通，serve 挂/超时/非 JSON 时仍产可执行 intent。
+    """
     da, parser = make_agent()
     parser.client.set_response("抱歉,无法理解指令")
     lr = LocatorResult(
         candidates=[CandidateTable("pet", "Pet", 1.0),
                     CandidateTable("pet_evolve", "PetEvolveData", 0.9)],
         fk_edges=[])
-    intents = da.decompose("x", lr)
-    assert intents == [], f"畸形应返回空,实际 {len(intents)}"
-    print("PASS malformed_llm_fallback: 非JSON返回空")
+    intents = da.decompose("灵兽饕餮进化成饕餮王", lr)
+    # 零 LLM 兜底应产 intent（splitter evolve 模板命中），不返空
+    assert len(intents) >= 1, f"零 LLM 兜底应产 intent,实际 {len(intents)}"
+    print(f"PASS malformed_llm_fallback: 非JSON走兜底产 {len(intents)} 条")
+
+
+# ── 样例8b: 零 LLM 兜底（LLM 全空响应） ─────────────────────
+def test_zero_llm_fallback_empty_response():
+    """LLM 路径全空响应（serve 挂/超时）时 _splitter_baseline 产确定性 intent。
+
+    不依赖 LLM，用 splitter 11 模板 + ColumnExtractor 信号兜底。
+    """
+    da, parser = make_agent()
+    # MockClient.prompt 对 DecomposeAgent 候选表 schema prompt 返空（模拟 serve 挂）
+    parser.client.set_response("")
+    lr = LocatorResult(
+        candidates=[CandidateTable("pet", "Pet", 1.0),
+                    CandidateTable("pet_evolve", "PetEvolveData", 0.9)],
+        fk_edges=[FKEdge("pet_evolve", "PetEvolveData", "宠物id",
+                          "pet", "Pet", "灵兽id")])
+    intents = da.decompose("灵兽饕餮进化成饕餮王", lr)
+    # 兜底应产 intent（splitter evolve 模板），不返空
+    assert len(intents) >= 1, f"零 LLM 兜底应产 intent,实际 {len(intents)}"
+    # 验证兜底 intent 基本结构
+    for it in intents:
+        assert it.table_hint, f"兜底 intent 缺 table_hint: {it}"
+        assert it.action in ("add", "set", "delete", "get"), \
+            f"兜底 intent action 非法: {it.action}"
+    print(f"PASS zero_llm_fallback: LLM 全空走兜底产 {len(intents)} 条")
 
 
 # ── 样例9: action 类型透传(add/set/delete)─────────────────
@@ -406,6 +437,7 @@ def main():
         test_produce_label_normalize,
         test_consume_broken_link,
         test_malformed_llm_fallback,
+        test_zero_llm_fallback_empty_response,
         test_action_passthrough,
         test_full_agent_chain,
         test_single_table_no_cross,

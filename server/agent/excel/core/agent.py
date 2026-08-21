@@ -4558,8 +4558,11 @@ class TableAgent:
                     # §交互增强：交互模式下用户主动 skip 的 intent 真正过滤掉，
                     # 不复位放行进 Step3（避免写冲突/幻觉数据）。
                     # 非交互模式（无 _ask_callback）保留原"复位放行交 Step5"行为。
+                    # §dry_run 放行：dry_run 预览模式硬 issue 复位放行不真过滤，
+                    # 保链路完整走通（用户要求默认接受建议，不跳过子任务）。
                     _has_ask_cb = getattr(self, "_ask_callback", None) is not None
-                    if _has_ask_cb:
+                    _is_dry = bool(getattr(self, "_dry_run_flag", False))
+                    if _has_ask_cb and not _is_dry:
                         _skip_desc = ", ".join(
                             f"{getattr(it,'table_hint','') or ''}/"
                             f"{getattr(it,'sheet_hint','') or ''}" for it in _skipped)

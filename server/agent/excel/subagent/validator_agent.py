@@ -753,6 +753,11 @@ class ValidatorAgent(LLMSubAgent):
                     if _reply.get("accept_suggest") and _suggested is not None:
                         self._apply_pk_to_intent(_intent, _col, _suggested)
                         _pk_resolved.add(sid)
+                    elif _reply.get("accept_suggest") and _suggested is None:
+                        # 默认接受建议但无 suggested（如多状态行 idle/collect 非真 PK
+                        # 冲突，或 _suggest_next_id 未命中）：放行不 skip，保留原值，
+                        # 交写后 ref_integrity 真验证（防误拦致链路断）。
+                        _pk_resolved.add(sid)
                     elif _reply.get("custom_id"):
                         self._apply_pk_to_intent(_intent, _col, _reply["custom_id"])
                         _pk_resolved.add(sid)
@@ -842,6 +847,10 @@ class ValidatorAgent(LLMSubAgent):
                 if _reply.get("accept_suggest") and _suggested is not None:
                     self._apply_pk_to_intent(it, _pk_col_name or _pk_field_key, _suggested)
                     _pk_resolved.add(sid)
+                elif _reply.get("accept_suggest") and _suggested is None:
+                    # 默认接受建议但无 suggested（多状态行/字段无 ID 值）：放行不 skip，
+                    # 交写后 ref_integrity 真验（防误拦致链路断）。
+                    _pk_resolved.add(sid)
                 elif _reply.get("custom_id"):
                     self._apply_pk_to_intent(it, _pk_col_name or _pk_field_key, _reply["custom_id"])
                     _pk_resolved.add(sid)
@@ -923,6 +932,11 @@ class ValidatorAgent(LLMSubAgent):
                             f" → 已改写,重跑校验")
                     except Exception:
                         pass
+                elif _reply.get("accept_suggest"):
+                    # 默认接受建议但 suggestion 为空（如 schema_missing 读不到表头
+                    # 无法给 suggestion）：放行不 skip，交写后 verify_repair_loop
+                    # 真验（防误拦致链路断，用户要求默认接受）。
+                    _resolved_sids.add(sid)
                 else:
                     self._mark_intent_skipped(it)
             # 移除已交互解决的硬 issue（已改 fields，冲突消除）
