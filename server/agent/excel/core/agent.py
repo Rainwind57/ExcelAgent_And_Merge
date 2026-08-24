@@ -4537,7 +4537,8 @@ class TableAgent:
             _dg = build_data_getter(self, intents)
             _vr = self._validator_agent.validate_two_layer(
                 intents, schema_getter=_sg, data_getter=_dg,
-                locator_result=locator_result)
+                locator_result=locator_result,
+                dry_run=bool(getattr(self, "_dry_run_flag", False)))
             if _vr.get("tips"):
                 _stream_res.add_thinking("校验",
                     f"Step2 ValidateAgent: {len(_vr['tips'])} issues")

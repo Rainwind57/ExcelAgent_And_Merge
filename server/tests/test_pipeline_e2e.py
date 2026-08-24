@@ -44,8 +44,19 @@ class TestPipelineModeDetection:
         assert should_trigger_pipeline("帮我处理 C:/test/script.md 里的任务") is True
 
     def test_multi_table_keyword_triggers(self):
-        assert should_trigger_pipeline("跨表配置 npc 和 dialog") is True
-        assert should_trigger_pipeline("多张表流程") is True
+        # §7 步收口：自然语言多表关键词默认不触发 pipeline（走 V2），
+        # env CODEMAKER_PIPELINE_KEYWORDS=1 显式开启时才触发（兼容旧行为）。
+        import os as _os
+        _os.environ.pop("CODEMAKER_PIPELINE_KEYWORDS", None)
+        assert should_trigger_pipeline("跨表配置 npc 和 dialog") is False
+        assert should_trigger_pipeline("多张表流程") is False
+        # env 开启时恢复关键词触发
+        _os.environ["CODEMAKER_PIPELINE_KEYWORDS"] = "1"
+        try:
+            assert should_trigger_pipeline("跨表配置 npc 和 dialog") is True
+            assert should_trigger_pipeline("多张表流程") is True
+        finally:
+            _os.environ.pop("CODEMAKER_PIPELINE_KEYWORDS", None)
 
     def test_simple_crud_no_trigger(self):
         assert should_trigger_pipeline("把item表里名字为铁匠的attack改为100") is False

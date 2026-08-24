@@ -472,17 +472,28 @@ class ValidatorAgent(LLMSubAgent):
         return self._required_fields
 
     def _get_schema(self, intent, schema_getter):
-        """拉取 (headers, type_row)。schema_getter 优先;None 时尝试 self._cli。"""
+        """拉取 (headers, type_row)。schema_getter 优先;None 时尝试 self._cli。
+
+        §schema 缓存：按 (stem, sheet) 缓存，同 intent 多 issue 校验（PK+字段层+
+        FK 层）重复拉同表头，缓存省 I/O。
+        """
+        stem = (getattr(intent, "table_hint", "") or "").lower()
+        sheet = (getattr(intent, "sheet_hint", "") or "").lower()
+        cache_key = (stem, sheet)
+        if not hasattr(self, "_schema_cache"):
+            self._schema_cache = {}
+        cached = self._schema_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = ([], [])
         if schema_getter is not None:
             try:
-                return schema_getter(intent)
+                result = schema_getter(intent)
             except Exception:
                 logger.debug("schema_getter 抛错", exc_info=True)
-                return [], []
-        if self._cli is None:
-            return [], []
-        # validator 无 path 解析（TableResolver 在 agent.py），返回空让上层传 schema_getter
-        return [], []
+                result = [], []
+        self._schema_cache[cache_key] = result
+        return result
 
     def _lookup_col_type(self, col, headers, type_row) -> str:
         """从 type_row（row2 规范名）找列类型。"""
@@ -644,7 +655,7 @@ class ValidatorAgent(LLMSubAgent):
 
     def validate_two_layer(self, intents: list, schema_getter=None,
                            locator_result: LocatorResult = None,
-                           data_getter=None) -> dict:
+                           data_getter=None, dry_run: bool = False) -> dict:
         """两段式校验 + 纯展示（O3：非阻断，§4.1+4.2）。
 
         字段层（validate_field_layer）+ FK 拓扑层（validate_fk_layer）→ 收集 tips
@@ -735,7 +746,9 @@ class ValidatorAgent(LLMSubAgent):
         # 仅 ask 阶段门控 _cb。无 cb / 用户 skip → 标 validation.skipped=True
         # 让 _phase_execute 跳写盘（不落 Step3 半成品 + 误判成功路径）。
         _pk_skipped: set = set()  # 未解决(无 cb / 用户 skip)的 PK 冲突 sid
-        if data_getter is not None:
+        # §dry_run 跳 PK 检查：dry_run 预览不写盘，PK 冲突检测无意义（不真冲突）。
+        # 省几十次 data_getter 全表扫描，Step2 提速。PK 真冲突交真执行 ref_integrity 验。
+        if data_getter is not None and not dry_run:
             # 1) 处理 field_map 已抓到的 UNIQUE_VIOLATION
             for sid, issues in list(merged.items()):
                 _intent = _sid_to_intent.get(sid)

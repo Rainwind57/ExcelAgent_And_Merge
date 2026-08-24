@@ -80,7 +80,12 @@ _STEP_NAMES = {
 
 
 def should_trigger_pipeline(text: str) -> bool:
-    """管道模式判定:文件路径或多表关键词 → True。
+    """管道模式判定:仅文件路径触发 → True。
+
+    §7 步收口：自然语言多表指令统一走 4-Step V2（跨表链 DecomposeAgent + 零 LLM
+    兜底已覆盖），7 步 pipeline 仅留文件输入场景（.md/.xlsx 剧本批量配表）。
+    去掉多表关键词（跨表/多表/流程/并行/剧本），消除 dry_run 走 V2 / 真执行走
+    7 步的边界模糊。env CODEMAKER_PIPELINE_KEYWORDS=1 恢复旧关键词触发（兼容）。
 
     可配置 CODEMAKER_PIPELINE_MODE=auto|off|on(默认 auto)。
     """
@@ -92,8 +97,10 @@ def should_trigger_pipeline(text: str) -> bool:
     # auto:判定
     if _FILE_PATH_RE.search(text or ""):
         return True
-    if any(kw in (text or "") for kw in _PIPELINE_KEYWORDS):
-        return True
+    # §兼容：显式 env 开启多表关键词触发（默认关，自然语言走 V2）
+    if os.environ.get("CODEMAKER_PIPELINE_KEYWORDS", "0") == "1":
+        if any(kw in (text or "") for kw in _PIPELINE_KEYWORDS):
+            return True
     return False
 
 

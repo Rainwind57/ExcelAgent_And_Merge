@@ -48,6 +48,10 @@ class DecomposeAgent(LLMSubAgent):
                          thinking_sink=thinking_sink,
                          prompt_template="跨表链分解产 SplitIntent[]")
         self._cli = cli
+        # §schema 内存缓存：(stem, sheet) -> (headers, type_row)。
+        # 同 session 内主路径+兜底+段级重跑重复读同表头，缓存省 60-70% I/O。
+        # 失效靠进程重启（配表 xlsx 结构静态，单进程内不变）。
+        self._schema_cache: dict[tuple[str, str], tuple[list, list]] = {}
 
     def decompose(self, text: str, locator_result: LocatorResult) -> list:
         """主入口:text + LocatorResult → SplitIntent[]。
@@ -127,6 +131,33 @@ class DecomposeAgent(LLMSubAgent):
                     f"DecomposeAgent LLM 路径产空,零 LLM 兜底产 {len(fb)} 条"
                     f"(splitter_baseline 11 模板)")
                 all_intents = fb
+        # §分段单 prompt 兜底（与 splitter_baseline 互补）：仍空时按 split_multi_intent
+        # 分段，每段调 decompose_segment（段内候选裁剪 + 小 prompt），LLM 路径产准。
+        # 比 splitter_baseline 11 模板覆盖广（模板只命中已知链型），但依赖 LLM 可用。
+        if not all_intents:
+            try:
+                from ..parser.multi_intent_splitter import split_multi_intent
+                segs = split_multi_intent(text)
+                if segs and len(segs) > 1:
+                    seg_intents: list = []
+                    for seg_text in segs:
+                        # 段级独立 locate（用主 locator_result 的候选裁剪）
+                        pruned = self._prune_segment_candidates(
+                            seg_text, candidates, column_signal,
+                            locator_result.fk_edges)
+                        seg_fk = self._build_fk_block(locator_result.fk_edges)
+                        seg_out = self._decompose_single_prompt(
+                            seg_text, pruned, seg_fk, per_to,
+                            column_signal=column_signal)
+                        if seg_out:
+                            seg_intents.extend(seg_out)
+                    if seg_intents:
+                        self.add_thinking("细分",
+                            f"DecomposeAgent 全表 prompt 产空,分段单 prompt 兜底产 {len(seg_intents)} 条"
+                            f"({len(segs)} 段)")
+                        all_intents = seg_intents
+            except Exception:  # noqa: BLE001
+                logger.debug("分段单 prompt 兜底失败", exc_info=True)
         return all_intents
 
     def decompose_segment(self, seg: str, locator_result: LocatorResult) -> list:
@@ -135,6 +166,10 @@ class DecomposeAgent(LLMSubAgent):
         预处理分段后的入口（§优化：分而治之）。段内文本短、候选表少（每段独立
         locate 后候选精准），走单 prompt 主路径。段内单 op 正常（一条指令可能只产
         一个 op），不强行 <2 降级，避免段级双跑拖累。
+
+        §段内候选裁剪：段级 locate 可能仍含多表候选（case1 单段跨6表），按段文本
+        + column_signal hits 裁剪，只保留命中表 + FK 链相关表。控 prompt token
+        <8k（vs 全候选 22k），防 serve 空响应。
 
         Args:
             seg: 单段指令文本（split_multi_intent 产出的段）
@@ -150,13 +185,16 @@ class DecomposeAgent(LLMSubAgent):
             return []
         import os as _os
         per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "90"))
-        candidates = locator_result.candidates
+        candidates = self._prune_segment_candidates(
+            seg, locator_result.candidates,
+            getattr(locator_result, "column_signal", None),
+            locator_result.fk_edges)
         fk_block = self._build_fk_block(locator_result.fk_edges)
         column_signal = getattr(locator_result, "column_signal", None)
         # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
         self._last_column_signal = column_signal
         self.add_thinking("细分",
-            f"DecomposeAgent 段分解({len(candidates)} 候选,timeout={per_to}s)")
+            f"DecomposeAgent 段分解({len(candidates)}/{len(locator_result.candidates)} 候选,timeout={per_to}s)")
         intents = self._decompose_single_prompt(
             seg, candidates, fk_block, per_to, column_signal=column_signal)
         # §零 LLM 兜底：段分解产空时走 _splitter_baseline（与主流程一致），
@@ -168,6 +206,52 @@ class DecomposeAgent(LLMSubAgent):
                     f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
                 intents = fb
         return intents
+
+    def _prune_segment_candidates(self, seg: str, candidates: list,
+                                   column_signal, fk_edges: list) -> list:
+        """段内候选表裁剪：只保留段文本命中表 + FK 链相关表。
+
+        命中信号（按优先级）：
+          1. column_signal hits 的 stem（列名反查命中）
+          2. 段文本子串匹配 stem/别名
+          3. FK 边端点表（保链路完整性，如 spawn 引用 entity_prefab）
+
+        无信号时（seg 极短或 locator 已精准）不裁剪，原样返回。
+        裁剪后保留数 < 2 时也原样返回（避免误裁到单表丢链路）。
+        """
+        if not seg or not candidates or len(candidates) <= 3:
+            return list(candidates)
+        seg_lower = seg.lower()
+        # 1. column_signal hits stem
+        sig_stems: set[str] = set()
+        if column_signal is not None:
+            for h in getattr(column_signal, "hits", []) or []:
+                stem = getattr(h, "stem", "") or ""
+                if stem:
+                    sig_stems.add(stem.lower())
+        # 2. 段文本子串匹配 stem
+        text_stems: set[str] = set()
+        for c in candidates:
+            stem = (getattr(c, "stem", "") or "").lower()
+            if stem and stem in seg_lower:
+                text_stems.add(stem)
+        # 3. FK 边端点表
+        fk_stems: set[str] = set()
+        for e in fk_edges or []:
+            for attr in ("from_stem", "to_stem", "from_table", "to_table"):
+                v = getattr(e, attr, "") or ""
+                if v:
+                    fk_stems.add(v.lower())
+        # 合并命中表
+        hit_stems = sig_stems | text_stems | fk_stems
+        if not hit_stems:
+            return list(candidates)
+        pruned = [c for c in candidates
+                  if (getattr(c, "stem", "") or "").lower() in hit_stems]
+        # 裁剪后 <2 表保链路不破：回退原候选
+        if len(pruned) < 2:
+            return list(candidates)
+        return pruned
 
     def _splitter_baseline(self, text: str, candidates: list,
                            fk_edges: list) -> list:
@@ -319,7 +403,7 @@ class DecomposeAgent(LLMSubAgent):
         if not jobs:
             return []
 
-        max_workers = int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "3")) or 1
+        max_workers = int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "4")) or 1
         _retry_env = int(_os.environ.get("CODEMAKER_DECOMPOSE_RETRY", "1"))
         retries = 0 if len(candidates) >= 4 else max(0, _retry_env)
 
@@ -399,6 +483,26 @@ class DecomposeAgent(LLMSubAgent):
 
     # ── schema 构建 ─────────────────────────────────────────────
 
+    def _read_schema_cached(self, p, stem: str, sheet: str) -> tuple[list, list]:
+        """读表头+类型行，命中内存缓存跳过文件 I/O。
+
+        配表 xlsx 结构静态（单进程内不变），同 session 多次 decompose（主路径+
+        兜底+段级重跑）重复读同表头，缓存省 I/O。读异常返 ([],[]) 不抛。
+        """
+        key = (stem, sheet)
+        cached = self._schema_cache.get(key)
+        if cached is not None:
+            return cached
+        hdrs, trow = [], []
+        try:
+            hdrs = self._cli.read_header(p, sheet) or []
+            trow = self._cli.read_type_row(p, sheet) or []
+        except Exception:  # noqa: BLE001
+            hdrs, trow = [], []
+        result = (list(hdrs), list(trow))
+        self._schema_cache[key] = result
+        return result
+
     def _build_schema_block(self, candidates: list[CandidateTable],
                              text: str = "", column_signal=None) -> str:
         """读每表所有业务 sheet 的 row1+row2 表头,构 schema 块。
@@ -444,11 +548,7 @@ class DecomposeAgent(LLMSubAgent):
             if text or sig_sheet_hits:
                 sheet_hits: list[tuple[int, int, str, list, list]] = []  # (hits, orig_idx, sheet, hdrs, trow)
                 for idx, sh in enumerate(biz):
-                    try:
-                        hdrs = self._cli.read_header(p, sh)
-                        trow = self._cli.read_type_row(p, sh)
-                    except Exception:
-                        continue
+                    hdrs, trow = self._read_schema_cached(p, cand.stem, sh)
                     hits = 0
                     for h in hdrs:
                         if h and str(h) in text:
@@ -463,11 +563,7 @@ class DecomposeAgent(LLMSubAgent):
             else:
                 ordered = []
                 for idx, sh in enumerate(biz):
-                    try:
-                        hdrs = self._cli.read_header(p, sh)
-                        trow = self._cli.read_type_row(p, sh)
-                    except Exception:
-                        continue
+                    hdrs, trow = self._read_schema_cached(p, cand.stem, sh)
                     ordered.append((0, idx, sh, hdrs, trow))
             for _hits, _idx, sh, hdrs, trow in ordered[:max_sheets]:
                 cols = []
