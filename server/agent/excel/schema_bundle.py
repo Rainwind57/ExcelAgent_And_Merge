@@ -266,10 +266,81 @@ def build_data_getter(agent, intents: list = None):
             except Exception:
                 logger.debug("build_data_getter 读表失败 stem=%s sheet=%s",
                              stem, sheet, exc_info=True)
+        # §跨 sheet 合并：同表多 sheet 时，PK 冲突检测只扫目标 sheet 会漏
+        # （如 29004 在 sheet A 占用、新数据写 sheet B）。扫该 path 全部 sheet，
+        # 把各 sheet 的 existing_values 并入。result_rows 仅留目标 sheet（供
+        # 语义校验，不跨 sheet）。全表扫首次慢，_load 有缓存故可接受。
+        if cli is not None and path is not None:
+            try:
+                get_sheets_fn = getattr(cli, "get_sheets", None)
+                if callable(get_sheets_fn):
+                    _all_sheets = get_sheets_fn(path) or []
+                    _others = [s for s in _all_sheets if s != sheet]
+                    for _sh in _others:
+                        try:
+                            _hdrs = (read_header(path, _sh)
+                                     if callable(read_header) else [])
+                            _rows = (read_sheet_fn(path, _sh)
+                                     if callable(read_sheet_fn) else [])
+                            if _hdrs:
+                                _ev = _existing_values_from_rows(_hdrs, _rows)
+                                for _k, _set in _ev.items():
+                                    existing_values.setdefault(_k, set()).update(_set)
+                        except Exception:
+                            continue
+            except Exception:
+                logger.debug("build_data_getter 跨 sheet 扫描失败 path=%s",
+                             path, exc_info=True)
+        # 值约束（type/min/max/unique）注入，供 validate_field_layer 范围检查
+        # run_semantic_gate 用。合并通配表/sheet（"*"）与 rules overlay。
+        vc = {}
+        try:
+            from .core.agent import _load_value_constraints
+            _vc_all = _load_value_constraints()
+            for _stem_key in ("*", stem):
+                _t = _vc_all.get(_stem_key, {}) or {}
+                if not isinstance(_t, dict):
+                    continue
+                for _sheet_key in ("*", sheet):
+                    _s = _t.get(_sheet_key, {}) or {}
+                    if not isinstance(_s, dict):
+                        continue
+                    _cols = _s.get("columns", {})
+                    if isinstance(_cols, dict):
+                        for _k, _v in _cols.items():
+                            if isinstance(_v, dict):
+                                vc.setdefault(_k, {}).update(_v)
+                            else:
+                                vc.setdefault(_k, _v)
+        except Exception:
+            logger.debug("value_constraints 注入失败 stem=%s sheet=%s",
+                         stem, sheet, exc_info=True)
+        # 用户规则枚举白名单（rules/validate/*.md 的 enum 字段），
+        # 合并通配表/sheet（"*"）后注入 enum_set，供 validate_field_layer 强校验。
+        enum_set = {}
+        try:
+            from .core.rules_loader import get_enum_overlay
+            _eo = get_enum_overlay()
+            for _stem_key in ("*", stem):
+                _t = _eo.get(_stem_key, {}) or {}
+                if not isinstance(_t, dict):
+                    continue
+                for _sheet_key in ("*", sheet):
+                    _s = _t.get(_sheet_key, {}) or {}
+                    if not isinstance(_s, dict):
+                        continue
+                    for _k, _v in _s.items():
+                        if isinstance(_v, (set, list, tuple)):
+                            enum_set.setdefault(_k, set()).update(_v)
+        except Exception:
+            logger.debug("rules enum overlay 加载失败 stem=%s sheet=%s",
+                         stem, sheet, exc_info=True)
         return {
             "path": path, "stem": stem, "sheet": sheet, "cli": cli,
             "existing_values": existing_values,
             "result_rows": result_rows,
+            "vc": vc,
+            "enum_set": enum_set,
         }
 
     return _data_getter

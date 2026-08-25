@@ -22,7 +22,8 @@
   - =0 走旧 run() 6 步 _phase_* 路径（降级通道，用 s1_parse 阶段命名）。
   - pipeline/（7 步管道）是独立子系统（关键词触发），用 pipeline/types.StepResult，
     与本 contracts.StepResult 语义不同，不合并。
-  - engine_core/（双骨架共享层）提供 dispatcher/verifier/checkpoint 给 7 步管道复用。
+  - 7 步管道复用 subagent/dispatcher、subagent/roles、core/checkpoint、
+    core/operation_orchestrator、pipeline/verifier（原 engine_core 双骨架层已合并）。
 """
 from __future__ import annotations
 

@@ -272,43 +272,88 @@ class ValidatorAgent(LLMSubAgent):
             cli = data.get("cli") or self._cli
             headers_norm = {(h or "").split(":")[0].strip().lower()
                             for h in headers if h}
-            # row2 规范名集合（点分键末段精确命中需，如 aptitude_base.StrPotCon → StrPotCon）
-            # 末段为 row2 规范名末段（非中文），headers_norm 是 row1 中文，需额外对齐
-            # _type_aliases 给 row2→row1 映射，但此处 schema_getter 不一定传，
-            # 故对含 . 的点分键：取末段，若末段命中 headers_norm 或 headers 含点分全名则豁免
+            # ── 英文规范名(row2) ↔ 中文表头(row1) 桥接 ─────────────────
+            # 根因：Excel 表头 row1 是中文（如「建筑类型编号」），row2 才是英文
+            # 规范名（如 BuildingType/primary_class）。Step1/Step2 的 LLM 常直接
+            # 产英文键，本层原用中文表头严格精确匹配 → 英文键全部误报「列不存在」。
+            # 而写路径经 ColumnMatcher+type_aliases 能兜底成功，两端能力不对称。
+            # 此处用 schema_getter 附带的 type_row(row2 英文规范名) 按列序桥接，
+            # 与写路径对齐消除误报；命中的英文键改写回真实中文表头供下游一致。
+            _norm_to_real: dict[str, str] = {}   # 中文表头 norm → 原始表头
+            for _h in headers:
+                if _h:
+                    _norm_to_real.setdefault(
+                        (_h or "").split(":")[0].strip().lower(), _h)
+            _type_to_real: dict[str, str] = {}   # row2 英文规范名 norm → 中文表头
+            for _h, _t in zip(headers, type_row or []):
+                if not _h or not _t:
+                    continue
+                _tn = str(_t).split(":")[0].strip().lower()
+                if not _tn:
+                    continue
+                _type_to_real.setdefault(_tn, _h)
+                if "." in _tn:  # 点分规范名末段也登记
+                    _type_to_real.setdefault(_tn.rsplit(".", 1)[-1], _h)
+            _idx_re = re.compile(r"\[\d+\]$")   # 数组列元素下标 [3]
+            _renames: dict[str, str] = {}       # 英文/别名键 → 真实中文表头
             for col, val in fields.items():
                 col_clean = (col or "").split(":")[0].strip()
                 col_lower = col_clean.lower()
-                # ① 列存在性
-                if col_lower not in headers_norm:
-                    # 点分键豁免：aptitude_base.StrPotCon 等。表头格式多为
-                    # "中文显示名（row2.规范名:int）"，row2 点分键在括号内。
-                    # 取末段 StrPotCon 查表头 norm；再查表头是否含点分全名子串。
-                    if "." in col_lower:
-                        seg_last = col_lower.rsplit(".", 1)[-1]
-                        if seg_last and seg_last in headers_norm:
-                            continue  # 末段命中 row1 中文表头
-                        # 表头含点分全名子串（"体力资质（aptitude_base.strpotcon:int）"）
-                        # split(":")[0] 后是 "体力资质（aptitude_base.strpotcon"
-                        col_in_header = any(
-                            col_lower in h or col_lower.rsplit(".", 1)[-1] in h
-                            for h in headers_norm if h)
-                        if col_in_header:
-                            continue
+                col_base = _idx_re.sub("", col_lower).strip()  # 去尾部 [N]
+                _had_idx = bool(_idx_re.search(col_lower))     # 原键是否带下标
+                # ① 列存在性（多级解析，与写路径 matcher 能力对齐）
+                _resolved = None  # 命中的真实中文表头
+                if col_lower in _norm_to_real:
+                    _resolved = _norm_to_real[col_lower]
+                elif col_base in _norm_to_real:
+                    _resolved = _norm_to_real[col_base]
+                elif col_lower in _type_to_real:      # 英文规范名整名命中
+                    _resolved = _type_to_real[col_lower]
+                elif col_base in _type_to_real:        # 去下标后命中
+                    _resolved = _type_to_real[col_base]
+                elif "." in col_lower:                 # 点分规范键末段命中
+                    seg_last = col_lower.rsplit(".", 1)[-1]
+                    if seg_last in _norm_to_real:
+                        _resolved = _norm_to_real[seg_last]
+                    elif seg_last in _type_to_real:
+                        _resolved = _type_to_real[seg_last]
+                    elif any(col_lower in h or seg_last in h
+                             for h in headers_norm if h):
+                        _resolved = col  # 表头含点分全名/末段子串，保留原键
+                if _resolved is None:
+                    # 真找不到 → 幻觉/别名。给出该表真实列名清单 + 最相近猜测，
+                    # 让用户一眼看懂该填什么。
+                    _guess = self._closest_header(col_clean, headers)
+                    _avail = "、".join(
+                        (h or "").split(":")[0].strip()
+                        for h in headers if h)[:200]
+                    _hint = f"最相近的真实列可能是「{_guess}」。" if _guess else ""
                     issues.append(Issue(
                         col=col, issue_type=IssueType.COL_NOT_FOUND.value,
                         expected=f"列存在于 {stem}/{sheet} 表头",
-                        suggestion=f"列「{col}」不存在,检查 LLM 幻觉或别名映射",
+                        suggestion=(
+                            f"LLM 写的列名「{col}」是英文/别名，在表「{stem}/{sheet}」"
+                            f"的中文表头里找不到对应列。{_hint}"
+                            f"该表真实列名有：{_avail}。"
+                            f"请改填其中一个真实列名，或填「删除此列」丢弃该字段。"),
                         value=val,
                     ))
                     continue
+                # 命中：归一到真实中文表头，后续类型/枚举/唯一/PK 检查按真实列进行
+                if _resolved and _resolved != col:
+                    _real_clean = (_resolved or "").split(":")[0].strip()
+                    if _real_clean:
+                        col_clean = _real_clean
+                        col_lower = _real_clean.lower()
+                    if not _had_idx:
+                        _renames[col] = _resolved
                 # 占位符/空软跳过 ④⑤（待拓扑序前序产出替换或可选留空）
                 _val_str = str(val).strip() if val is not None else ""
                 _is_placeholder = (val is None or _val_str == ""
                                    or _val_str == "<auto>"
                                    or (_val_str.startswith("<") and _val_str.endswith(">")))
-                # ② 类型 coerce
-                col_type = self._lookup_col_type(col, headers, type_row)
+                # ② 类型 coerce（按解析后的真实中文表头查类型）
+                col_type = self._lookup_col_type(col_clean, headers, type_row)
                 # §P1-6 枚举转码前置：int 列填中文标签（如"节日"）先查 enum_resolver
                 # 转数字码，命中则改写 fields 消除 TYPE_MISMATCH，避免硬阻断 ask 用户。
                 # 写路径 agent._coerce_value 也会查 enum_resolver，但 Step2 前置转码
@@ -405,6 +450,12 @@ class ValidatorAgent(LLMSubAgent):
                             suggestion=f"值「{val}」已存在,请用其他值或 modify",
                             value=val,
                         ))
+            # 命中但键名≠真实中文表头的字段：改写 fields 键为真实表头，
+            # 使 Step3 写盘 / forward_ref 检测 / 后续校验按真实列名一致处理，
+            # 消除「校验端英文键、写盘端中文列」的不对称。
+            for _old, _new in _renames.items():
+                if _old in fields and _new not in fields:
+                    fields[_new] = fields.pop(_old)
             # ③ 必填性（required_fields.yaml,当前空,配置填充后生效,#30）
             required_fields = self._load_required_fields()
             if required_fields:
@@ -451,8 +502,7 @@ class ValidatorAgent(LLMSubAgent):
 
         路径：skills/L1_derived/required_fields.yaml
         结构：{table_stem: {sheet: [field_aliases]}}
-        当前空 {}（TODO §十一#30 待填充），加载返空 dict，校验跳过。
-        配置填充后自动生效。
+        用户规则（rules/validate/*.md 内嵌 yaml 的 required:true 列）合并覆盖。
         """
         if self._required_fields is not None:
             return self._required_fields
@@ -469,6 +519,19 @@ class ValidatorAgent(LLMSubAgent):
                     self._required_fields = data
         except Exception:
             logger.debug("required_fields.yaml 加载失败", exc_info=True)
+        # 用户校验规则 required overlay 合并（rules/validate/*.md，优先级高于 skills）
+        try:
+            from ..core.rules_loader import get_required_fields_overlay
+            overlay = get_required_fields_overlay()
+            for stem, sheets in overlay.items():
+                base_stem = self._required_fields.setdefault(stem, {})
+                for sheet, cols in sheets.items():
+                    existing = base_stem.setdefault(sheet, [])
+                    for c in cols:
+                        if c not in existing:
+                            existing.append(c)
+        except Exception:
+            logger.debug("合并用户必填规则失败", exc_info=True)
         return self._required_fields
 
     def _get_schema(self, intent, schema_getter):
@@ -505,7 +568,81 @@ class ValidatorAgent(LLMSubAgent):
                 return str(t or "")
         return ""
 
-    def _coerce_field_simple(self, col_type, val) -> tuple:
+    def _coerce_field_simple(self, col_type, val) -> tuple[bool, str]:
+        """轻量标量类型校验：值能否强转成列类型。返回 (ok, err)。
+
+        Step2 非阻断，仅产 TYPE_MISMATCH issue 供修复层参考，故策略从宽：
+          - 占位符 <...> / <auto> / 空值 → 放行（交拓扑回填或可选留空）。
+          - 未知类型 / 数组·复合类型（int[]/list/map/json…）→ 放行（不做标量校验）。
+          - 分隔多值（如 spell_ids "9201,9202"）→ 仅当每段都能强转成该列标量类型
+            时放行（int 列 "9201,9202" 每段数字 → 放行；int 列 "叙述，叙述" 每段非
+            数字 → 报 TYPE_MISMATCH）。避免整段叙述灌进 int 列被多值放行漏检。
+          - 仅对明确 int/float/bool 标量列且值为单一字面量时校验可转性。
+        """
+        if val is None:
+            return True, ""
+        s = str(val).strip()
+        if not s or s == "<auto>" or (s.startswith("<") and s.endswith(">")):
+            return True, ""
+        t = (col_type or "").strip().lower()
+        if not t:
+            return True, ""
+        if any(x in t for x in ("[]", "list", "array", "map", "dict",
+                                "json", "vector", "tuple", "arr", "str",
+                                "string", "text")):
+            return True, ""
+        _seps = (",", "，", "|", ";", "；", "、")
+        _is_scalar_num = ("int" in t or "long" in t
+                          or "float" in t or "double" in t
+                          or "number" in t or "decimal" in t)
+        if any(c in s for c in _seps) and _is_scalar_num:
+            # 多值标量列：仅当每段都能强转成数字才放行（防叙述灌进 int 列漏检）
+            import re as _re_mv
+            parts = _re_mv.split(r"[|,，;；、]+", s)
+            try:
+                for p in parts:
+                    if not p.strip():
+                        continue
+                    if "float" in t or "double" in t or "number" in t or "decimal" in t:
+                        float(p.strip())
+                    else:
+                        int(float(p.strip()))
+                return True, ""
+            except (ValueError, TypeError):
+                return False, f"「{val}」无法转成 {col_type}（含非数字段，疑似整段叙述误填）"
+        try:
+            if "float" in t or "double" in t or "number" in t or "decimal" in t:
+                float(s)
+                return True, ""
+            if t in ("bool", "boolean"):
+                if s.lower() in ("1", "0", "true", "false", "是", "否", "yes", "no"):
+                    return True, ""
+                return False, f"「{val}」不是布尔值（需 0/1/true/false）"
+            if "int" in t or "long" in t:
+                int(float(s))
+                return True, ""
+        except (ValueError, TypeError):
+            return False, f"「{val}」无法转成 {col_type}（需数字）"
+        return True, ""
+
+    def _closest_header(self, col: str, headers: list) -> str:
+        """从中文表头里找与 col 最相近的真实列名（幻觉/别名列名的兜底建议）。
+
+        用 difflib 做序列相似度，命中阈值以上返回真实表头，否则空串。
+        供 COL_NOT_FOUND 文案生成友好提示，不参与硬匹配。
+        """
+        if not col or not headers:
+            return ""
+        try:
+            import difflib
+            cands = [(h or "").split(":")[0].strip() for h in headers if h]
+            hit = difflib.get_close_matches(
+                col, cands, n=1, cutoff=0.5)
+            return hit[0] if hit else ""
+        except Exception:
+            return ""
+
+
         """简化类型 coerce（int/float/bool/string）。占位符软跳过。
 
         返回 (ok, err_msg)。完整 coerce（含枚举映射/数组/date）留 agent._coerce_value
@@ -575,7 +712,7 @@ class ValidatorAgent(LLMSubAgent):
             return issues_map
         # 拓扑序（复用 OperationOrchestrator._topo_order，Kahn + produces_inference）
         try:
-            from ..engine_core.operation_orchestrator import OperationOrchestrator
+            from ..core.operation_orchestrator import OperationOrchestrator
             ordered_idx = OperationOrchestrator._topo_order(intents)
         except Exception:
             logger.debug("_topo_order 失败,降级原序", exc_info=True)
@@ -588,10 +725,23 @@ class ValidatorAgent(LLMSubAgent):
             sid = id(it)
             issues = issues_map.get(sid, [])
             fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            # 本 intent 的 produces label（自引用 <new_xxx_id> 豁免用）
+            prod_label_this = (getattr(it, "produces_label", None)
+                               or (getattr(it, "extras", None) or {}).get("produces"))
+            if prod_label_this:
+                prod_label_this = str(prod_label_this).strip()
             # consumes 占位符前向引用校验
             for col, val in fields.items():
                 label = _label_from_consumes(val)
-                if label is not None and label not in produced:
+                if label is None:
+                    continue
+                # §自引用豁免：add 主键 <new_xxx_id> 引用自身 produces = 自动分配主键
+                # （Step3 _do_append 自增 + _capture_produced 捕获真实 id），非前向引用。
+                # 原实现先校验后写 produced → 单表 add 的 <new_activity_id> 被误判
+                # "前序产出未定义" → FORWARD_REF_BROKEN → 整条 intent 被 skip 不落盘。
+                if prod_label_this and label == prod_label_this:
+                    continue
+                if label not in produced:
                     issues.append(Issue(
                         col=col, issue_type=IssueType.FORWARD_REF_BROKEN.value,
                         expected=f"前序产出 produces label「{label}」",
@@ -599,12 +749,10 @@ class ValidatorAgent(LLMSubAgent):
                         value=val,
                     ))
             # produces_label 写 produced（供下游 consumer 校验）
-            prod_label = (getattr(it, "produces_label", None)
-                          or (getattr(it, "extras", None) or {}).get("produces"))
-            if prod_label:
+            if prod_label_this:
                 stem = getattr(it, "table_hint", "") or ""
                 sheet = getattr(it, "sheet_hint", "") or ""
-                produced[prod_label] = (stem, sheet, None)
+                produced[prod_label_this] = (stem, sheet, None)
             issues_map[sid] = issues
         return issues_map
 
@@ -699,8 +847,29 @@ class ValidatorAgent(LLMSubAgent):
         # add intent 的 fields 扫非 <auto> 占位符（<new_xxx> / <consume:label>），
         # 命中即报 FORWARD_REF_BROKEN issue 进 merged → 下方硬阻断逻辑标 skipped。
         # <auto> 视为可选留空，不报（与 _classify_placeholder_fields 一致）。
+        #
+        # §P0 可解析豁免：与 validate_fk_layer（:726-732）同构——按拓扑序推进
+        # produced 集合，只对「label 不在本批 produces 内」的占位符报 FORWARD_REF_BROKEN。
+        # 否则每条合法跨表链（<new_quest_id>）都被误报 → 交互模式假 ask 浪费轮次 /
+        # 非交互带病落盘。复用 _topo_order + produces_label，不重复造轮子。
         _ph_auto_re = re.compile(r"<\s*auto\s*>")
         _ph_re = re.compile(r"<([^>]+)>")
+        # 收集本批 produces label 集合（拓扑序推进，含前序已产出）
+        try:
+            from ..core.operation_orchestrator import OperationOrchestrator
+            _ordered = OperationOrchestrator._topo_order(intents)
+        except Exception:
+            logger.debug("_topo_order 失败,降级原序", exc_info=True)
+            _ordered = list(range(len(intents)))
+        _produced_labels: set = set()
+        for _idx in _ordered:
+            if not isinstance(_idx, int) or _idx < 0 or _idx >= len(intents):
+                continue
+            _it = intents[_idx]
+            _pl = (getattr(_it, "produces_label", None)
+                   or (getattr(_it, "extras", None) or {}).get("produces"))
+            if _pl:
+                _produced_labels.add(str(_pl).strip())
         for it in intents:
             _fields = getattr(it, "extras", None) or {}
             _fields = _fields.get("fields") if isinstance(_fields, dict) else None
@@ -715,17 +884,26 @@ class ValidatorAgent(LLMSubAgent):
                     continue
                 if _ph_auto_re.fullmatch(_v.strip()):
                     continue  # <auto> 可选留空
+                # §P0 可解析豁免：占位符 label 在本批 produces 内 → 可解析，不报
+                _lbl = _label_from_consumes(_v)
+                if _lbl and _lbl in _produced_labels:
+                    continue
                 _ph_cols.append(_k)
             if _ph_cols:
                 # 占位符悬空 = 跨表前序产出未对上 → FORWARD_REF_BROKEN
                 for _c in _ph_cols:
+                    _ph_val = _fields.get(_c, "")
                     merged.setdefault(_sid, []).append(Issue(
                         col=_c,
                         issue_type=IssueType.FORWARD_REF_BROKEN.value,
                         expected="已解析的具体值（非占位符）",
                         suggestion=(
-                            f"「{_c}」需前序操作产出或手动填值，"
-                            f"当前仍为占位符 <...>。先建依赖项或手动填编号。"),
+                            f"列「{_c}」的值现在是占位符「{_ph_val}」，还没变成真实数据。"
+                            f"占位符（尖括号 <...> 包住的内容）本该由前面某个操作先执行、"
+                            f"产出真实编号后自动回填，但当前那个前置操作没跑或没对上，"
+                            f"所以这里悬空了。解决方式二选一：① 确保生成该编号的前置"
+                            f"操作先执行；② 直接在此手动填入真实值（如具体 ID 数字），"
+                            f"或点「跳过」放弃此字段。"),
                         value=_fields.get(_c, ""),
                     ))
         # 核心4:PK 冲突(UNIQUE_VIOLATION)前移到 validate 阶段阻断 + ask 用户
@@ -746,9 +924,10 @@ class ValidatorAgent(LLMSubAgent):
         # 仅 ask 阶段门控 _cb。无 cb / 用户 skip → 标 validation.skipped=True
         # 让 _phase_execute 跳写盘（不落 Step3 半成品 + 误判成功路径）。
         _pk_skipped: set = set()  # 未解决(无 cb / 用户 skip)的 PK 冲突 sid
-        # §dry_run 跳 PK 检查：dry_run 预览不写盘，PK 冲突检测无意义（不真冲突）。
-        # 省几十次 data_getter 全表扫描，Step2 提速。PK 真冲突交真执行 ref_integrity 验。
-        if data_getter is not None and not dry_run:
+        # §预览也检测：原 dry_run=True 整段跳过 → 用户预览以为过了真执行才爆 PK
+        # 冲突（29004 案例）。预览虽不写盘，但检测+ask 让用户提前解决，避免真执行失败。
+        # dry_run 仍传给 _ask_pk_conflict / _suggest_next_id（不影响改 intent）。
+        if data_getter is not None:
             # 1) 处理 field_map 已抓到的 UNIQUE_VIOLATION
             for sid, issues in list(merged.items()):
                 _intent = _sid_to_intent.get(sid)
@@ -800,18 +979,27 @@ class ValidatorAgent(LLMSubAgent):
                             break
                     if not _pk_col_name and _hdrs:
                         _pk_col_name = str(_hdrs[0] or "").split(":")[0].strip()
-                # 从 intent fields 找 PK 列的值(精确键 + 含 id 键双路径)
+                # §PK 值提取按列位置对齐表头：Step3 写盘 _do_append 用 r[0]（首列）
+                # 硬比对，必抓；Step2 原靠列名匹配，LLM 命名偏差（rewardId vs 表头 id）
+                # 就漏（29004 案例）。改与写盘对齐——intent fields 第一项即 PK 列值。
+                # 仍保留列名回退（多列场景字段顺序不保证 PK 在首），三路径兜底。
                 _pk_val = None
                 _pk_field_key = ""
                 if _pk_col_name:
-                    # 精确键匹配
+                    # 路径1：精确列名匹配（最稳）
                     for k, v in _fields.items():
                         if k and str(k).split(":")[0].strip().lower() == _pk_col_name.lower():
                             _pk_val = v
                             _pk_field_key = k
                             break
                 if _pk_val is None:
-                    # 回退:fields 键含 id 子串
+                    # 路径2：按 fields 首项对齐表头首列（与写盘 r[0] 一致）
+                    _first_item = next(iter(_fields.items()), None)
+                    if _first_item and _first_item[1] is not None:
+                        _pk_val = _first_item[1]
+                        _pk_field_key = _first_item[0]
+                if _pk_val is None:
+                    # 路径3回退：fields 键含 id 子串
                     for k, v in _fields.items():
                         if k and "id" in str(k).lower() and v is not None:
                             _pk_val = v
@@ -821,6 +1009,26 @@ class ValidatorAgent(LLMSubAgent):
                     try:
                         self.add_thinking("校验",
                             f"核心4 intent(action={getattr(it,'action','')},table={getattr(it,'table_hint','')}) 未提取到 PK 值,fields_keys={list(_fields.keys())}")
+                    except Exception:
+                        pass
+                    continue
+                # §防误报（A 修复）：仅当 PK 值确来自"PK 列"才校验冲突。path2(取
+                # fields 首项)可能抓到非 PK 列（如 effect.key/交互效果编号），再拿其值
+                # 与真 PK 列的 existing 比对 → 假报"已被占用"（用户看到莫名冲突）。
+                # 要求 _pk_field_key 精确等于 PK 列名，或本身是 id/编号型键；否则视为
+                # 非 PK 列，跳过校验（未显式给 PK → _do_append 自增，天然无冲突）。
+                # 通用判据（列名形式），不绑业务词/表/测例。
+                _pfk = str(_pk_field_key or "").split(":")[0].strip()
+                _pfk_l = _pfk.lower()
+                _is_pk_key = (
+                    (bool(_pk_col_name) and _pfk_l == _pk_col_name.lower())
+                    or ("id" in _pfk_l)
+                    or any(_k in _pfk for _k in ("编号", "序号", "主键")))
+                if not _is_pk_key:
+                    try:
+                        self.add_thinking("校验",
+                            f"核心4 跳过非 PK 列[{_pk_field_key}]冲突校验"
+                            f"（非 id/编号型键,值不与 PK 列比对,避免假冲突）")
                     except Exception:
                         pass
                     continue
@@ -1017,7 +1225,28 @@ class ValidatorAgent(LLMSubAgent):
         前端走"接受/输入"简化交互(非通用 textarea)。
         """
         cb = getattr(self, "_ask_callback", None)
+        # §自动兜底（用户要求：尽量不弹窗）：只要能算出下一个可用 ID，就直接自动改号，
+        # 不打扰用户。到此的冲突列均为 PK/ID/编号型（核心4 已过滤非 PK 列），其具体
+        # 数值对用户无语义（仅需唯一），max+1 与"主键未填自动分配"行为一致；且占位符
+        # 系统按实际写入的 PK 回填跨表 FK，改号不破坏引用。仅当算不出建议 ID
+        # （suggested is None，如数据读不到）才回退：有 cb 弹 ask 让用户填，无 cb skip。
+        if suggested is not None:
+            try:
+                self.add_thinking("校验",
+                    f"PK/ID 冲突自动改号：列[{col or 'ID'}] {conflict_val}→{suggested}"
+                    f"（下一个可用编号，已自动应用，不弹窗）")
+            except Exception:
+                pass
+            return {"mode": "field", "accept_suggest": True,
+                    "custom_id": suggested, "_auto": True}
+        # §非交互兜底：无 callback（CI/预览接受模式）时不再返 skip。
+        # 原返 skip 后被 agent.py:4582 复位 skipped=False 放行交 Step3 → 写盘撞
+        # PK 冲突 → Step6 才爆（29004 案例）。现自动用 suggested 改写 intent，
+        # 交 caller 在 accept_suggest 分支 _apply_pk_to_intent 改写。无 suggested
+        # 时返 skip 阻断（数据读不到交 Step3 也必败）。
         if cb is None:
+            if suggested is not None:
+                return {"mode": "field", "accept_suggest": True, "custom_id": suggested}
             return {"mode": "skip"}
         _tbl = getattr(intent, "table_hint", "") or ""
         _sht = getattr(intent, "sheet_hint", "") or ""
@@ -1088,17 +1317,38 @@ class ValidatorAgent(LLMSubAgent):
                 else getattr(tip, "suggestion", "")) or ""
         _exp = (tip.get("expected") if isinstance(tip, dict)
                 else getattr(tip, "expected", "")) or ""
-        # 按 issue_type 派生文案
+        # 按 issue_type 派生文案。_reason/_action 保留技术描述（供日志/root_cause）；
+        # _uf_reason/_uf_action 为面向策划的大白话（一句话说清 + 明确一键操作），
+        # 只放进 user_friendly 供前端展示。
         if _itype == IssueType.UNIQUE_VIOLATION.value:
             _reason = f"值唯一冲突：列「{_col}」值「{_val}」已被占用"
             _action = (f"请输入新的「{_col}」值（原值「{_val}」重复），"
                        f"或点「跳过」放弃此项。建议：{_sug}")
             _mode = "field"
+            _uf_reason = f"「{_col}」填的「{_val}」和已有数据重复了。"
+            _uf_action = (f"换一个没用过的值{('，建议填「'+_sug+'」') if _sug else ''}；"
+                          f"不改就点「跳过」。")
         elif _itype == IssueType.COL_NOT_FOUND.value:
-            _reason = f"列不存在：列「{_col}」不在「{_tbl}/{_sht}」表头"
-            _action = (f"LLM 可能用了别名/幻觉列名。请输入真实列名"
-                       f"（或填「删除此列」丢弃该字段），建议：{_sug}")
+            _reason = (f"列名对不上：LLM 给的列名「{_col}」在表「{_tbl}/{_sht}」"
+                       f"里没有对应的中文列")
+            _action = (f"通常是 LLM 用了英文名或别名。请照下面提示改成真实列名，"
+                       f"或填「删除此列」丢弃该字段。{_sug}")
             _mode = "field"
+            _uf_reason = f"这张表里没有「{_col}」这一列，系统对不上。"
+            _uf_action = (f"从表里真实存在的列名中挑一个填进来"
+                          f"{('：'+_sug) if _sug else ''}；"
+                          f"如果这项本就不需要，填「删除此列」即可。")
+        elif _itype == IssueType.FORWARD_REF_BROKEN.value:
+            _reason = (f"列「{_col}」的值还是占位符「{_val}」，没变成真实数据")
+            _action = (_sug or
+                       f"占位符本该由前置操作产出真实编号后回填，但没对上。"
+                       f"请手动填入真实值（如具体 ID），或点「跳过」。")
+            _mode = "field"
+            _uf_reason = (f"「{_col}」还没拿到真实编号（现在显示的「{_val}」是个"
+                          f"临时占位符）。")
+            _uf_action = ("这个编号本该由前面一步自动生成再填进来。多数情况"
+                          "直接点「跳过」就行（不影响其它内容）；如果你知道具体"
+                          "编号，也可以直接填数字。")
         elif _itype == IssueType.TYPE_MISMATCH.value:
             # §枚举列增强：int 列填中文标签(如"节日")是常见场景，文案要告诉用户
             # 该列是数字枚举列，中文标签需转数字码，并提示如何填（填数字或换列）。
@@ -1110,18 +1360,29 @@ class ValidatorAgent(LLMSubAgent):
                            f"请把「{_val}」改成对应的数字码"
                            f"（如不确定编码，可填 0 或点「跳过」先不配这列）。"
                            f"提示：{_sug}")
+                _uf_reason = f"「{_col}」这列只能填数字，你填的「{_val}」是文字。"
+                _uf_action = (f"改成对应的数字编号"
+                              f"{('，'+_sug) if _sug else ''}；"
+                              f"不清楚编号就点「跳过」，先不配这列。")
             else:
                 _reason = f"类型不符：列「{_col}」值「{_val}」类型错"
                 _action = (f"期望类型「{_exp}」，请输入符合类型的值，建议：{_sug}")
+                _uf_reason = f"「{_col}」填的「{_val}」格式不对。"
+                _uf_action = (f"这列要的是「{_exp}」类型，请填符合的值"
+                              f"{('，建议：'+_sug) if _sug else ''}；或点「跳过」。")
             _mode = "field"
         elif _itype == IssueType.SCHEMA_MISSING.value:
             _reason = f"读不到表头：「{_tbl}/{_sht}」schema 缺失"
             _action = "表/sheet 可能不存在，请确认表名/sheet 名，或跳过"
             _mode = "field"
+            _uf_reason = f"找不到表「{_tbl}/{_sht}」，读不出它有哪些列。"
+            _uf_action = "请确认表名/分页名是否写对，或点「跳过」放弃此项。"
         else:
             _reason = f"校验问题：{_itype} 列「{_col}」"
             _action = _sug or "请处理或跳过"
             _mode = "field"
+            _uf_reason = f"「{_col}」这项没通过校验。"
+            _uf_action = _sug or "请按提示修正，或点「跳过」放弃此项。"
         question = {
             "reason": _reason,
             "error_type": _itype or "validation_issue",
@@ -1132,7 +1393,7 @@ class ValidatorAgent(LLMSubAgent):
             "suggestion": _sug,
             "snip": (getattr(intent, "raw", "") or "")[:120],
             "mode_hint": _mode,
-            "user_friendly": {"reason": _reason, "action": _action},
+            "user_friendly": {"reason": _uf_reason, "action": _uf_action},
         }
         try:
             return cb(question) or {"mode": "skip"}

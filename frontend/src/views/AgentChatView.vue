@@ -992,8 +992,8 @@ onMounted(() => {
             <div class="ask-hint">{{ (msg.ask.user_friendly && msg.ask.user_friendly.action) || msg.ask.suggestion }}</div>
             <div v-if="msg.ask.example" class="ask-example">参考写法：{{ msg.ask.example }}</div>
             <template v-if="!msg.askResolved">
-              <!-- PK 冲突简化交互:建议ID + 接受/自定义输入 -->
-              <template v-if="msg.ask.mode_hint === 'pk_conflict' && msg.ask.suggested_id != null">
+              <!-- 取值不确定统一交互:建议ID + 接受/自定义输入（pk_conflict / id_suggest） -->
+              <template v-if="(msg.ask.mode_hint === 'pk_conflict' || msg.ask.mode_hint === 'id_suggest') && msg.ask.suggested_id != null">
                 <div class="ask-pk-suggest">
                   建议 ID：<b>{{ msg.ask.suggested_id }}</b>
                   <input v-model="msg.askCustomId" type="number" class="ask-input ask-input--pk" :placeholder="`或输入其他 ID（默认 ${msg.ask.suggested_id}）`">

@@ -162,12 +162,20 @@ class DialogLogger:
         record 由 agent._log_evidence 组装，至少含:
           ts, session_id, table_stem, sheet, intent_action,
           user_text, agent_message, steps, col, row,
-          ok, needs_confirm, user_corrected
+          ok, needs_confirm, user_corrected, missing_required
         本方法补 quality 分与 grade 后分发写盘。
+
+        §schema-grounding 配套：record.missing_required 非空（业务必填列漏填但已落盘）
+        → 强制 grade='failure' + score cap FAILURE_THRESH-1，确保落 dialog_failures
+        作为种子喂 induce_anti_patterns（"看似成功的失败"原按 ok 进 examples 没种子的问题）。
         """
         try:
             score = score_dialog(record)
             grade = quality_grade(score)
+            missing_required = record.get("missing_required") or []
+            if missing_required:
+                grade = "failure"
+                score = min(score, FAILURE_THRESH - 1)
             record = {**record, "quality_score": score, "quality_grade": grade}
             # 1. 全量
             self._append(self.dialog_dir / f"{record.get('session_id') or '_default'}.jsonl",

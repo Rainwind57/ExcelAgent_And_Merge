@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import queue
+import shutil
+import subprocess
 import threading
 from typing import Optional
 
@@ -450,14 +452,74 @@ async def agent_suggest_merge_batch(req: SuggestMergeBatchRequest):
 
 
 # ── 模型切换（前端下拉框）──
+_NETEASE_HARDCODED_MODELS = [
+    ("deepseek-v4-flash", "DeepSeek V4 Flash"),
+    ("deepseek-v4-pro",   "DeepSeek V4 Pro"),
+    ("qwen3.7-plus",      "Qwen3.7 Plus"),
+    ("glm-5.2",           "GLM-5.2"),
+    ("claude-sonnet-5",   "Claude Sonnet 5"),
+]
+
+_NETEASE_CLI_CACHE: list[dict] | None = None
+_NETEASE_CLI_LOCK = threading.Lock()
+
+
+def _load_netease_models_from_cli() -> list[dict]:
+    """走 codemaker CLI 拉 netese-codemaker 全量模型清单。
+
+    serve /api/model 在本机拉不到 models.dev catalog 时不暴露 netese；
+    `codemaker models netese-codemaker` 直接走用户 auth.json 调网易 API，
+    能列全 32+ 个付费模型。结果进程内缓存，失败回退到硬编码清单。
+    """
+    global _NETEASE_CLI_CACHE
+    if _NETEASE_CLI_CACHE is not None:
+        return _NETEASE_CLI_CACHE
+    with _NETEASE_CLI_LOCK:
+        if _NETEASE_CLI_CACHE is not None:
+            return _NETEASE_CLI_CACHE
+        options: list[dict] = []
+        exe = shutil.which("codemaker")
+        if exe:
+            try:
+                proc = subprocess.run(
+                    [exe, "models", "netease-codemaker"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                seen: set[str] = set()
+                for line in (proc.stdout or "").splitlines():
+                    s = line.strip()
+                    if not s.startswith("netease-codemaker/"):
+                        continue
+                    if s in seen:
+                        continue
+                    seen.add(s)
+                    mid = s.split("/", 1)[1].strip()
+                    options.append({"value": s, "label": mid, "provider": "netease-codemaker"})
+            except Exception as e:
+                logger.warning("codemaker models netese-codemaker 失败：%s", e)
+        if not options:
+            for mid, label in _NETEASE_HARDCODED_MODELS:
+                options.append({"value": f"netease-codemaker/{mid}", "label": label,
+                                 "provider": "netease-codemaker"})
+        _NETEASE_CLI_CACHE = options
+        return options
+
+
 @router.get("/models")
 async def agent_models():
     """列出 codemaker serve 可用模型 + 当前生效/默认模型，供前端下拉框渲染。"""
     service = get_agent_service()
     client = getattr(getattr(service, "router", None), "client", None)
     raw = client.list_models() if client is not None else []
+    options = _normalize_models(raw)
+    if not any(o.get("provider") == "netease-codemaker" for o in options):
+        existing = {o.get("value") for o in options}
+        for m in _load_netease_models_from_cli():
+            if m["value"] not in existing:
+                options.append(m)
+                existing.add(m["value"])
     return {
-        "models": _normalize_models(raw),
+        "models": options,
         "current": get_effective_model(),
         "default": os.environ.get("CODEMAKER_MODEL", ""),
     }

@@ -77,7 +77,7 @@ class Step3ExecuteSubAgent:
         # consumes <new_quest_id>）占位符全悬空 → 弹 ask/失败。现按拓扑序执行，producer 先于
         # consumer，每条执行前替换 consumes 占位符，执行后捕获 produces 新 ID 写入 produced。
         try:
-            from ..engine_core.operation_orchestrator import OperationOrchestrator as _OO
+            from ..operation_orchestrator import OperationOrchestrator as _OO
             _ordered_idx = _OO._topo_order(intents)
             ordered = [intents[i] for i in _ordered_idx] if _ordered_idx else list(intents)
         except Exception:

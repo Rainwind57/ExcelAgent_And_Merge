@@ -41,7 +41,12 @@ _QUOTE_PAIRS = [
 _SEPARATORS = re.compile(
     r'([。；;])\s*'
     r'|(\n+)'
-    r'|(然后|接着|之后|并且|同时|另外|而后|随后|再配|再建|再加|再设|以及|还有|还要|顺带|一起配|一起建)\s*'
+    # §P0-1 连接词边界：避免"BOSS 战斗也一起配上"中"一起配"被误切（"一起配上/一起配着"
+    # 是动词延续"配上/配着"，非独立连接词）。加负向前瞻：连接词后须接动作词/实体名/数量
+    # 才算分隔，排除"一起配上/配着/来"等动词延续子串。
+    r'|(然后|接着|之后|并且|同时|另外|而后|随后|以及|还有|还要|顺带)\s*'
+    r'|(再配|再建|再加|再设)\s*'
+    r'|(一起配(?!上|着|来|去)|一起建)\s*'
     r'|((?:\d+|[一二三四五六七八九十])[\.、)])(?=\s+[^\d])\s*'
 )
 
@@ -299,18 +304,13 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
         return []
     text = text.strip()
 
-    # 序数词同列保护（切分前）：整段是"配一个X，第一个...第二个..."的单行多列写入
-    # 时，段内分号是同列属性分隔（非指令分隔），须保护不被切分。
-    # 判定条件：含"一个"+实体 + >=2 序数词 + 不含编号列表前缀（1./2. 等表示多指令）
-    if _has_ordinal_same_target(text) and not _has_numbered_list_prefix(text):
-        action = _detect_action(text)
-        try:
-            from ..core.cross_table_splitter import detect_cross_table_action
-            if detect_cross_table_action(text):
-                action = "cross_table"
-        except Exception:
-            pass
-        return [SplitSegment(text=text, action=action)]
+    # §P0-0 修分段折叠（真根因）：原此处 _has_ordinal_same_target 整段早返回，
+    # 把"配一个NPC，第一个选项X，第二个选项Y"这类对话链误判为"单行多列"折叠成 1 段
+    # （ordinal 在对话链里指选项序号，非同列属性）。整段 700+ 字塞给单次 LLM decompose
+    # → schema 过大 → LLM 退化灌值 → 全盘失败。
+    # 修复：删整段早返回。ordinal 同列保护改由段内 _split_by_action_boundary 的
+    # 单行多列 set 保护覆盖（已切好的单段内多逗号分隔 set 才保护，跨表链不保护）。
+    # 这样对话链按分隔符正常切成多段，每段 1-2 表小 schema，LLM 不退化。
 
     # A. 前置跨表检测：整句命中跨表模式时不再整句折叠。
     # G7 修复：原行为命中跨表即 return 单段，导致同句内非跨表子句（如"修改reward名称"）
@@ -350,7 +350,8 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
     for seg in raw_segs:
         # 去掉段首编号前缀（1. 2. 3. 或 一、 二、 等）+ 段首连接词（然后/并且等，切分后残留）
         # §复用扩充后的连接词集（再配/以及/还有等），与 _SEPARATORS 一致
-        seg = re.sub(r'^(?:(?:\d+|[一二三四五六七八九十])[\.、)]\s*|(?:然后|接着|之后|并且|同时|另外|而后|随后|再配|再建|再加|再设|以及|还有|还要|顺带|一起配|一起建)\s*)', '', seg).strip()
+        # §P0-1 同步：一起配(?!上|着|来|去) 边界（避免误清"一起配上"的"一起配"残留）
+        seg = re.sub(r'^(?:(?:\d+|[一二三四五六七八九十])[\.、)]\s*|(?:然后|接着|之后|并且|同时|另外|而后|随后|再配|再建|再加|再设|以及|还有|还要|顺带|一起配(?!上|着|来|去)|一起建)\s*)', '', seg).strip()
         if not seg:
             continue
         try:

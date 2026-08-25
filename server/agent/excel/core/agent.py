@@ -76,6 +76,7 @@ def _load_value_constraints() -> dict:
 
     文件缺失或 yaml 不可用时返回空 dict，保证降级运行。
     T12: L1 自动派生文件迁移到 L1_derived/，回退根目录兼容未迁移环境。
+    用户规则（rules/validate/*.md 内嵌 yaml）合并覆盖 L1 派生（用户 > 自动）。
     """
     global _VALUE_CONSTRAINTS
     if _VALUE_CONSTRAINTS is not None:
@@ -92,7 +93,25 @@ def _load_value_constraints() -> dict:
             _VALUE_CONSTRAINTS = {}
     except Exception:
         _VALUE_CONSTRAINTS = {}
+    # 用户校验规则 overlay 深合并（type/min/max/unique/regex，优先级高于 L1 派生）
+    try:
+        from .rules_loader import get_value_constraints_overlay
+        overlay = get_value_constraints_overlay()
+        if overlay:
+            _deep_merge_tables(_VALUE_CONSTRAINTS, overlay)
+    except Exception:
+        logger.debug("合并用户校验规则失败", exc_info=True)
     return _VALUE_CONSTRAINTS
+
+
+def _deep_merge_tables(base: dict, extra: dict) -> dict:
+    """递归深合并 extra 到 base（extra 优先，dict 级深合并，list 整值替换）。"""
+    for k, v in extra.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge_tables(base[k], v)
+        else:
+            base[k] = v
+    return base
 
 def _is_business_sheet(name: str) -> bool:
     """判断 sheet 名是否为业务数据 sheet（排除 config 及非业务标记的 sheet）。"""
@@ -156,6 +175,28 @@ def _classify_placeholder_fields(fields: dict) -> tuple[list[str], list[str]]:
         else:
             required_cols.append(k)
     return auto_cols, required_cols
+
+
+# 依赖标记 → 大白话业务名（供占位符未解错误提示，让策划知道到底缺哪个前置项）。
+_DEP_LABEL_WORDS = {
+    "conv": "对话", "convoption": "对话选项", "option": "对话选项",
+    "interaction": "交互", "npc": "NPC", "prefab": "场景实体",
+    "reward": "奖励包", "combat": "战斗配置", "spell": "技能",
+    "quest": "任务", "item": "道具", "activity": "活动", "mail": "邮件",
+    "pet": "灵兽", "building": "建筑",
+}
+
+
+def _humanize_dep_label(label: str) -> str:
+    """把 producer 标签（如 new_interaction_conv_id）翻成大白话 + 保留原标记备查。
+
+    例：new_conv_id → 对话(new_conv_id)；new_pve_combat_npc_id → NPC(new_pve_combat_npc_id)。
+    """
+    import re as _re_dl
+    core = _re_dl.sub(r"^new_|_?id$", "", str(label or "").strip().lower())
+    words = [w for w in core.split("_") if w]
+    hit = next((_DEP_LABEL_WORDS[w] for w in words if w in _DEP_LABEL_WORDS), None)
+    return f"{hit}({label})" if hit else (label or "前置数据")
 
 
 def _col_types_by_header(table_stem: str, sheet: str, headers: list) -> dict:
@@ -245,7 +286,12 @@ def _value_after(text: str, span: Tuple[int, int, ColumnMatch], spans: list, idx
 
 
 # 常见分隔词：用户语句中连接列名和值的关键词
-_SEPARATORS = ("修改为", "改为", "改成", "设为", "设置为", "加上去", "加上", "添加", "增加", "新增", "加", "为", "是")
+# 含"填/写/置"等赋值动作动词（如"金币公式填 800"→值"800"），长变体在前（startswith 先匹配）。
+_SEPARATORS = ("修改为", "改为", "改成", "设为", "设置为", "加上去", "加上", "添加", "增加", "新增",
+               "填写", "填上", "填入", "填", "写上", "写入", "写", "置为", "置", "加", "为", "是")
+
+# 值尾部残留的中文/英文句读（如"填 800；"→"800"、"守军。"→"守军"），提取值时应裁掉。
+_TAIL_PUNCT = "；;。，,、！!？?：: 　"
 
 # 中文/英文引号，用户输入或 LLM 输出中可能残留，需统一清洗
 _QUOTES = ("\u201c", "\u201d", "\u2018", "\u2019", '"', "'", "「", "」", "『", "』")
@@ -254,7 +300,7 @@ _QUOTES = ("\u201c", "\u201d", "\u2018", "\u2019", '"', "'", "「", "」", "『"
 _QUOTE_PAIRS = (
     ('"', '"'),
     ("'", "'"),
-    ("\u201c", "\u201d"),   # “ ”
+    ("\u201c", "\u201d"),   # " "
     ("\u2018", "\u2019"),   # ‘ ’
     ("「", "」"),
     ("『", "』"),
@@ -281,12 +327,20 @@ def _clean_quotes(text: str) -> str:
 
 
 def _strip_separators(text: str) -> str:
-    """去掉文本开头可能存在的分隔关键词（如"修改为""设置为"等），并清洗引号。"""
+    """去掉文本开头可能存在的分隔关键词（如"修改为""设置为""填"等）+ 尾部句读，并清洗引号。"""
     t = _clean_quotes(text).strip()
     for sep in _SEPARATORS:
         if t.startswith(sep):
             t = t[len(sep):].strip()
             break
+    # 裁掉值尾部残留的句读（如"填 800；"经上面剥"填"后为"800；"→"800"）。
+    # 仅当裁完是纯数字/小数或括号结构（坐标/列表）时才采用，否则保留原值——
+    # 让"包也建一下，"这类文本碎片保留句读，供 _do_append 碎片行守卫识别，不误清。
+    _t2 = t.rstrip(_TAIL_PUNCT)
+    if _t2 and _t2 != t and (
+            _t2.lstrip("-").replace(".", "", 1).isdigit()
+            or (_t2[:1] in "([" and _t2[-1:] in ")]")):
+        t = _t2
     return t
 
 
@@ -3770,6 +3824,7 @@ class TableAgent:
 
         # ── 路径1：LLM 提供的 fields 字典（列名→值），列名转列号 ──
         fields = intent.extras.get("fields")
+        _narr_skipped: list[str] = []  # §叙述值跳过兜底（共享，分支内外都可见）
         if isinstance(fields, dict) and fields:
             # D10: 写前枚举预转换（int 列+非 int 值命中枚举→转 int，减少硬错误）
             fields = self._precoerce_enum_fields(fields, stem, sheet)
@@ -3785,6 +3840,41 @@ class TableAgent:
             failed: list[str] = []
             _auto_cols: list[str] = []  # 快赢3:<auto> 批量收敛,循环后一次性 add
             for col_name, val in fields.items():
+                # §P0 数字索引键兜底：col_name 为纯数字 = LLM 退化把列序号当键
+                # （fields 键约定为列名，纯数字绝非合法列名）。无法映射真实列，
+                # matcher.match 必失败 → 原逻辑 res.add("match_field",False) 翻转
+                # 整条 intent 为失败（即使其余列合法可写）。跳过该退化键（不写不
+                # 判失败），让行其余列 + 自增主键正常落库。通用判据（键形式），
+                # 不绑列名/表/测例。
+                if str(col_name).strip().isdigit():
+                    _narr_skipped.append(f"{col_name}（纯数字=列序号索引键,退化,跳过）")
+                    continue
+                # §叙述值跳过兜底（泛化）：上游 LLM/legacy 路径偶发退化把整段叙述当
+                # 单字段值灌进列。这类值写进 int/枚举列必然 type 校验失败 →
+                # execute_failed_no_llm。在写前跳过该列（不写），让行其余列正常写入，
+                # 避免整行因叙述值失败。通用判据（值内容特征），不绑业务词/表/测例。
+                # §P1 降阈+类型对齐：原 >50 字阈放过短叙述串（如 40 字「30010，叫焚天...」
+                # 灌 int 列）。现按"含中文标点/汉字 + 非纯数字/列表"统一判，与
+                # _scrub_narrative_scalar / _coerce_field_simple 同源判据。
+                _vs = str(val).strip() if val is not None else ""
+                if _vs and not (_vs.startswith("<") and _vs.endswith(">")):
+                    _stripped = _vs.replace(",", "").replace("，", "")
+                    _is_pure_num = _stripped.lstrip("-").isdigit()
+                    if not _is_pure_num:
+                        try:
+                            float(_stripped)
+                            _is_pure_num = True
+                        except ValueError:
+                            pass
+                    if (not _is_pure_num
+                            and not _vs.startswith("[")
+                            and not _vs.startswith("{")):
+                        import re as _re_ch
+                        if _re_ch.search(
+                                r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", _vs):
+                            _narr_skipped.append(
+                                f"{col_name}（值含中文似叙述，跳过）")
+                            continue
                 # 多 id 消歧：泛「id/编号」且 sheet 有多个 id 列 → 中止提示重试
                 ambig, cands = self._check_id_ambiguity(headers, str(col_name))
                 if ambig:
@@ -3915,6 +4005,26 @@ class TableAgent:
             next_pos = alias_positions[i + 1][0] if i + 1 < len(alias_positions) else len(text)
             tail = text[pos + len(alias):next_pos].strip()
             tail = _strip_separators(tail)
+            # §P0 叙述碎片硬拦（path2 碎片根治）：原 >50 字阈放过短碎片（如
+            # 「包也建一下，」14 字灌 reward 名称 str 列 → 写盘垃圾行 {42:'包也建一下'}）。
+            # 兜底产 fields 空时 path2 在整段 raw 上裸扫，别名间 tail 常是跨子任务叙述。
+            # 判据：tail 含中文句读（，。；：、）且非纯数字/括号列表 → 叙述碎片，跳过。
+            # 合法标量值（数字/日期/坐标/列表）不含中文句读，不会被误拦。
+            if any(_p in tail for _p in "，。；：、！？"):
+                _tail_s = tail.replace(",", "").replace("，", "")
+                if (not _tail_s.lstrip("-").isdigit()
+                        and not tail.startswith("[") and not tail.startswith("{")):
+                    if _narr_skipped is not None:
+                        _narr_skipped.append(f"{col_name}（值含中文句读似叙述碎片，跳过）")
+                    continue
+            # §P1 长叙述值跳过（原 >50 字守卫，保留作双保险）
+            if len(tail) > 50 and any(_p in tail for _p in "，。；：、！？"):
+                _tail_s = tail.replace(",", "").replace("，", "")
+                if (not _tail_s.lstrip("-").isdigit()
+                        and not tail.startswith("[") and not tail.startswith("{")):
+                    if _narr_skipped is not None:
+                        _narr_skipped.append(f"{col_name}（规则扫描值过长似叙述，跳过）")
+                    continue
             if tail:
                 m = matcher.match(col_name)
                 if m:
@@ -3925,6 +4035,31 @@ class TableAgent:
                     if warn:
                         res.add("coerce_value", True, warn)
                     if error:
+                        # §P0 叙述碎片跳过（path2 coerce 报错点，补 path1 已有守卫的盲区）：
+                        # path2 的前置 >50 字阈放过短碎片（如 40 字「1099，技能列表 9001，
+                        # AI 用 aggressive_ai，」灌 reward_id int 列）→ coerce 硬错 →
+                        # res.add(False) → res.ok=False → execute_failed_no_llm 假失败。
+                        # 值含中文叙述特征 + 非纯数字/列表 + coerce 失败 = 叙述碎片灌错类型列，
+                        # 跳过该字段不写（不判失败）。合法 str 列中文不会 coerce 报错，故只拦
+                        # 真正类型不符的灌值。通用判据（值特征+类型转换结果），不绑业务词/表/测例。
+                        _ev = str(tail)
+                        _ev_s = _ev.replace(",", "").replace("，", "")
+                        _ev_num = _ev_s.lstrip("-").isdigit()
+                        if not _ev_num:
+                            try:
+                                float(_ev_s)
+                                _ev_num = True
+                            except ValueError:
+                                pass
+                        import re as _re_ch2
+                        if (not _ev_num and not _ev.startswith("[")
+                                and not _ev.startswith("{")
+                                and _re_ch2.search(
+                                    r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", _ev)):
+                            if _narr_skipped is not None:
+                                _narr_skipped.append(
+                                    f"{col_name}（含中文致类型转换失败,叙述碎片,跳过）")
+                            continue
                         res.add("coerce_value", False, error)
                         continue
                     # ID 列段校验（越界 → 跳过该字段，不写入）
@@ -3949,6 +4084,18 @@ class TableAgent:
                         obj = cand
                         break
             if obj:
+                # §P1 叙述值跳过（路径3 兜底）：obj 是整段文本（>80 字符 + 含中文标点 +
+                # 非纯数字/列表）时，是别名稀疏的复杂跨表段被当对象名，写进 locator 列必
+                # 失败/污染。跳过不写，让该 intent 走"无法解析"软失败而非污染行。
+                _obj_s = str(obj)
+                if len(_obj_s) > 80 and any(_p in _obj_s for _p in "，。；：、！？"):
+                    _obj_stripped = _obj_s.replace(",", "").replace("，", "")
+                    if (not _obj_stripped.lstrip("-").isdigit()
+                            and not _obj_s.startswith("[") and not _obj_s.startswith("{")):
+                        if _narr_skipped is not None:
+                            _narr_skipped.append(f"对象名兜底（整段文本过长似叙述，跳过）")
+                        obj = ""
+            if obj:
                 loc_match, _mode, _matcher, _stem, loc_col_name = self._resolve_locator_and_mode(path, sheet, intent)
                 if loc_match is not None:
                     values[loc_match.index] = obj
@@ -3960,6 +4107,10 @@ class TableAgent:
             res.message = "无法解析新增内容"
             return res
 
+        if _narr_skipped:
+            res.add_thinking("执行",
+                f"跳过 {len(_narr_skipped)} 个叙述值列：{', '.join(_narr_skipped[:4])}"
+                f"（值过长似整段叙述，写进 type 列必失败，已跳过避免污染行）")
         res.add("add_values", True, f"提取到 {len(values)} 个列值: {values}")
         return self._do_append(path, sheet, values, res)
 
@@ -4168,6 +4319,61 @@ class TableAgent:
         read_sheet 返回行 list 为 0-based，第一列 r[0] 即主键。
         """
         PK_COL = 1
+        # §P0 虚假碎片行守卫（根治 Step1 切分碎片）：Step1 偶把他表片段（如奖励
+        # 引用「奖励包给 100600」、任务组名「封魔录，主线」）误切成独立 add intent，
+        # 经 path2 别名扫描抓到零散碎片 → 写出仅含碎片、无有效标识的垃圾行
+        # （如 reward 行 ={2:'封魔录，主线',42:'包给 100600。'}）。
+        # 通用判据：合法实体创建必有 ≥1 个"干净锚点"——数字，或不含中文句读
+        # （，。；、！？（）等）的字符串（名称/枚举/英文标识）。当主键为自增
+        # （未显式指定）且待写值全为"无锚点碎片"（每个字符串都含中文句读）时，
+        # 判为 Step1 误切片段，跳过不写（走既有"无法解析新增内容"干净软跳过通道，
+        # 不计失败）。合法行必含干净名称/编号，故不误伤；含标点的正文描述只要
+        # 同行有干净锚点即保留。不绑业务词/表/测例。
+        _pk_in = values.get(PK_COL)
+        if _pk_in is None or not str(_pk_in).strip():
+            _sent_punct = "，。；、！？（）【】…‘’"""
+            # 区分三类值：干净名称锚点（非数字、无中文句读 = 名称/枚举/英文标识）、
+            # 数字锚点、中文碎片（含句读的残段）。合法实体创建须有 PK 或"干净名称锚点"；
+            # 仅有数字锚点又混着中文碎片（如 Step1 误切 + path2 尾巴清洗后 {42:'包也建一下',
+            # 9:'800'}）判为碎片行——数字孤值不足以构成实体，跳过不写。
+            _has_name_anchor = False
+            _has_num_anchor = False
+            _has_fragment = False
+            for _c, _v in values.items():
+                if _c == PK_COL:
+                    continue
+                if isinstance(_v, (int, float)):
+                    _has_num_anchor = True
+                    continue
+                _vs = str(_v).strip()
+                if not _vs:
+                    continue
+                if _vs.lstrip("-").replace(".", "", 1).isdigit():
+                    _has_num_anchor = True
+                    continue
+                if any(_p in _vs for _p in _sent_punct):
+                    _has_fragment = True
+                    continue
+                _has_name_anchor = True
+            # 跳过条件：无 PK 且无干净名称锚点，且（存在中文碎片 或 连数字锚点都没有）。
+            # → 仅数字锚点且无碎片（纯数值行，如属性权重行）不误伤。
+            _is_fragment_row = (values and not _has_name_anchor
+                                and (_has_fragment or not _has_num_anchor))
+            if _is_fragment_row:
+                # 不记 res.add(False) 失败步骤（否则 eval 逐步渲染出 ❌
+                # spurious_fragment_row，且残留失败步骤污染 aggregated_message）。
+                # 直接置 res.ok=False + 走"无法解析新增内容"文案 → 下游
+                # execute_no_llm 空内容干净软跳过通道（agent.py:6996）识别该
+                # marker，翻回 res.ok=True 并标 skipped，不计失败清单。既跳过
+                # 垃圾碎片行、又不产生失败标记。add_thinking 留痕供诊断。
+                res.ok = False
+                res.add_thinking("执行",
+                    f"{sheet} 待写值均为无锚点碎片，疑 Step1 误切他表片段，"
+                    f"干净跳过不写: {values}")
+                res.message = (
+                    f"无法解析新增内容（{sheet} 仅含无锚点碎片、无有效标识，"
+                    f"疑 Step1 误切他表片段，已跳过不写）")
+                return res
         pk_val = values.get(PK_COL)
         if pk_val is not None and str(pk_val).strip():
             pk_str = str(pk_val).strip()
@@ -4210,6 +4416,17 @@ class TableAgent:
             # D1 写后读回验证：比对落盘值与期望值
             verify = self._verify_write_back(path, sheet, new_row, values)
             if verify.get("ok"):
+                # §P0 状态一致性：coerce 失败字段被跳过但行写入成功时，整体应标成功
+                # （partial）。原 res.add("coerce_value",False) 已置 res.ok=False 不可逆，
+                # 导致 Step6 汇总判失败但行实际已落库（状态不一致：写成功报失败）。
+                # 写后验证通过 = 行已正确落库 → 恢复 res.ok=True 并标 partial 让前端知
+                # 有字段被跳过。failed 列已在 steps 的 coerce_failed 显示。
+                _had_coerce_fail = any(
+                    getattr(s, "name", "") == "coerce_value" and not getattr(s, "ok", True)
+                    for s in res.steps)
+                if _had_coerce_fail:
+                    res.ok = True
+                    res.partial = True
                 res.add("append_row", True, f"新增行 row={new_row} 值={values}（写后验证通过）")
                 res.message = f"已新增：{sheet} 行{new_row} 内容={values}"
             else:
@@ -4280,10 +4497,60 @@ class TableAgent:
                         pass
             if not self._refresh_index_after_write(path):
                 res.index_dirty = True
+            self._check_missing_required_after_add(path, sheet, headers, values, res, getattr(res, "intent", None))
         else:
             res.add("append_row", False, r.error or "")
             res.message = "新增行失败"
         return res
+
+    def _check_missing_required_after_add(self, path, sheet, headers, values, res,
+                                          intent=None) -> None:
+        """写库后业务必填列 schema-grounding 检查。
+
+        启发式：当 user_text 含引号(说明用户显式给了名字/描述值)且列名含「名称/描述/名」
+        字样的 string 列未落盘 → res.missing_required + schema_grounding 失败 step +
+        res.ok=False（让 Step3 failures 透传到 Step4 Conclude induce_anti_patterns）。
+        对应"看似成功的失败"——项目里大量 case LLM 漏产名称/描述，写库 ok 但缺必填列，
+        原 dialog_logger 按 ok=True 算 excellent 入 examples，学习链路缺种子。
+        PK 自动分配列豁免。
+        """
+        if not headers or not values:
+            return
+        try:
+            written_cols = {ci for ci in values.keys()
+                            if isinstance(ci, int) and ci > 0}
+            required_kws = ("名称", "描述", "名")
+            quoted = any(q in ((intent.raw if intent else "") or "")
+                         for q in ("'", '"', "「", "」")) or \
+                any(kw in ((getattr(intent, "raw", "") if intent else "") or "")
+                    for kw in ("活动描述", "活动名称", "描述为", "名称为"))
+            if not quoted:
+                return
+            missing: list[dict] = []
+            for idx0, h in enumerate(headers, start=1):
+                if not h or idx0 in written_cols:
+                    continue
+                name = str(h).split(":")[0].strip()
+                if not name or not any(kw in name for kw in required_kws):
+                    continue
+                v = values.get(idx0, "")
+                if v in (None, ""):
+                    missing.append({"col": idx0, "col_name": name,
+                                    "col_type": "str"})
+            if not missing:
+                return
+            res.missing_required = missing
+            names = ", ".join(m["col_name"] for m in missing)
+            res.add("schema_grounding", False,
+                    f"业务必填列未填: {names}（LLM 漏产/字段缺失——行已落盘但缺列，"
+                    "按失败记录喂 induce_anti_patterns）")
+            if res.ok:
+                res.ok = False
+                _m = res.message or f"新增 {sheet} 行已写但缺必填列"
+                res.message = (f"新增行部分成功但缺业务必填列：{names}。"
+                               f"建议补列重跑或直接 ask 让用户补值。原始：{_m}")
+        except Exception:
+            logger.warning("schema-grounding check 失败(非致命)", exc_info=True)
 
     # ── 列级操作 ──
     def _clean_col_hint(self, hint: str | None) -> str:
@@ -6116,6 +6383,7 @@ class TableAgent:
             "user_corrected": res.user_corrected,
             "corrected_to": res.corrected_to,
             "skill_enabled": self.enable_skill,
+            "missing_required": list(getattr(res, "missing_required", []) or []),
         }
         # 对话记录：完整对话 + 质量评分 + 自动留优（始终写，独立于 skill 开关）
         dialog_record = {
@@ -6712,6 +6980,26 @@ class TableAgent:
                             _auto_cols, path.stem, sheet)
             # 必填/跨表引用占位未解 → 才弹问
             if _required_cols:
+                # §自引用豁免：<new_xxx_id> 且 label == 本 intent produces_label →
+                # 主键自动分配（Step3 _do_append 自增 + _capture_produced 捕获真实 id），
+                # 非"前序产出未对上"，不弹问。清空该字段让 _do_append 走自增分支。
+                _self_prod = (getattr(intent, "produces_label", None)
+                              or (intent.extras or {}).get("produces"))
+                if _self_prod:
+                    _self_prod = str(_self_prod).strip()
+                    _filtered: list[str] = []
+                    for _c in _required_cols:
+                        _v = str(_fields_pre.get(_c) or "").strip()
+                        _lbl = (_v[1:-1].strip()
+                                if (_v.startswith("<") and _v.endswith(">")) else "")
+                        if _lbl == _self_prod:
+                            _fields_pre[_c] = ""  # 主键留空 → 自增分配
+                            res.add_thinking("执行",
+                                f"列[{_c}] 自引用占位 {_v}（本步 produces），已留空自增分配")
+                            continue
+                        _filtered.append(_c)
+                    _required_cols = _filtered
+            if _required_cols:
                 logger.warning("Step5 执行前发现未替换占位符字段 %s (table=%s sheet=%s)",
                                _required_cols, path.stem, sheet)
                 res.add_thinking("执行",
@@ -6724,10 +7012,19 @@ class TableAgent:
                 _unresolved_clean = [_clean_col(k) for k in _required_cols]
                 _unresolved_disp = "、".join(f"「{c}」" for c in _unresolved_clean)
                 _col_disp = "、".join(_unresolved_clean)
+                # 提取每个未解占位列引用的「依赖标记」，明确告诉用户缺的是哪个前置项。
+                _dep_labels: list[str] = []
+                for _c in _required_cols:
+                    for _m in _PLACEHOLDER_RE.finditer(str(_fields_pre.get(_c) or "")):
+                        _lbl = _m.group(1)
+                        if _lbl and _lbl not in _dep_labels:
+                            _dep_labels.append(_lbl)
+                _dep_hint = ("、".join(_humanize_dep_label(_l) for _l in _dep_labels)
+                             if _dep_labels else "前置数据")
                 _example = "；".join(f"{c}填「（此处填具体值）」" for c in _unresolved_clean)
                 _ask_rc = (
-                    f"这些是必填或跨表引用列，原指令没给值，系统尝试从前序操作结果自动回填也未取到，且无法自动生成。"
-                    f"继续写入会留 <列名> 占位文本污染数据，故暂停。"
+                    f"列 {_col_disp} 要引用的前置数据（{_dep_hint}）还没被前面的步骤创建出来，"
+                    f"系统也没能从前序结果自动回填。继续写入会残留 <列名> 占位文本污染数据，故暂停。"
                 )
                 _ask_strats = "已尝试：按依赖顺序自动回填（未找到前序产出）"
                 # O21 表格交互：suggestion 引导走 field 模式填表格，而非补自然语言句子。
@@ -6738,11 +7035,20 @@ class TableAgent:
                     "（数字/枚举列填数字或编号，不能填中文名）；"
                     "或点「跳过」放弃此项继续后续任务（会记入失败清单）。"
                 )
+                # 计算建议值：单占位列且能定位本表 PK 列 → 用下一可用 ID 作建议
+                _suggested_id = None
+                if len(_required_cols) == 1:
+                    try:
+                        _pk_col_idx = self._locate_pk_col(path, sheet)
+                        if _pk_col_idx:
+                            _suggested_id = self._allocate_pk(path, sheet, _pk_col_idx)
+                    except Exception:
+                        _suggested_id = None
                 # 中断反问：让用户填字段值或重描述，清占位符后续跑
                 _ask = getattr(self, "_ask_callback", None)
                 _user_mode = None
                 if _ask is not None:
-                    _pr = _ask({
+                    _ask_payload = {
                         "reason": f"无法确定 {_unresolved_disp} 的取值，已暂停写入",
                         "table": path.stem, "sheet": sheet,
                         "failed_col": _col_disp, "failed_val": "",
@@ -6753,18 +7059,42 @@ class TableAgent:
                         "snip": (getattr(intent, "raw", "") or "")[:120],
                         # 要求 B：大白话 reason + action
                         "user_friendly": {
-                            "reason": (f"这项「{_col_disp}」需要先建好依赖的东西才能填，但那个依赖现在还没建出来。"),
-                            "action": ("你可以：①先去建依赖项 ②手动填一个已有的编号 "
-                                       "③点「跳过」放弃此项。"),
+                            "reason": (f"这项「{_col_disp}」要引用的前置数据（{_dep_hint}）"
+                                       f"还没被前面的步骤创建出来，所以现在填不了。"),
+                            "action": (f"正常应由系统建好『{_dep_hint}』后自动回填。你可以："
+                                       "①检查那条前置数据是否漏配、补上它 "
+                                       "②手动填一个已存在的编号 ③点「跳过」放弃此项。"),
                         },
-                    }) or {}
+                    }
+                    # §取值不确定统一交互：单占位列 + 有建议值 → 前端走「建议ID+文字框」
+                    # （不填=接受建议，填了=按自定义），与 PK 冲突同模式（id_suggest）。
+                    if _suggested_id is not None:
+                        _ask_payload["mode_hint"] = "id_suggest"
+                        _ask_payload["suggested_id"] = _suggested_id
+                        _ask_payload["suggestion"] = (
+                            f"「{_col_disp}」需要的前置值不存在，建议填 {_suggested_id}，"
+                            "或输入其他已存在的编号")
+                        _ask_payload["user_friendly"]["action"] = (
+                            f"系统没找到『{_dep_hint}』，建议 {_col_disp} 填 {_suggested_id}。"
+                            "不填＝接受建议，填了＝按你输入的编号写入。")
+                    _pr = _ask(_ask_payload) or {}
                     _user_mode = _pr.get("mode")
                     if _user_mode == "field":
-                        _fill = ((_pr.get("fix_payload") or {}).get("fields") or {})
-                        for _c, _v in _fill.items():
-                            if _c in _fields_pre:
-                                _fields_pre[_c] = _v
-                        intent.extras["_has_unresolved_placeholder"] = None
+                        # §id_suggest：accept_suggest/custom_id → 填建议/自定义值到占位列
+                        if (_pr.get("accept_suggest") or _pr.get("custom_id")) and _required_cols:
+                            _new_id = (_pr.get("custom_id")
+                                       if _pr.get("custom_id") else _suggested_id)
+                            if _new_id is not None:
+                                for _c in _required_cols:
+                                    _fields_pre[_c] = _new_id
+                                intent.extras["_has_unresolved_placeholder"] = None
+                        else:
+                            _fill = ((_pr.get("fix_payload") or {}).get("fields") or {})
+                            for _c, _v in _fill.items():
+                                if _c in _fields_pre:
+                                    _fields_pre[_c] = _v
+                            if _fill:
+                                intent.extras["_has_unresolved_placeholder"] = None
                     elif _user_mode == "nl":
                         _nt = (_pr.get("text") or "").strip()
                         if _nt and self.parser is not None:
@@ -6833,21 +7163,203 @@ class TableAgent:
         # 诊断 + 反模式归纳交 §5 ConcludeAgent。默认关（保持现状含 LLM 诊断+重试+修复）。
         if self.execute_no_llm and is_write and out is not None \
                 and not getattr(out, "ok", False):
-            if backup_file:
-                self._rollback_write(path, backup_file, res)
-            _first_err = (getattr(out, "message", "") or res.message
-                          or "首次写操作失败")
-            res.ok = False
-            res.message = f"执行失败（ExecuteAgent 去 LLM 模式,跳过 LLM 诊断/重试）：{_first_err}"
-            res.failures.append({
-                "type": "execute_failed_no_llm",
-                "table": path.stem, "sheet": sheet, "col": "",
-                "root_cause": _first_err,
-                "attempted_strategies": ["direct_dispatch"],
-                "suggestion": "待 ConcludeAgent(§5) 诊断/反模式归纳",
-                "status": "failed", "user_reply": None,
-            })
-            return res
+            # §P1 空内容子任务干净跳过：失败文案属"无可写内容"类（baseline 对弱命中
+            # 候选产的空壳 fields，或字段全被叙述跳过后 values 空）→ ask 也无从填起
+            # （用户看到"未指明列"无法修）。标 skipped 不计 failure，res.ok=True 不阻塞
+            # 下游拓扑，让流水线以干净状态正确结束。区别于类型/PK/列名冲突（有内容需
+            # 用户修，走下方软 ask 循环）。通用判据（错误文案类别），不绑业务词/表/测例。
+            _fail_msg = (getattr(out, "message", "") or res.message or "")
+            _EMPTY_CONTENT_MARKERS = (
+                "无法解析新增内容",
+                "未能从语句中提取到列值",
+                "无法匹配任何目标列",
+                "所有列名均无法匹配表头",
+            )
+            if any(_mk in _fail_msg for _mk in _EMPTY_CONTENT_MARKERS):
+                if backup_file:
+                    self._rollback_write(path, backup_file, res)
+                res.ok = True
+                res.add_thinking("执行",
+                    f"跳过无写入内容的子任务 {path.stem}/{sheet}"
+                    f"（{_fail_msg[:32]}），不计入失败清单")
+                return res
+            # §V2 软 ask 救援：首次写失败时，不直接 execute_failed_no_llm，而是经
+            # _ask_callback ask 用户（mode=field，给失败列+根因+修正建议/手动填值/跳过），
+            # 用户回复后改写 intent.extras["fields"] 重试一次 _dispatch。零 LLM（复用
+            # _ask_callback，不调 ai_analyze_failure），让"接受错误修改建议"对执行时
+            # 暴露的失败（非 Step2 可预见）也生效。重试仍失败才真正 execute_failed_no_llm。
+            _ask_cb = getattr(self, "_ask_callback", None)
+            if _ask_cb is not None:
+                # 拉 headers/type_row 供提交值预检（按列查 col_type）
+                _hdrs = []
+                _trow = []
+                try:
+                    _hdrs = self.cli.read_header(path, sheet) if hasattr(self.cli, "read_header") else []
+                    _trow = self.cli.read_type_row(path, sheet) if hasattr(self.cli, "read_type_row") else []
+                except Exception:
+                    _hdrs, _trow = [], []
+
+                def _col_type(_c: str) -> str:
+                    _cn = (_c or "").split(":")[0].strip().lower()
+                    for _h, _t in zip(_hdrs, _trow):
+                        if _h and (_h or "").split(":")[0].strip().lower() == _cn:
+                            return str(_t or "")
+                    return ""
+
+                def _ct_label(_t: str) -> str:
+                    _tl = (_t or "").lower()
+                    if "int" in _tl or "long" in _tl:
+                        return "整数(int)"
+                    if "float" in _tl or "double" in _tl or "number" in _tl:
+                        return "数字(float)"
+                    if "bool" in _tl:
+                        return "布尔(0/1/true/false)"
+                    return _t or "未知"
+
+                def _first_failure(_src_out, _src_res):
+                    _f = None
+                    for _x in (getattr(_src_out, "failures", None) or []):
+                        if isinstance(_x, dict) and (_x.get("col") or _x.get("root_cause")):
+                            _f = _x
+                            break
+                    if _f is None:
+                        for _x in (getattr(_src_res, "failures", None) or []):
+                            if isinstance(_x, dict) and (_x.get("col") or _x.get("root_cause")):
+                                _f = _x
+                                break
+                    return _f
+
+                import re as _re_fv
+                _MAX_RESCUE_ROUNDS = 3
+                _retried_ok = False
+                _final_user_reply = None
+                _cur_err = (getattr(out, "message", "") or res.message
+                            or "首次写操作失败")
+                _cur_ff = _first_failure(out, res)
+                _cur_fail_col = (_cur_ff.get("col") if _cur_ff else "") or ""
+                for _round in range(_MAX_RESCUE_ROUNDS):
+                    _ff_rc = (_cur_ff.get("root_cause") if _cur_ff else "") or _cur_err
+                    _fail_val = ""
+                    _m_fv = _re_fv.search(r"[「『]([^」』]+)[」』]", _ff_rc)
+                    if _m_fv:
+                        _fail_val = _m_fv.group(1)
+                    _disp_col = _cur_fail_col or "（未指明列）"
+                    _ask_rc = (f"写入 {path.stem}/{sheet} 时列「{_disp_col}」的值失败：{_cur_err}"
+                               if _cur_fail_col
+                               else f"写入 {path.stem}/{sheet} 失败：{_cur_err}")
+                    _hint = ""
+                    if _cur_fail_col:
+                        _ct = _col_type(_cur_fail_col)
+                        if _ct:
+                            _hint = f"该列类型为 {_ct_label(_ct)}，请填可转成该类型的值"
+                    _ask_pr = _ask_cb({
+                        "reason": f"写入失败，需修正「{_disp_col}」后重试",
+                        "table": path.stem, "sheet": sheet,
+                        "failed_col": _cur_fail_col, "failed_val": _fail_val,
+                        "root_cause": _ask_rc,
+                        "attempted_strategies": (f"已试 {_round} 轮 ask+校验" if _round else "首次直接写入失败"),
+                        "suggestion": ("请在下方表格按列填入修正值"
+                                       "（数字/枚举列填数字或编号，不能填中文名或整段叙述）"
+                                       + (f"；{_hint}" if _hint else "")
+                                       + "；或点「跳过」放弃此项继续后续任务（会记入失败清单）。"),
+                        "snip": (getattr(intent, "raw", "") or "")[:120],
+                        "user_friendly": {
+                            "reason": (f"写「{_disp_col}」这列时失败了"
+                                       + (f"（{_hint}）" if _hint else "，系统没能直接写进去。")),
+                            "action": ("你可以在下方表格里把这一列改成正确的值"
+                                       "（数字/编号），然后让系统重试；"
+                                       "或点「跳过」放弃此项继续后面的任务。"),
+                        },
+                    }) or {}
+                    _final_user_reply = _ask_pr.get("mode")
+                    if _ask_pr.get("mode") != "field":
+                        break  # 用户跳过/无回复 → 退出循环走 fail
+                    _fill = ((_ask_pr.get("fix_payload") or {}).get("fields")
+                             or _ask_pr.get("fields") or {})
+                    if not isinstance(_fill, dict) or not _fill:
+                        break
+                    # 提交值预检：每个填值 _coerce_value 看能否强转（不写盘）
+                    _bad = []  # (col, val, error)
+                    for _c, _v in _fill.items():
+                        _ct = _col_type(_c)
+                        if not _ct:
+                            continue  # 无类型信息不预检（交写盘真校验）
+                        try:
+                            _, _w, _e = self._coerce_value(
+                                _ct, _v, stem=path.stem, sheet=sheet, col_name=_c)
+                        except Exception as _e_cv:
+                            _e, _w = str(_e_cv), None
+                        if _e:
+                            _bad.append((_c, _v, _e))
+                    if _bad:
+                        # 预检不过 → 重新 ask，把错误方向并入根因
+                        _cur_err = "；".join(f"列「{c}」的值「{v}」：{e}" for c, v, e in _bad)
+                        _cur_fail_col = _bad[0][0]
+                        _cur_ff = {"col": _cur_fail_col, "root_cause": _cur_err}
+                        res.add_thinking("执行",
+                            f"用户提交值预检未过（第{_round+1}轮），重新 ask：{_cur_err[:120]}")
+                        continue  # 重新 ask 带错误方向
+                    # 预检通过 → 改写 fields + 回滚 + 重试写盘
+                    _cur_fields = intent.extras.setdefault("fields", {})
+                    for _c, _v in _fill.items():
+                        _cur_fields[_c] = _v
+                    if backup_file:
+                        self._rollback_write(path, backup_file, res)
+                    try:
+                        _retry_out = _dispatch()
+                    except Exception:
+                        _retry_out = None
+                    if _retry_out is not None and getattr(_retry_out, "ok", False):
+                        out = _retry_out
+                        _retried_ok = True
+                        res.add_thinking("执行",
+                            f"用户修正「{_disp_col}」后重试成功（第{_round+1}轮）")
+                        break
+                    # 写盘重试仍失败 → 把写盘错误并入下轮 ask 根因
+                    _cur_err = (getattr(_retry_out, "message", "")
+                                if _retry_out else "") or res.message or "重试写盘失败"
+                    _nf = _first_failure(_retry_out, res) if _retry_out else None
+                    if _nf:
+                        _cur_fail_col = _nf.get("col") or _cur_fail_col
+                        _cur_ff = _nf
+                    else:
+                        _cur_ff = {"col": _cur_fail_col, "root_cause": _cur_err}
+                    res.add_thinking("执行",
+                        f"重试写盘仍失败（第{_round+1}轮），并入下轮 ask：{_cur_err[:120]}")
+                    continue
+                if _retried_ok:
+                    pass  # 走正常后续（verify/summarize）
+                else:
+                    if backup_file:
+                        self._rollback_write(path, backup_file, res)
+                    res.ok = False
+                    res.message = (f"执行失败（ExecuteAgent 去 LLM 模式,经 "
+                                   f"{_MAX_RESCUE_ROUNDS} 轮 ask+校验仍未通过）：{_cur_err}")
+                    res.failures.append({
+                        "type": "execute_failed_no_llm",
+                        "table": path.stem, "sheet": sheet, "col": _cur_fail_col,
+                        "root_cause": _cur_err,
+                        "attempted_strategies": ["direct_dispatch", "user_ask_retry_with_validate"],
+                        "suggestion": "待 ConcludeAgent(§5) 诊断/反模式归纳",
+                        "status": "failed", "user_reply": _final_user_reply,
+                    })
+                    return res
+            else:
+                if backup_file:
+                    self._rollback_write(path, backup_file, res)
+                _first_err = (getattr(out, "message", "") or res.message
+                              or "首次写操作失败")
+                res.ok = False
+                res.message = f"执行失败（ExecuteAgent 去 LLM 模式,跳过 LLM 诊断/重试）：{_first_err}"
+                res.failures.append({
+                    "type": "execute_failed_no_llm",
+                    "table": path.stem, "sheet": sheet, "col": "",
+                    "root_cause": _first_err,
+                    "attempted_strategies": ["direct_dispatch"],
+                    "suggestion": "待 ConcludeAgent(§5) 诊断/反模式归纳",
+                    "status": "failed", "user_reply": None,
+                })
+                return res
 
         # verify-repair 迭代环（enable 时接管写操作 verify 门控 + 失败修复；快路径优先）
         # §V2 零 LLM 守卫：execute_no_llm=1（V2 Step3 透传）时短路 verify-repair loop，

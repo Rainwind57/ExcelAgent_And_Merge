@@ -1,0 +1,766 @@
+[
+  {
+    "_meta": {
+      "name": "师门除恶令·讨伐+复命双环（跨7表 add + 师门贡献令道具 + 师门接引长老对话树 + next_quest 链）",
+      "complexity": "高（quest.QuestGroup+Quest×2(next_quest_ids 链) → reward → item.ItemBase(师门贡献令产出被 reward 消费) → combat+PveCombatNpc(win_reward 消费 reward) → entity_prefab+interaction 三节点对话 → spawn_world_entity(长老) + spawn_quest_entity(叛徒)）",
+      "note": "师门日常链路：杀怪环(Combat 目标)→复命环(Conversation 目标)，reward 前置 produce 被 combat + quest 后置 consume；item 产出师门贡献令被 reward.must_items 消费。exercises ParseAgent 跨7表 schema-driven 拆分 + produces_inference 对 reward→combat→quest 反向可达图拓扑",
+      "expect_subtasks": 16,
+      "design_target": "exercises Step1 schema-driven DecomposeAgent ≥16 SubTask 不漏表 + produces_inference 推断 item→reward→combat→quest 拓扑序 + Step2 FK 层 Combat 目标引用 combat_id 前向引用闭环校验。注：长老对话树 option_accept→conv2（复命），option_done 结束"
+    },
+    "input": "新增一条师门除恶日常任务链叫'师门除恶令'。任务组 group_id 710，组名'师门除恶'，任务类型 2（支线日常），接受资格填 hero_min_level:25。奖励包预先建好：reward_id 占位叫'师门除恶贡献奖励'，每日限领 1 次，必给新建的'师门贡献令'道具 5 个，100% 给经验、100% 给金币、金币公式 500。师门贡献令道具也要新建：叫'师门贡献令' item_id 占位，品质 2，道具类型 1，图标'Icon_school_token'，最大堆叠 999，可丢弃。叛徒战斗配上：在 space_id 10008 坐标 (90,0,70) 刷'入魔叛徒'，model_id 1140，技能 8401/8402，AI 用 elite_ai，等级公式 35，气血斜率 20、气血基础 30000，物攻斜率 15、物攻基础 2000，打赢给上面那个奖励包，输了和平局都不给。师门接引长老新建一位叫'执法长老' model_id 1027，放在 space_id 10008 坐标 (60,0,60)，点击后展开对话树：长老第一句'门下弟子听令，近日有入魔叛徒在外为祸，去讨伐之'，给选项'弟子领命'跳第二句'善，叛徒已授首，这是师门贡献令，自行去藏经阁兑换'，第二句再给一个选项'弟子告退'选完什么都不做结束对话；还有个选项'容我准备'直接结束对话。最后配两条任务：第一条 quest_id 260710 叫'师门除恶·讨伐'，目标类型用 Combat，目标数据 combat_id 指向上面新建的战斗、is_win 1、count 1，刷新的 npc 填执法长老与叛徒两个 prefab_id，阶段结束回收当前阶段 npc 填 1，奖励填上面奖励包，完成后接到第二条；第二条 quest_id 260711 叫'师门除恶·复命'，目标类型 Conversation，目标数据 conv_id 指向长老第二句对话，刷新的 npc 填执法长老，奖励再填一次上面奖励包。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_contribution_item_id",
+        "row_content": {
+          "item_id": "<new_contribution_item_id>",
+          "name": "师门贡献令",
+          "quality": 2,
+          "item_type": 1,
+          "icon": "Icon_school_token",
+          "max_stack": 999,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_id",
+        "row_content": {
+          "id": "<new_reward_id>",
+          "name": "师门除恶贡献奖励",
+          "day_limit": 1,
+          "must_items[1].item_ids": "<new_contribution_item_id>",
+          "must_items[1].num": 5,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "500"
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "师门叛徒讨伐",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10008,
+          "win_reward": "<new_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_npc_id",
+        "row_content": {
+          "npc_id": "<new_npc_id>",
+          "name": "入魔叛徒",
+          "model_id": 1140,
+          "spell_ids": [8401, 8402],
+          "combat_ai_name": "elite_ai",
+          "level_formula": 35,
+          "attribute_base_slopes.HPMaxCon[1]": 20,
+          "attribute_base_slopes.HPMaxCon[0]": 30000,
+          "attribute_base_slopes.WorldAttackCon[1]": 15,
+          "attribute_base_slopes.WorldAttackCon[0]": 2000,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_elder_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_elder_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1027,
+          "entity_name": "执法长老",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id_1>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id_1",
+        "row_content": {
+          "conv_id": "<new_conv_id_1>",
+          "prompt_text": "门下弟子听令，近日有入魔叛徒在外为祸，去讨伐之",
+          "options[0]": "<option_accept_id>",
+          "options[1]": "<option_prepare_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id_2",
+        "row_content": {
+          "conv_id": "<new_conv_id_2>",
+          "prompt_text": "善，叛徒已授首，这是师门贡献令，自行去藏经阁兑换",
+          "options[0]": "<option_done_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_accept_id",
+        "row_content": {
+          "option_id": "<option_accept_id>",
+          "option_text": "弟子领命",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_conv_id_2>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_prepare_id",
+        "row_content": {
+          "option_id": "<option_prepare_id>",
+          "option_text": "容我准备",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_done_id",
+        "row_content": {
+          "option_id": "<option_done_id>",
+          "option_text": "弟子告退",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "produces": "new_elder_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_elder_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_elder_prefab_id>",
+          "entity_name": "执法长老",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[60, 0, 60]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "quest\\spawn_quest_entity.xlsx",
+        "sheet": "SpawnQuestEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10008,
+          "entity_prefab_id": "<new_npc_id>",
+          "entity_name": "入魔叛徒",
+          "pos_list": [[90, 0, 70]]
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "produces": "new_group_id",
+        "row_content": {
+          "group_id": 710,
+          "quest_type": 2,
+          "name": "师门除恶",
+          "qualifier": "hero_min_level:25"
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id_kill",
+        "row_content": {
+          "quest_id": 260710,
+          "group_id": "<new_group_id>",
+          "name": "师门除恶·讨伐",
+          "desc": "门下弟子听令，去讨伐入魔叛徒",
+          "icon": "Icon_school_quest_evil",
+          "target.key": "Combat",
+          "target.data": {"combat_id": ["<new_combat_id>"], "is_win": 1, "count": 1},
+          "npc_ids": ["<new_elder_prefab_id>", "<new_npc_id>"],
+          "recycle_npc": 1,
+          "rewards": ["<new_reward_id>"],
+          "next_quest_ids": ["<new_quest_id_report>"],
+          "fantasy_id": 0
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id_report",
+        "row_content": {
+          "quest_id": 260711,
+          "group_id": "<new_group_id>",
+          "name": "师门除恶·复命",
+          "desc": "击败叛徒后回执法长老处复命领取贡献令",
+          "icon": "Icon_school_quest_report",
+          "target.key": "Conversation",
+          "target.data": {"conv_id": "<new_conv_id_2>"},
+          "npc_ids": ["<new_elder_prefab_id>"],
+          "recycle_npc": 0,
+          "rewards": ["<new_reward_id>"],
+          "next_quest_ids": [],
+          "fantasy_id": 0
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "师门采药送丹·采集+送丹+击杀守卫三环（跨8表 add + 药材/丹药双道具链 + 师门回执邮件）",
+      "complexity": "高（item.ItemBase×2(药材碎片产出→丹药产出) → reward(送丹奖励消费丹药) → entity_prefab+interaction(送药目标NPC+对话) → spawn_quest_entity(药材守卫怪刷新) → combat(守卫战斗 win_reward) → mail(师门回执 template+global) → quest.QuestGroup+Quest×3(next_quest 三环链)）",
+      "note": "师门多环日常：采集环(UseItem 收集药材)→送丹环(Conversation 送药目标NPC)→击杀守卫环(Combat 药材守卫)。三条 quest 经 next_quest_ids 串联；reward 前置 produce 被 combat+quest 后置 consume；item 产出丹药被 reward 消费、产出药材被采集环 target.data 引用",
+      "expect_subtasks": 17,
+      "design_target": "exercises ParseAgent 同 quest.xlsx/Quest sheet 多行（3 环）拆分 + produces_inference 对 item→reward→combat→quest 多分支可达图 + Step2 FK 层 next_quest_ids 前向引用闭环（Quest2 consume Quest1 产出 id）。注：采集环 target.key=UseItem 引用新建药材 item_id；送丹环 target.key=Conversation 引用新建对话"
+    },
+    "input": "新增一条师门采药送丹三环日常任务链叫'师门采药送丹'。任务组 group_id 720，组名'师门采药送丹'，任务类型 2，接受资格 hero_min_level:20。两样道具先建：第一样'寒玉草碎片' item_id 占位，品质 1，道具类型 1，图标'Icon_hanyu_shard'，最大堆叠 99，可丢弃；第二样'回春丹' item_id 占位，品质 3，道具类型 3，图标'Icon_huichun_pill'，最大堆叠 10，不可丢弃。送丹奖励包 reward_id 占位叫'送丹谢礼'，每日限领 1 次，必给回春丹 1 个，100% 给经验、100% 给金币、金币公式 400。送药目标 NPC 新建一位叫'卧病师妹' model_id 1033，放在 space_id 10005 坐标 (30,0,30)，点击后弹出对话'师姐送来的丹药？多谢了，我这便服下'，给一个选项'那你好好休养'选完什么都不做结束对话。击杀守卫环要配一场战斗：在 space_id 10005 坐标 (120,0,80) 刷'寒玉草守卫'，model_id 1155，技能 8501/8502，AI 用 elite_ai，等级公式 25，气血斜率 18、气血基础 18000，物攻斜率 12、物攻基础 1500，打赢给送丹奖励包，输了和平局都不给。师门回执邮件也配一个：邮件模板 template_id 占位叫'师门采药送丹回执'，标题'师门嘉奖已发放'，内容'少侠完成采药送丹任务，师门贡献已记入'，配全服邮件 global_id 12 邮件类型 1，发送人'师门执事'，发送时间 2025-03-01 00:00:00，附带奖励包 0。最后配三条任务串联：第一条 quest_id 260720 叫'采药·采集寒玉草'，目标类型 UseItem，目标数据 item_id 指向寒玉草碎片道具、count 3，奖励填送丹奖励包，完成后接第二条；第二条 quest_id 260721 叫'送丹·投递回春丹'，目标类型 Conversation，目标数据 conv_id 指向卧病师妹对话，刷新的 npc 填卧病师妹 prefab_id，奖励再填送丹奖励包，完成后接第三条；第三条 quest_id 260722 叫'守卫·击杀寒玉草守卫'，目标类型 Combat，目标数据 combat_id 指向守卫战斗、is_win 1、count 1，刷新的 npc 填寒玉草守卫 prefab_id，阶段结束回收填 1，奖励再填送丹奖励包，下个任务列表留空。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_herb_item_id",
+        "row_content": {
+          "item_id": "<new_herb_item_id>",
+          "name": "寒玉草碎片",
+          "quality": 1,
+          "item_type": 1,
+          "icon": "Icon_hanyu_shard",
+          "max_stack": 99,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_pill_item_id",
+        "row_content": {
+          "item_id": "<new_pill_item_id>",
+          "name": "回春丹",
+          "quality": 3,
+          "item_type": 3,
+          "icon": "Icon_huichun_pill",
+          "max_stack": 10,
+          "droppable": 0
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_id",
+        "row_content": {
+          "id": "<new_reward_id>",
+          "name": "送丹谢礼",
+          "day_limit": 1,
+          "must_items[1].item_ids": "<new_pill_item_id>",
+          "must_items[1].num": 1,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "400"
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_sister_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_sister_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1033,
+          "entity_name": "卧病师妹",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "师姐送来的丹药？多谢了，我这便服下",
+          "options[0]": "<option_rest_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_rest_id",
+        "row_content": {
+          "option_id": "<option_rest_id>",
+          "option_text": "那你好好休养",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "寒玉草守卫战",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10005,
+          "win_reward": "<new_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_guard_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_guard_npc_id",
+        "row_content": {
+          "npc_id": "<new_guard_npc_id>",
+          "name": "寒玉草守卫",
+          "model_id": 1155,
+          "spell_ids": [8501, 8502],
+          "combat_ai_name": "elite_ai",
+          "level_formula": 25,
+          "attribute_base_slopes.HPMaxCon[1]": 18,
+          "attribute_base_slopes.HPMaxCon[0]": 18000,
+          "attribute_base_slopes.WorldAttackCon[1]": 12,
+          "attribute_base_slopes.WorldAttackCon[0]": 1500,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "quest\\spawn_quest_entity.xlsx",
+        "sheet": "SpawnQuestEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10005,
+          "entity_prefab_id": "<new_guard_npc_id>",
+          "entity_name": "寒玉草守卫",
+          "pos_list": [[120, 0, 80]]
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "师门嘉奖已发放",
+          "content": "少侠完成采药送丹任务，师门贡献已记入"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 12,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "师门执事",
+          "send_time": "2025-03-01 00:00:00",
+          "reward_id": 0
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "produces": "new_group_id",
+        "row_content": {
+          "group_id": 720,
+          "quest_type": 2,
+          "name": "师门采药送丹",
+          "qualifier": "hero_min_level:20"
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_sister_spawn_id>",
+          "space_id": 10005,
+          "entity_prefab_id": "<new_sister_prefab_id>",
+          "entity_name": "卧病师妹",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[30, 0, 30]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id_collect",
+        "row_content": {
+          "quest_id": 260720,
+          "group_id": "<new_group_id>",
+          "name": "采药·采集寒玉草",
+          "desc": "去寒玉草生长地采集寒玉草碎片 3 个",
+          "icon": "Icon_school_quest_herb",
+          "target.key": "UseItem",
+          "target.data": {"item_id": "<new_herb_item_id>", "count": 3},
+          "npc_ids": [],
+          "recycle_npc": 0,
+          "rewards": ["<new_reward_id>"],
+          "next_quest_ids": ["<new_quest_id_deliver>"],
+          "fantasy_id": 0
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id_deliver",
+        "row_content": {
+          "quest_id": 260721,
+          "group_id": "<new_group_id>",
+          "name": "送丹·投递回春丹",
+          "desc": "将回春丹送给卧病师妹",
+          "icon": "Icon_school_quest_deliver",
+          "target.key": "Conversation",
+          "target.data": {"conv_id": "<new_conv_id>"},
+          "npc_ids": ["<new_sister_prefab_id>"],
+          "recycle_npc": 0,
+          "rewards": ["<new_reward_id>"],
+          "next_quest_ids": ["<new_quest_id_guard>"],
+          "fantasy_id": 0
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id_guard",
+        "row_content": {
+          "quest_id": 260722,
+          "group_id": "<new_group_id>",
+          "name": "守卫·击杀寒玉草守卫",
+          "desc": "击败守护寒玉草的守卫",
+          "icon": "Icon_school_quest_guard",
+          "target.key": "Combat",
+          "target.data": {"combat_id": ["<new_combat_id>"], "is_win": 1, "count": 1},
+          "npc_ids": ["<new_guard_npc_id>"],
+          "recycle_npc": 1,
+          "rewards": ["<new_reward_id>"],
+          "next_quest_ids": [],
+          "fantasy_id": 0
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "师门试炼副本·通关环（跨8表 add + 首通/里程碑双奖励 + 试炼令道具 + BOSS 技能组）",
+      "complexity": "高（reward×2(首通+里程碑双 produces) → item.ItemBase(试炼令) → combat.spell_data+spell_group(BOSS 技能组) → combat.combat_data+PveCombatNpc(win_reward 消费首通 reward) → entity_prefab+interaction(试炼长老接引对话) → spawn_world_entity(BOSS+长老双刷) → spawn_quest_entity → quest.QuestGroup+Quest(通关单环, npc_ids 引用长老+BOSS, rewards 消费双 reward)）",
+      "note": "师门试炼副本：单环 Combat 通关，但产出链最长——reward×2 前置 produce 被 combat + quest 后置消费；item 产出试炼令被 reward 消费；spell 产出被 BOSS + spell_group 消费；entity_prefab 产出被 spawn + quest npc_ids 消费",
+      "expect_subtasks": 17,
+      "design_target": "exercises ParseAgent 对'同 reward.xlsx/Reward sheet 双行产出'拆分 + produces_inference 对 spell→BOSS→combat→quest 反向可达图 + Step2 FK 层 npc_ids 引用 BOSS 前向引用闭环。注：BOSS 技能组单 prompt 拆 spell_data + spell_group 两表 fan-out"
+    },
+    "input": "新增一条师门试炼副本通关任务叫'师门试炼·幽冥幻境'。任务组 group_id 730，组名'师门试炼'，任务类型 2，接受资格 hero_min_level:40。两档奖励先建：首通奖励包 reward_id 占位叫'试炼首通'，每日限领 1 次，必给新建的'试炼令'道具 1 个，100% 给经验、100% 给金币、金币公式 800；里程碑奖励包 reward_id 占位叫'试炼里程碑'，每日限领 5 次，必给试炼令 1 个，100% 给经验。试炼令道具也要建：叫'试炼令' item_id 占位，品质 3，道具类型 1，图标'Icon_trial_token'，最大堆叠 999，可丢弃。试炼 BOSS 战斗配上：在战场 space_id 10060 坐标 (300,0,-100) 刷'幽冥幻主' model_id 1250，它有个专属觉醒技能叫'幽冥裂魂'（spell_type attack，spell_element dark，damage_base_rate 1.6，target_num_limit 3，settlement_method 0），把该技能归到新技能组 760 组名叫'幽冥幻主组'，技能列表填新建技能。BOSS 用 boss_ai，等级公式 60，气血斜率 50、气血基础 400000，物攻斜率 30、物攻基础 25000，打赢给首通奖励包，输了和平局都不给。试炼接引长老新建一位叫'试炼长老' model_id 1029，放在 space_id 10060 坐标 (280,0,-80)，点击后展开对话树：长老第一句'师门试炼开启，幽冥幻境首通可获祖师传承'，给选项'我这就前往'选完什么都不做结束对话、选项'暂且退下'直接结束对话。最后配一条任务 quest_id 260730 叫'师门试炼·通关幽冥幻境'，目标类型 Combat，目标数据 combat_id 指向上面 BOSS 战斗、is_win 1、count 1，刷新的 npc 填试炼长老与幽冥幻主两个 prefab_id，阶段结束回收填 1，奖励同时填首通奖励包与里程碑奖励包两个，下个任务列表留空。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_token_item_id",
+        "row_content": {
+          "item_id": "<new_token_item_id>",
+          "name": "试炼令",
+          "quality": 3,
+          "item_type": 1,
+          "icon": "Icon_trial_token",
+          "max_stack": 999,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_first_reward_id",
+        "row_content": {
+          "id": "<new_first_reward_id>",
+          "name": "试炼首通",
+          "day_limit": 1,
+          "must_items[1].item_ids": "<new_token_item_id>",
+          "must_items[1].num": 1,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "800"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_milestone_reward_id",
+        "row_content": {
+          "id": "<new_milestone_reward_id>",
+          "name": "试炼里程碑",
+          "day_limit": 5,
+          "must_items[1].item_ids": "<new_token_item_id>",
+          "must_items[1].num": 1,
+          "exp_prob": 100,
+          "exp_formula": "经验"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "produces": "new_spell_id",
+        "row_content": {
+          "id": "<new_spell_id>",
+          "name": "幽冥裂魂",
+          "spell_type": "attack",
+          "spell_element": "dark",
+          "damage_base_rate": 1.6,
+          "target_num_limit": 3,
+          "settlement_method": 0
+        }
+      },
+      {
+        "table": "combat\\spell_group.xlsx",
+        "sheet": "SpellGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 760,
+          "name": "幽冥幻主组",
+          "spell_ids": ["<new_spell_id>"]
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "幽冥幻境试炼",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10060,
+          "win_reward": "<new_first_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_npc_id",
+        "row_content": {
+          "npc_id": "<new_npc_id>",
+          "name": "幽冥幻主",
+          "model_id": 1250,
+          "spell_ids": ["<new_spell_id>"],
+          "combat_ai_name": "boss_ai",
+          "level_formula": 60,
+          "attribute_base_slopes.HPMaxCon[1]": 50,
+          "attribute_base_slopes.HPMaxCon[0]": 400000,
+          "attribute_base_slopes.WorldAttackCon[1]": 30,
+          "attribute_base_slopes.WorldAttackCon[0]": 25000,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_elder_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_elder_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1029,
+          "entity_name": "试炼长老",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "师门试炼开启，幽冥幻境首通可获祖师传承",
+          "options[0]": "<option_go_id>",
+          "options[1]": "<option_leave_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_go_id",
+        "row_content": {
+          "option_id": "<option_go_id>",
+          "option_text": "我这就前往",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_leave_id",
+        "row_content": {
+          "option_id": "<option_leave_id>",
+          "option_text": "暂且退下",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_elder_spawn_id>",
+          "space_id": 10060,
+          "entity_prefab_id": "<new_elder_prefab_id>",
+          "entity_name": "试炼长老",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[280, 0, -80]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_boss_spawn_id>",
+          "space_id": 10060,
+          "entity_prefab_id": "<new_npc_id>",
+          "entity_name": "幽冥幻主",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[300, 0, -100]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "quest\\spawn_quest_entity.xlsx",
+        "sheet": "SpawnQuestEntity",
+        "operation": "add",
+        "produces": "new_spawn_id",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10060,
+          "entity_prefab_id": "<new_npc_id>",
+          "entity_name": "幽冥幻主",
+          "pos_list": [[300, 0, -100]]
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "produces": "new_group_id",
+        "row_content": {
+          "group_id": 730,
+          "quest_type": 2,
+          "name": "师门试炼",
+          "qualifier": "hero_min_level:40"
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id",
+        "row_content": {
+          "quest_id": 260730,
+          "group_id": "<new_group_id>",
+          "name": "师门试炼·通关幽冥幻境",
+          "desc": "通关师门试炼副本幽冥幻境获祖师传承",
+          "icon": "Icon_school_quest_trial",
+          "target.key": "Combat",
+          "target.data": {"combat_id": ["<new_combat_id>"], "is_win": 1, "count": 1},
+          "npc_ids": ["<new_elder_prefab_id>", "<new_npc_id>"],
+          "recycle_npc": 1,
+          "rewards": ["<new_first_reward_id>", "<new_milestone_reward_id>"],
+          "next_quest_ids": [],
+          "fantasy_id": 0
+        }
+      }
+    ]
+  }
+]

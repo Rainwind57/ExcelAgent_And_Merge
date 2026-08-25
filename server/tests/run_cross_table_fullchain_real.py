@@ -31,6 +31,11 @@ os.environ.setdefault("CODEMAKER_AGENT_CHAIN", "1")
 os.environ.setdefault("CODEMAKER_INTERACTIVE_REPAIR", "1")
 os.environ.setdefault("TABLE_CASE_EVAL_RUNNING", "1")
 os.environ.setdefault("CODEMAKER_VERIFY_REPAIR_MAX_ROUNDS", "1")
+# 卡点4 墙钟收敛：Step1 分段每段 locate+decompose 串行累加是墙钟主因。
+# 段级并行(默认已 ON)显式开启 + 下压单段 decompose timeout 到 30s，
+# 避免慢段拖满 90s 默认阈叠加。二者均为环境开关，不改分解逻辑。
+os.environ.setdefault("CODEMAKER_PARSE_SEGMENT_CONCURRENCY", "1")
+os.environ.setdefault("CODEMAKER_DECOMPOSE_TIMEOUT", "30")
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

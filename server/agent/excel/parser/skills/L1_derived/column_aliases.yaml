@@ -866,6 +866,9 @@ columns:
       model_prefab: model_prefab
       model_id: model_prefab
       model prefab: model_prefab
+      模型: model_prefab
+      模型id: model_prefab
+      模型prefab: model_prefab
       名字: 名字
       entity_name: 名字
       地图UI图标id: 地图UI图标id

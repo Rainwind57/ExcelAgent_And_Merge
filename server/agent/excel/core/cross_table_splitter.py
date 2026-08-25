@@ -285,9 +285,12 @@ def detect_cross_table_action(text: str) -> Optional[str]:
         return "evolve"
     # 实体类型扩展：NPC / 商人 / 守卫 / 传送员 / 接任务的人 等可交互实体
     # 优先于 item 模式判定（"道具商人"含"道具"但本质是 NPC，需先判实体）
+    # §对话树段修复：动作词扩到含"配/再配/配一个"（与 _ACTION_PATTERNS 一致），
+    # 否则"再配一个引导 NPC...对话...选项"因"配"不匹配 has_entity=False → 漏命中
+    # npc_dialogue 模板 → 走 _splitter_baseline 兜底产 fields 空 → "无法解析"。
     _ent = r'(?:' + '|'.join(_CT_KW['entity_types']) + r')'
     has_entity = bool(re.search(
-        r'(?:新增|增加|添加)[^。；;]{0,20}?' + _ent,
+        r'(?:新增|增加|添加|配|再配|建一个|建个|造一个)[^。；;]{0,20}?' + _ent,
         text))
     if has_entity and '对话' in text and '选项' in text:
         if ('奖励' in text or 'reward_id' in text) and ('邮件' in text or 'mail' in text.lower()):
@@ -338,7 +341,7 @@ def detect_cross_table_action(text: str) -> Optional[str]:
 # ── NPC+对话+选项 模式（规则模板展开，绕过 LLM 延迟墙） ──────
 
 _NPC_NAME_RE = re.compile(
-    r'(?:新增|增加|添加)[^。；;]*?(?:NPC|商人|守卫|传送员|传送使者|导师|教习)\s*(?:叫|名为|名字叫|名称叫)?\s*'
+    r'(?:新增|增加|添加|配|再配|建一个|建个|造一个)[^。；;]*?(?:NPC|商人|守卫|传送员|传送使者|导师|教习|任务NPC|对话NPC)\s*(?:叫|名为|名字叫|名称叫)?\s*'
     r'["\']?(?P<name>[^，,。；;（(\s"\']+)["\']?'
 )
 _MODEL_ID_RE = re.compile(r'(?:model_id|模型(?:用|为|是)?)\s*(?:为|是)?\s*(?P<id>\d+)')

@@ -98,6 +98,22 @@ def _should_consume(value) -> bool:
     return False
 
 
+def _is_blank_fk(value) -> bool:
+    """FK 字段值是否"真空白"（仅 None/空串），用于消费方**只补空、不覆盖**。
+
+    与 `_should_consume` 的关键区别：已含 `<placeholder>` 的字段视为**非空白**，
+    不再被 sheet 级自动推断覆盖。原实现对任意 `<...>` 占位都覆盖成 sheet 级标签，
+    会把 DecomposeAgent(LLM) 对**同 sheet 多行**（如对话树多个 conv/option）已正确
+    连好的逐行占位符 `<new_encourage_conv_id>` 冲成同一个 `<new_interaction_id>`，
+    → 多 producer 塌成一个 + conv↔option 假环。改为只补空白后：LLM 的逐行连线被
+    保留，sheet 级推断仅兜底 LLM 漏填的空 FK（单 producer 链仍可自动闭环）。
+    """
+    if value is None:
+        return True
+    return str(value).strip() == ""
+
+
+
 def infer_produces_consumes(intents: list) -> list:
     """对意图列表做关系图驱动的 produces 推断（原地修改 + 返回）。
 
@@ -193,7 +209,7 @@ def infer_produces_consumes(intents: list) -> list:
         if subst is None:
             subst = f"<{plabel}>"
         for k in list(fields.keys()):
-            if _field_matches_col(k, source_col) and _should_consume(fields[k]):
+            if _field_matches_col(k, source_col) and _is_blank_fk(fields[k]):
                 fields[k] = subst
         extras["fields"] = fields
         it.extras = extras

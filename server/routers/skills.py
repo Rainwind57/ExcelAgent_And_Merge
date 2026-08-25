@@ -24,7 +24,10 @@ _SKILL_FILE_INFO = {
     "sheet_aliases.yaml": ("L0", "自然语言别名 → 真实 sheet 名"),
     "column_short_form.yaml": ("L0", "列名短形式别名（名→名称、级→等级）"),
     "index_builder_hints.yaml": ("L0", "表头/文件名 → 业务域关键词推断"),
-    "formula_agent.md": ("L0", "公式处理 Agent Skill 文档"),
+    "docs/formula_agent.md": ("docs", "公式处理 Agent Skill 文档"),
+    "docs/cross_table_chain_principles.md": ("docs", "跨表链原则"),
+    "docs/case_quest_npc_optimization.md": ("docs", "NPC 优化案例复盘"),
+    "scripts/derive_required_fields.py": ("scripts", "从 _table_index.json 派生必填列"),
     # L1_derived 表结构派生（表变更自动重算）
     "L1_derived/cascade_rules.yaml": ("L1", "级联删除/修改规则"),
     "L1_derived/column_aliases.yaml": ("L1", "列名别名映射（含中英对照）"),

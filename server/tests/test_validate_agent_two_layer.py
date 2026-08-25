@@ -321,7 +321,7 @@ class TestFkLayerTopology:
     def test_forward_ref_resolved(self, monkeypatch):
         """producer 在 consumer 前 → consumes 占位符在 produced → 无 issue。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: [0, 1]))
         v = _make_validator()
         p = _producer()
@@ -333,7 +333,7 @@ class TestFkLayerTopology:
     def test_forward_ref_broken(self, monkeypatch):
         """consumer 在 producer 前 → consumes 未在 produced → FORWARD_REF_BROKEN。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: [1, 0]))  # consumer(1) 先,producer(0) 后
         v = _make_validator()
         p = _producer()
@@ -348,7 +348,7 @@ class TestFkLayerTopology:
     def test_produces_label_populates_produced(self, monkeypatch):
         """producer 产出后 produced 集合填充,下游 consumer 可读。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: [0, 1]))
         v = _make_validator()
         p = _producer(label="new_quest_id")
@@ -364,7 +364,7 @@ class TestFkLayerTopology:
     def test_intent_no_fields_no_issues(self, monkeypatch):
         """intent 无 fields → 无 consumes 校验 → 无 issue。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: [0]))
         v = _make_validator()
         it = NLIntent(action="add", table_hint="pet", raw="x", extras={})
@@ -376,7 +376,7 @@ class TestFkLayerTopology:
         def _boom(intents):
             raise RuntimeError("topo boom")
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(_boom))
         v = _make_validator()
         p = _producer()
@@ -449,7 +449,7 @@ class TestTwoLayerIntegration:
     def test_field_and_fk_issues_merged_to_tips(self, monkeypatch):
         """字段层 issue + FK 层 issue 合并 → assemble_tips → ask_user。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: [0, 1]))  # producer 先
         v = _make_validator()
         # producer: 字段层有 type_mismatch（pet_id 传字符串）
@@ -488,7 +488,7 @@ class TestValidateTwoLayer:
 
     def _patch_topo(self, monkeypatch, order):
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(order)))
 
     def test_no_issues_ok(self, monkeypatch):
@@ -667,7 +667,7 @@ class TestRequiredFields:
 
     def _patch_topo(self, monkeypatch, order):
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(order)))
 
     def test_required_field_missing(self, monkeypatch):
@@ -738,7 +738,7 @@ class TestFieldLayerEnumUniqueRange:
 
     def _patch_topo(self, monkeypatch, order):
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(order)))
 
     def test_enum_whitelist_violation(self, monkeypatch):

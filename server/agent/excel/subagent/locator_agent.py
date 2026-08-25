@@ -183,15 +183,27 @@ class LocatorAgent(LLMSubAgent):
             stem_agg: dict[str, list] = {}
             for h in column_signal.hits:
                 stem_agg.setdefault(h.stem, []).append(h)
+            # §数据驱动歧义列抑制：某列在命中集里映射到 >=_AMBIG_K 张不同表
+            # （如 model_id 命中 assistant/city/guild），说明它是跨表共享列（非判别性），
+            # 不能凭它单独把这些表补进候选——否则噪声表(guild/assistant)在 _cand_cap 下
+            # 挤掉真正的动作主语表(combat/pve_combat_npc/spawn)。通用判据（列的跨表频次），
+            # 不绑业务词/表，是 _GENERIC_COLS 硬编码集合的数据驱动泛化。
+            _col_stem_freq: dict[str, set] = {}
+            for h in column_signal.hits:
+                _col_stem_freq.setdefault(h.column, set()).add(h.stem)
+            _AMBIG_K = 3
+            _ambig_cols = {c for c, ss in _col_stem_freq.items() if len(ss) >= _AMBIG_K}
             # 打分:专有列命中数为主,得分次之
             scored: list[tuple[int, float, str]] = []  # (专有列命中数, 最高分, stem)
             for stem, hs in stem_agg.items():
                 if stem in existing:
                     continue
-                # 专有列 = 命中列里非通用列的
-                specific = [h for h in hs if h.column not in _GENERIC_COLS]
+                # 专有列 = 命中列里非通用列 且 非跨表歧义列的（判别性列）
+                specific = [h for h in hs
+                            if h.column not in _GENERIC_COLS
+                            and h.column not in _ambig_cols]
                 if not specific:
-                    continue  # 全是通用列命中,不补(噪声)
+                    continue  # 全是通用列/歧义共享列命中,不补(噪声)
                 best = max(h.score for h in specific)
                 scored.append((len(specific), best, stem))
             scored.sort(key=lambda x: (-x[0], -x[1]))
@@ -204,6 +216,27 @@ class LocatorAgent(LLMSubAgent):
                     matched_term=best_h.column,
                 ))
                 existing.add(stem)
+        # 1a-2. §泛化收紧:复杂输入下,若某 column_extract 候选命中该表的列里
+        # FK 引用列占多数(如 model_id/space编号/坐标 出现在 guild/space/combat,
+        # 但这些只是该段提到的"参数",不是该段的动作主语),降权到 0.50 让 _cand_cap
+        # 把它挤掉,把名额留给动作主路由表 + 其 FK 邻接(如对话树叙述里提 model_id/
+        # space_id/坐标,但动作主语是"建对话"→ interaction)。
+        # 通用规则(FK 列占多数 = 附加上下文),不绑业务关键词。
+        if complex_input:
+            for c in candidates:
+                if c.level != "column_extract":
+                    continue
+                stem_hits = stem_agg.get(c.stem, [])
+                if not stem_hits:
+                    continue
+                spec_cols = [h.column for h in stem_hits
+                             if h.column not in _GENERIC_COLS]
+                if not spec_cols:
+                    continue
+                fk_cnt = sum(1 for col in spec_cols
+                             if self._is_fk_reference_column(c.stem, c.sheet, col))
+                if fk_cnt * 2 >= len(spec_cols):  # FK 占多数 → 附加上下文
+                    c.confidence = 0.50
         # 1b. 复杂输入:FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
         #     把 alias 未直接命中但语义相关的表(如 interaction/spawn_world_entity)
         #     纳入候选,而不用 locate_all 全量列名匹配(会引入 40+ 噪声表膨胀 DecomposeAgent 上下文)。
@@ -216,6 +249,14 @@ class LocatorAgent(LLMSubAgent):
         # cap 默认 8（env 可调），按置信度降序保留，优先规则命中(高conf) + 列名专有列命中。
         # 保留策略：① conf>=0.80(规则强命中)全留 ② 其余按conf降序取到cap ③ 同conf保列名命中
         _cand_cap = max(4, int(os.environ.get("CODEMAKER_LOCATOR_MAX_CANDIDATES", "8")))
+        # §框架级 A（保召回）：复杂跨表输入合法地涉及更多表（本例 reward+combat+
+        # pve_combat_npc+entity_prefab+spawn+interaction+activity+item ≥8），固定 cap=8
+        # 会让判别性 column_extract 候选（如 pve_combat_npc 靠"技能列表/等级公式"命中）
+        # 被 8 张 alias 强命中表挤出 → 真正的动作主语表缺失、子任务丢失。单 prompt 路径
+        # 下候选多只是 prompt 变长（非多次 LLM），复杂输入放宽 cap 以保召回。通用判据
+        # （输入复杂度），不绑业务词/表。
+        if complex_input:
+            _cand_cap = max(_cand_cap, 12)
         if len(candidates) > _cand_cap:
             # 分档：强命中(>=0.80)必留，弱命中按conf降序补到cap
             strong = [c for c in candidates if c.confidence >= 0.80]
@@ -266,6 +307,46 @@ class LocatorAgent(LLMSubAgent):
         except Exception:
             logger.debug("TableLocator.locate 失败", exc_info=True)
             return None
+
+    @staticmethod
+    def _is_fk_reference_column(stem: str, sheet: str, column: str) -> bool:
+        """该列是否是 stem/sheet 表里指向他表的 FK 引用列(非本地核心列)。
+
+        双信号判定(通用,不绑业务关键词):
+        A) 命名约定:列名匹配引用列模式(以 _id/id/编号 结尾,或带数字索引的 data.N.xxx
+           路径,如 model_id/space编号/option_function.data.1.conv_id)。这类列按游戏配表
+           约定就是跨表引用键,不是本地语义字段。命中即视为附加上下文。
+        B) RelationGraph 声明:from_path 含该 stem 且 from_column 命中 → FK 引用列。
+        任一命中即降权。失败/无图 → 仅靠命名信号,不误伤核心列(名称/描述/类型 等)。
+        """
+        if not column:
+            return False
+        col_norm = column.strip().lower()
+        # A) 命名约定:引用列模式
+        if col_norm.endswith("_id") or col_norm == "id" or col_norm.endswith("编号"):
+            return True
+        # data.N.<ref> 形式的嵌套引用键(对话树 option_function.data.1.conv_id 等)
+        if re.search(r"\bdata\.\d+\.", col_norm):
+            return True
+        # 带中文"编号"后缀的引用列(space编号/combat编号/quest编号)
+        if column.endswith("编号"):
+            return True
+        # B) RelationGraph 声明式 FK
+        try:
+            from ..core.table_relations import RelationGraph  # 延迟导入避循环
+            g = RelationGraph.load()
+        except Exception:
+            return False
+        if not g or not getattr(g, "relations", None):
+            return False
+        for r in g.relations:
+            if Path(r.from_path).stem != stem:
+                continue
+            if sheet and r.from_sheet and r.from_sheet != sheet:
+                continue
+            if (r.from_column or "").strip().lower() == col_norm:
+                return True
+        return False
 
     def _merge_candidates(self, outcome) -> list:
         """合并 best + ambiguous 为候选列表(去重同 path+sheet)。

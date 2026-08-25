@@ -54,7 +54,7 @@ class TestPkConflictStep2E2E:
     def test_unique_violation_triggers_ask_with_suggested_id(self, monkeypatch):
         """field_map 抓到 UNIQUE_VIOLATION → 预算建议 ID → ask 带 suggested_id。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         _asked = []
@@ -79,7 +79,7 @@ class TestPkConflictStep2E2E:
     def test_accept_suggest_rewrites_intent_pk(self, monkeypatch):
         """用户接受建议 → intent PK 字段被改为 suggested_id。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         v.set_ask_callback(lambda q: {"accept_suggest": True})
@@ -95,7 +95,7 @@ class TestPkConflictStep2E2E:
     def test_custom_id_rewrites_intent_pk(self, monkeypatch):
         """用户自定义输入 ID → intent PK 改为 custom_id。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         v.set_ask_callback(lambda q: {"custom_id": 88888})
@@ -109,7 +109,7 @@ class TestPkConflictStep2E2E:
     def test_skip_keeps_intent_unchanged(self, monkeypatch):
         """用户跳过 → intent PK 不改,issue 保留走软失败。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         v.set_ask_callback(lambda q: {"mode": "skip"})
@@ -126,7 +126,7 @@ class TestPkConflictStep2E2E:
     def test_no_callback_non_blocking(self, monkeypatch):
         """无 callback(非交互场景) → 要求 A:标 skipped 阻断,不卡死也不写半成品。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()  # _ask_callback=None
         it = _intent(fields={"reward_id": 99001, "名称": "测试包"})
@@ -141,7 +141,7 @@ class TestPkConflictStep2E2E:
     def test_proactive_scan_when_field_map_misses(self, monkeypatch):
         """field_map 漏检(intent fields 键不含表头列名) → 主动扫兜底查占用。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         _asked = []
@@ -159,7 +159,7 @@ class TestPkConflictStep2E2E:
     def test_resolved_pk_removed_from_tips(self, monkeypatch):
         """用户接受建议后,该 PK issue 从 tips 移除(不重复软失败)。"""
         monkeypatch.setattr(
-            "agent.excel.engine_core.operation_orchestrator.OperationOrchestrator._topo_order",
+            "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
         v = _make_validator()
         v.set_ask_callback(lambda q: {"accept_suggest": True})

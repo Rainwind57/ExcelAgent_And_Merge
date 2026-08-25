@@ -16,6 +16,7 @@ S1 阶段只做"包装 + 错误归属固定到 step1_parse"，ParseAgent 内部�
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -24,6 +25,115 @@ from ...parse_agent import ParseAgent
 from .contracts import STEP1_PARSE, StepContext, StepError, StepHardError, StepResult
 
 logger = logging.getLogger(__name__)
+
+_ACTION_CN = {"add": "新增", "set": "修改", "delete": "删除", "get": "查询",
+              "col": "列操作"}
+
+
+def _format_intent_human(it: Any) -> str:
+    """把 NLIntent 转成人类可读中文描述，供 Step1 结束打印对照。"""
+    act = _ACTION_CN.get(getattr(it, "action", ""), getattr(it, "action", "?"))
+    tbl = getattr(it, "table_hint", "") or "?"
+    sheet = getattr(it, "sheet_hint", "") or ""
+    loc = f"{tbl}.{sheet}" if sheet else tbl
+    parts = [f"{act} {loc}"]
+    # 单主键定位
+    lf = getattr(it, "locator_field", None)
+    lv = getattr(it, "locator_value", None)
+    if lf and lv not in (None, ""):
+        parts.append(f"定位 {lf}={lv}")
+    # 复合主键定位
+    lfs = getattr(it, "locator_fields", None) or []
+    lvs = getattr(it, "locator_values", None) or []
+    if lfs and lvs and len(lfs) == len(lvs):
+        kv = ", ".join(f"{f}={v}" for f, v in zip(lfs, lvs))
+        parts.append(f"定位 {kv}")
+    # set 目标字段
+    if getattr(it, "action", "") == "set" and getattr(it, "target_field", None):
+        parts.append(f"{it.target_field}→{getattr(it, 'value', None)}")
+    # add 写入字段
+    fields = (getattr(it, "extras", None) or {}).get("fields")
+    if getattr(it, "action", "") == "add" and isinstance(fields, dict) and fields:
+        kv = ", ".join(f"{k}={v}" for k, v in list(fields.items())[:12])
+        if len(fields) > 12:
+            kv += f", …(共{len(fields)}列)"
+        parts.append(f"写入 {kv}")
+    # produces/consumes 依赖标注
+    if getattr(it, "produces_label", None):
+        parts.append(f"产出 <{it.produces_label}>")
+    if getattr(it, "consumes_labels", None):
+        parts.append("消费 " + ", ".join(f"<{c}>" for c in it.consumes_labels))
+    return "，".join(parts)
+
+
+def _jsonable(o: Any, depth: int = 0) -> Any:
+    """递归把不可 JSON 序列化对象转成可序列化形式（截断深度/长度防爆）。
+
+    extras 里可能嵌套 ColumnLocateResult 等非 dataclass 对象（浅拷贝残留），
+    json.dumps 会抛 TypeError。本函数逐层转换：
+      dict/list/set/tuple → 递归；有 to_dict → 展开；有 __dict__ → 展开；
+      其余 → str 截断。
+    """
+    if o is None or isinstance(o, (str, int, float, bool)):
+        return o
+    if depth > 6:
+        try:
+            return str(o)[:80]
+        except Exception:
+            return "<unserializable>"
+    if isinstance(o, dict):
+        return {str(k): _jsonable(v, depth + 1) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set)):
+        return [_jsonable(x, depth + 1) for x in o]
+    if hasattr(o, "to_dict") and callable(o.to_dict):
+        try:
+            return _jsonable(o.to_dict(), depth + 1)
+        except Exception:
+            pass
+    if hasattr(o, "__dict__"):
+        try:
+            return _jsonable(o.__dict__, depth + 1)
+        except Exception:
+            pass
+    try:
+        return str(o)[:120]
+    except Exception:
+        return f"<{type(o).__name__}>"
+
+
+def _intent_to_json(it: Any) -> dict:
+    """NLIntent → 精简 JSON（只含意图核心字段）。
+
+    剔除 to_checkpoint_dict 里的调试数据（extracted_columns_signal / hits /
+    validation / execution 等），只保留用户关心的意图本体：
+      action/table/sheet + 定位 + fields(写入列) + set 目标 + produces/consumes。
+    """
+    d: dict = {
+        "action": getattr(it, "action", ""),
+        "table": getattr(it, "table_hint", "") or None,
+        "sheet": getattr(it, "sheet_hint", "") or None,
+    }
+    lf = getattr(it, "locator_field", None)
+    lv = getattr(it, "locator_value", None)
+    if lf and lv not in (None, ""):
+        d["定位"] = {lf: lv}
+    lfs = getattr(it, "locator_fields", None) or []
+    lvs = getattr(it, "locator_values", None) or []
+    if lfs and lvs and len(lfs) == len(lvs):
+        d["定位"] = dict(zip(lfs, lvs))
+    tf = getattr(it, "target_field", None)
+    if tf:
+        d["set"] = {tf: getattr(it, "value", None)}
+    fields = (getattr(it, "extras", None) or {}).get("fields")
+    if isinstance(fields, dict) and fields:
+        d["fields"] = {str(k): _jsonable(v) for k, v in fields.items()}
+    pl = getattr(it, "produces_label", None)
+    if pl:
+        d["produces"] = pl
+    cl = getattr(it, "consumes_labels", None)
+    if cl:
+        d["consumes"] = list(cl)
+    return d
 
 
 class Step1ParseSubAgent:
@@ -184,6 +294,26 @@ class Step1ParseSubAgent:
             _llm_calls = max(0, int(_cnt.peek_total()) - _cnt_before) if _cnt else 0
         except Exception:
             _llm_calls = 0
+        # Step1 结束：打印意图清单（中文描述 + JSON 形态），便于后续 Step2 校验对照
+        if intents:
+            _lines = []
+            for _i, _it in enumerate(intents, start=1):
+                _human = _format_intent_human(_it)
+                _jd = json.dumps(_intent_to_json(_it), ensure_ascii=False, default=str)
+                _lines.append(f"[{_i}] {_human}\n    JSON: {_jd}")
+            _summary = "\n".join(_lines)
+            logger.info("Step1 解析意图清单（%d 条）:\n%s", len(intents), _summary)
+            # 推 thinking 事件（前端 Step1 气泡 Thinking 区逐条显示）。
+            # 单行格式：前端 thinking_steps 用 Vue 插值渲染，\n 会折叠成空格，
+            # 故每条意图推一个独立事件，phase=意图序号，detail=中文 | 紧凑 JSON。
+            if self._thinking_sink is not None:
+                for _i, _it in enumerate(intents, start=1):
+                    _human = _format_intent_human(_it)
+                    _jd = json.dumps(_intent_to_json(_it), ensure_ascii=False, default=str)
+                    try:
+                        self._thinking_sink(f"意图{_i}", f"{_human} | {_jd}")
+                    except Exception:  # noqa: BLE001
+                        pass
         ok = bool(intents)
         return StepResult(
             step_id=STEP1_PARSE, ok=ok,

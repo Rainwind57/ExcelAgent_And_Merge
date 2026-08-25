@@ -1,5 +1,4135 @@
 [
   {
+    "time": "2026-08-25T09:56:02",
+    "mode": "branch_absorb",
+    "source_branch": "svn/demo_svn/wc/branches/dev3",
+    "target_branch": "svn/demo_svn/wc/branches/dev4",
+    "version_dir": "",
+    "commit_name": "1",
+    "group": "ability, activity, assistant/assistant, assistant/assistant_ability, assistant/assistant_level, assistant/assistant_mystic, assistant/assistant_weapon, city/building, city/city, city/city_siege, combat/buff_event_vfx, combat/combat, combat/pve_combat_npc, combat/spell, combat/spell_group, const, entity_prefab, exclusive_state, fabao, gameplay_tags, guild, hero/hero, hero/hero_level, id_mgr, interaction, item/equipment, item/item, item/item_recipe, mail, map, material_effect, merge_case, model_prefab, pet/pet, pet/pet_evolve, pet/pet_level, pet/pet_refine, pet/pet_spell_book, player_common, qa_test/formula_samples/formula_basic, qa_test/formula_samples/formula_lookup, qa_test/formula_samples/formula_nested, qa_test/formula_samples/formula_sum, quest/quest, quest/spawn_quest_entity, realm_info, residence/residence, residence/residence_building, residence/residence_entry, residence/residence_grid, residence/residence_plant, residence/residence_putuan, residence/residence_temple, reward, school/school, school/school_ability, school/school_spirit, school/school_talent, school/spirit, sequence/anim/anim_montage_sequence, sequence/effect/effect_actor, space, space_landmark, spawn_world_entity, subdev_1/ability, subdev_1/const, subdev_1/item_drop, subdev_1/monster, subdev_1/reward, subdev_2/const, subdev_2/fabao, subdev_2/guild, subdev_2/mail, subdev_2/tips, subdev_3/ability, subdev_3/interaction, subdev_3/map, subdev_3/reward, subdev_3/world_buff, tips, world_buff",
+    "output": "ability_2.xlsx, activity_2.xlsx, assistant_2.xlsx, assistant_ability_2.xlsx, assistant_level_2.xlsx, assistant_mystic_2.xlsx, assistant_weapon_2.xlsx, building_2.xlsx, city_2.xlsx, city_siege_2.xlsx, buff_event_vfx_2.xlsx, combat_2.xlsx, pve_combat_npc_2.xlsx, spell_2.xlsx, spell_group_2.xlsx, const_2.xlsx, entity_prefab_2.xlsx, exclusive_state_2.xlsx, fabao_2.xlsx, gameplay_tags_2.xlsx, guild_2.xlsx, hero_2.xlsx, hero_level_2.xlsx, id_mgr_2.xlsx, interaction_2.xlsx, equipment_2.xlsx, item_2.xlsx, item_recipe_2.xlsx, mail_2.xlsx, map_2.xlsx, material_effect_2.xlsx, merge_case_2.xlsx, model_prefab_2.xlsx, pet_2.xlsx, pet_evolve_2.xlsx, pet_level_2.xlsx, pet_refine_2.xlsx, pet_spell_book_2.xlsx, player_common_2.xlsx, formula_basic_2.xlsx, formula_lookup_2.xlsx, formula_nested_2.xlsx, formula_sum_2.xlsx, quest_2.xlsx, spawn_quest_entity_2.xlsx, realm_info_2.xlsx, residence_2.xlsx, residence_building_2.xlsx, residence_entry_2.xlsx, residence_grid_2.xlsx, residence_plant_2.xlsx, residence_putuan_2.xlsx, residence_temple_2.xlsx, reward_2.xlsx, school_2.xlsx, school_ability_2.xlsx, school_spirit_2.xlsx, school_talent_2.xlsx, spirit_2.xlsx, anim_montage_sequence_2.xlsx, effect_actor_2.xlsx, space_2.xlsx, space_landmark_2.xlsx, spawn_world_entity_2.xlsx, ability_2.xlsx, const_2.xlsx, item_drop_2.xlsx, monster_2.xlsx, reward_2.xlsx, const_2.xlsx, fabao_2.xlsx, guild_2.xlsx, mail_2.xlsx, tips_2.xlsx, ability_2.xlsx, interaction_2.xlsx, map_2.xlsx, reward_2.xlsx, world_buff_2.xlsx, tips_2.xlsx, world_buff_2.xlsx",
+    "tables": [
+      {
+        "group": "ability",
+        "base": "ability.xlsx",
+        "output": "ability_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 2,
+          "inserted": 5,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Ability",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Ability",
+            "key": "9021",
+            "kind": "insert",
+            "col": "",
+            "from": "",
+            "to": "整行新增"
+          },
+          {
+            "sheet": "Ability",
+            "key": "9022",
+            "kind": "insert",
+            "col": "",
+            "from": "",
+            "to": "整行新增"
+          },
+          {
+            "sheet": "Ability",
+            "key": "9999",
+            "kind": "insert",
+            "col": "",
+            "from": "",
+            "to": "整行新增"
+          },
+          {
+            "sheet": "Ability",
+            "key": "9031",
+            "kind": "insert",
+            "col": "",
+            "from": "",
+            "to": "整行新增"
+          },
+          {
+            "sheet": "Ability",
+            "key": "9032",
+            "kind": "insert",
+            "col": "",
+            "from": "",
+            "to": "整行新增"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "说明",
+            "kind": "change",
+            "col": "trunk_ab1b",
+            "from": "",
+            "to": "dev3_mark"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "activity",
+        "base": "activity.xlsx",
+        "output": "activity_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "assistant/assistant",
+        "base": "assistant.xlsx",
+        "output": "assistant_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "assistant/assistant_ability",
+        "base": "assistant_ability.xlsx",
+        "output": "assistant_ability_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "AssistantAbility",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "assistant/assistant_level",
+        "base": "assistant_level.xlsx",
+        "output": "assistant_level_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "AssistantLevel"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "assistant/assistant_level.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "assistant/assistant_mystic",
+        "base": "assistant_mystic.xlsx",
+        "output": "assistant_mystic_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "AssistantMystic"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "assistant/assistant_mystic.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "assistant/assistant_weapon",
+        "base": "assistant_weapon.xlsx",
+        "output": "assistant_weapon_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "AssistantWeapon"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "assistant/assistant_weapon.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "libreoffice 重算成功，公式缓存已恢复",
+        "preflight_holds": []
+      },
+      {
+        "group": "city/building",
+        "base": "building.xlsx",
+        "output": "building_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 36,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "BuildingLevel",
+            "key": "101",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "帮派基地"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "101",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "102",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "坊市"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "102",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "103",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "传送阵"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "103",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "201",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城主府"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "201",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "201",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 1000000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "201",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 5000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "202",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "青龙图腾"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "202",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "202",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 2500
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "203",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "白虎图腾"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "203",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "203",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 2500
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "204",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "朱雀图腾"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "204",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "204",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 2500
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "205",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "玄武图腾"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "205",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "205",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 2500
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "206",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "206",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "206",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "206",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 5000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "207",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "207",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "207",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "207",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 5000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "208",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "208",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "208",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "208",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 5000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "209",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "209",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "209",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "209",
+            "kind": "change",
+            "col": "满耐久度(可摧毁建筑)",
+            "from": "",
+            "to": 5000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "仙圃"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 1000000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "绿品权重提升(仅仙圃)",
+            "from": "",
+            "to": 0.08
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "蓝品权重提升(仅仙圃)",
+            "from": "",
+            "to": 0.02
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "紫品权重提升(仅仙圃)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "301",
+            "kind": "change",
+            "col": "橙品权重提升(仅仙圃)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "302",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "镇妖阵"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "302",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "302",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "401",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "锻造台"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "401",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "401",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "402",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "裁缝台"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "402",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "402",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "403",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "炼金台"
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "403",
+            "kind": "change",
+            "col": "建筑等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevel",
+            "key": "403",
+            "kind": "change",
+            "col": "升到下一级需要的帮派资金",
+            "from": "",
+            "to": 500000
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "101",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "101",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "帮派基地"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "101",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "101",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "102",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "102",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "坊市"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "102",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "102",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "103",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "103",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "传送阵"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "103",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "103",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "201",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "201",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城主府"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "201",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "201",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "202",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "202",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "护城图腾"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "202",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "202",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "203",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "203",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "护城图腾"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "203",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "203",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "204",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "204",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "护城图腾"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "204",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "204",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "205",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "205",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "护城图腾"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "205",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "205",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "206",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "206",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "206",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "206",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 2
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "207",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "207",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "207",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "207",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 2
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "208",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "208",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "208",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "208",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 2
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "209",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "209",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "城门"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "209",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "209",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 2
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "210",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "210",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "守方大营门"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "301",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "301",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "仙圃"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "301",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "301",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "302",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "302",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "镇妖阵"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "302",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "302",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "401",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "401",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "锻造台"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "401",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "401",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "402",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "402",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "裁缝台"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "402",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "402",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "403",
+            "kind": "change",
+            "col": "城池等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "403",
+            "kind": "change",
+            "col": "描述",
+            "from": "",
+            "to": "炼金台"
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "403",
+            "kind": "change",
+            "col": "建筑初始等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "BuildingLevelInit",
+            "key": "403",
+            "kind": "change",
+            "col": "建筑最大等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "BuildingType"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "city/building_type.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "city/city",
+        "base": "city.xlsx",
+        "output": "city_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "CityTemplate"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "city/city_template.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "city/city_siege",
+        "base": "city_siege.xlsx",
+        "output": "city_siege_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "SiegeAttackableBuilding"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "siege_attackable_building_data.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "combat/buff_event_vfx",
+        "base": "buff_event_vfx.xlsx",
+        "output": "buff_event_vfx_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "combat/combat",
+        "base": "combat.xlsx",
+        "output": "combat_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "combat/pve_combat_npc",
+        "base": "pve_combat_npc.xlsx",
+        "output": "pve_combat_npc_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "combat/spell",
+        "base": "spell.xlsx",
+        "output": "spell_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "common_spell,spell_data,passive_data"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "combat/common_spell_data.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "combat/spell_group",
+        "base": "spell_group.xlsx",
+        "output": "spell_group_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "const",
+        "base": "const.xlsx",
+        "output": "const_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Const",
+            "key": "key:string",
+            "kind": "change",
+            "col": "常量数据类型",
+            "from": "",
+            "to": "dev4_mark"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "entity_prefab",
+        "base": "entity_prefab.xlsx",
+        "output": "entity_prefab_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "exclusive_state",
+        "base": "exclusive_state.xlsx",
+        "output": "exclusive_state_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "fabao",
+        "base": "fabao.xlsx",
+        "output": "fabao_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 5,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "说明",
+            "kind": "change",
+            "col": "玩家法宝配置",
+            "from": "",
+            "to": "dev4_mark"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "Fabao"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "fabao/fabao_data.py"
+          },
+          {
+            "sheet": "Fabao",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "1",
+            "kind": "change",
+            "col": "技能等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "2",
+            "kind": "change",
+            "col": "法宝等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "2",
+            "kind": "change",
+            "col": "技能等级",
+            "from": "",
+            "to": 1
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "gameplay_tags",
+        "base": "gameplay_tags.xlsx",
+        "output": "gameplay_tags_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "guild",
+        "base": "guild.xlsx",
+        "output": "guild_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 7,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "说明",
+            "kind": "change",
+            "col": "帮派配置",
+            "from": "",
+            "to": "dev4_mark"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "帮派配置",
+            "from": "",
+            "to": "UNIVERSAL"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "Const"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "u_guild_const_data.py"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "CONST"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "强身术"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "强身健体是习武之人的根本，每学习一级可以提高一定的气血上限。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "vitality"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 150
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "气血上限加成效果的数值",
+            "from": "",
+            "to": 0.001
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "冥想"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "通过冥想凝聚强大的精神力量，修习可以提高法力，每学习一级可以提高一定的魔法上限。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "meditation"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 150
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "真元上限加成效果的数值",
+            "from": "",
+            "to": 0.001
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "打造技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "铸造名家欧冶子传下的技能，可以提高打造武器的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "blacksmith"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "裁缝技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "从天衣无缝针法演化而来的技能，可提高制作头盔和衣甲的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "tailoring"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "炼金技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "秘术士私传的炼金之术，可以提高制作饰品、靴子和腰带的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "alchemy"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "hero/hero",
+        "base": "hero.xlsx",
+        "output": "hero_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Hero",
+            "key": "",
+            "kind": "change",
+            "col": "境界倍率",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "hero/hero_level",
+        "base": "hero_level.xlsx",
+        "output": "hero_level_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "HeroLevel"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "hero/hero_level.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "id_mgr",
+        "base": "id_mgr.xlsx",
+        "output": "id_mgr_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "ID编号管理总表",
+            "from": "",
+            "to": "id_min"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "INT"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "NOT_EMPTY"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "interaction",
+        "base": "interaction.xlsx",
+        "output": "interaction_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "InteractionConv"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "interaction_conv.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "item/equipment",
+        "base": "equipment.xlsx",
+        "output": "equipment_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "EquipmentSlot"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "item/equipment_slot.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "item/item",
+        "base": "item.xlsx",
+        "output": "item_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 3,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "道具配置",
+            "from": "",
+            "to": "SERVER"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "ItemBase,Chest,Potion,Equipment,Gem,ResidencePlantAccelerate,Fabao"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "item/item_data.py"
+          },
+          {
+            "sheet": "ResidencePlantAccelerate",
+            "key": "",
+            "kind": "change",
+            "col": "道具描述",
+            "from": "",
+            "to": "ref_col:True"
+          },
+          {
+            "sheet": "ResidencePlantAccelerate",
+            "key": "",
+            "kind": "change",
+            "col": "道具增加生长值",
+            "from": "",
+            "to": "alias:a"
+          },
+          {
+            "sheet": "道具表说明",
+            "key": "配置数字",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": 7
+          },
+          {
+            "sheet": "道具表说明",
+            "key": "配置数字",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": 8
+          },
+          {
+            "sheet": "道具表说明",
+            "key": "配置数字",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": 9
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "item/item_recipe",
+        "base": "item_recipe.xlsx",
+        "output": "item_recipe_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "ItemRecipe"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "item/item_recipe.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "mail",
+        "base": "mail.xlsx",
+        "output": "mail_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "map",
+        "base": "map.xlsx",
+        "output": "map_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Icon",
+            "key": "",
+            "kind": "change",
+            "col": "显示条件\n（0: 不显示; 1: 永久显示; 2: 开启地形后显示; 3: 进入视野黑雾显示）",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Icon",
+            "key": "",
+            "kind": "change",
+            "col": "点击交互（等同于点击实体）",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "material_effect",
+        "base": "material_effect.xlsx",
+        "output": "material_effect_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "merge_case",
+        "base": "merge_case.xlsx",
+        "output": "merge_case_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "model_prefab",
+        "base": "model_prefab.xlsx",
+        "output": "model_prefab_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "pet/pet",
+        "base": "pet.xlsx",
+        "output": "pet_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "pet/pet_evolve",
+        "base": "pet_evolve.xlsx",
+        "output": "pet_evolve_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "pet/pet_level",
+        "base": "pet_level.xlsx",
+        "output": "pet_level_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "PetLevel"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "pet/pet_level.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "pet/pet_refine",
+        "base": "pet_refine.xlsx",
+        "output": "pet_refine_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "pet/pet_spell_book",
+        "base": "pet_spell_book.xlsx",
+        "output": "pet_spell_book_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "player_common",
+        "base": "player_common.xlsx",
+        "output": "player_common_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "qa_test/formula_samples/formula_basic",
+        "base": "formula_basic.xlsx",
+        "output": "formula_basic_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "qa_test/formula_samples/formula_lookup",
+        "base": "formula_lookup.xlsx",
+        "output": "formula_lookup_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "qa_test/formula_samples/formula_nested",
+        "base": "formula_nested.xlsx",
+        "output": "formula_nested_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "qa_test/formula_samples/formula_sum",
+        "base": "formula_sum.xlsx",
+        "output": "formula_sum_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "quest/quest",
+        "base": "quest.xlsx",
+        "output": "quest_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 4,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "QuestGroup"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "quest/quest_group_data.py"
+          },
+          {
+            "sheet": "Quest",
+            "key": "",
+            "kind": "change",
+            "col": "任务目标参数",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "QuestType",
+            "key": "",
+            "kind": "change",
+            "col": "程序处理类型\nCommon:玩家个人常规任务\nTeam:组队分享任务",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "任务目标参数",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "quest/spawn_quest_entity",
+        "base": "spawn_quest_entity.xlsx",
+        "output": "spawn_quest_entity_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "realm_info",
+        "base": "realm_info.xlsx",
+        "output": "realm_info_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence",
+        "base": "residence.xlsx",
+        "output": "residence_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "Residence"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "residence/residence_data.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_building",
+        "base": "residence_building.xlsx",
+        "output": "residence_building_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 2,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "BuildingCamera",
+            "key": "",
+            "kind": "change",
+            "col": "镜头Yaw角",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "BuildingCamera",
+            "key": "",
+            "kind": "change",
+            "col": "镜头Pitch角",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "BuildingCamera",
+            "key": "",
+            "kind": "change",
+            "col": "镜头距离",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "BuildingCamera",
+            "key": "",
+            "kind": "change",
+            "col": "镜头fov",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "BuildingCamera",
+            "key": "",
+            "kind": "change",
+            "col": "聚焦点相对于建筑的偏移",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "ResidenceBuilding"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "residence/residence_building.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_entry",
+        "base": "residence_entry.xlsx",
+        "output": "residence_entry_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "State"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "residence/state_data.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_grid",
+        "base": "residence_grid.xlsx",
+        "output": "residence_grid_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 4,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "ResidenceObstacle"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "residence/residence_obstacle.py"
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "障碍物id",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "占地Z格数",
+            "from": "",
+            "to": 2
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "解锁需要的道具数量",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "摆放模型的model_id",
+            "from": "",
+            "to": 1043
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "模型旋转(-90, 0, 90, 180)",
+            "from": "",
+            "to": 90
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30001",
+            "kind": "change",
+            "col": "解锁所需洞府等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30004",
+            "kind": "change",
+            "col": "障碍物id",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30004",
+            "kind": "change",
+            "col": "占地Z格数",
+            "from": "",
+            "to": 3
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30004",
+            "kind": "change",
+            "col": "摆放模型的model_id",
+            "from": "",
+            "to": 1128
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30004",
+            "kind": "change",
+            "col": "解锁所需洞府等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30005",
+            "kind": "change",
+            "col": "障碍物id",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30005",
+            "kind": "change",
+            "col": "占地Z格数",
+            "from": "",
+            "to": 3
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30005",
+            "kind": "change",
+            "col": "摆放模型的model_id",
+            "from": "",
+            "to": 1128
+          },
+          {
+            "sheet": "ResidenceObstacle",
+            "key": "30005",
+            "kind": "change",
+            "col": "解锁所需洞府等级",
+            "from": "",
+            "to": 1
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_plant",
+        "base": "residence_plant.xlsx",
+        "output": "residence_plant_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_putuan",
+        "base": "residence_putuan.xlsx",
+        "output": "residence_putuan_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 4,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "PutuanAcupoint"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "residence/putuan_acupoint.py"
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "1. 下丹田（气海 / 关元）",
+            "kind": "change",
+            "col": "1. 劳宫聚气心法（主攻掌心气感，强手劲）",
+            "from": "",
+            "to": "1. 下丹田（气海 / 关元）"
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "1. 下丹田（气海 / 关元）",
+            "kind": "change",
+            "col": "1.小周天",
+            "from": "",
+            "to": "下丹田（气海 / 关元区域，脐下三寸）：练气起始处，先意守此处聚气。"
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "8. 回归下丹田",
+            "kind": "change",
+            "col": "1. 劳宫聚气心法（主攻掌心气感，强手劲）",
+            "from": "",
+            "to": "3. 手背通脉心法（主攻手背气脉，调气血）"
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "8. 回归下丹田",
+            "kind": "change",
+            "col": "1.小周天",
+            "from": "",
+            "to": "4. 夹脊"
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "1. 劳宫聚气心法（主攻掌心气感，强手劲）",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Sheet1",
+            "key": "",
+            "kind": "change",
+            "col": "1.小周天",
+            "from": "",
+            "to": "2. 会阴"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "libreoffice 重算成功，公式缓存已恢复",
+        "preflight_holds": []
+      },
+      {
+        "group": "residence/residence_temple",
+        "base": "residence_temple.xlsx",
+        "output": "residence_temple_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "reward",
+        "base": "reward.xlsx",
+        "output": "reward_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "说明",
+            "kind": "change",
+            "col": "Reward奖励表",
+            "from": "",
+            "to": "dev3_mark"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "school/school",
+        "base": "school.xlsx",
+        "output": "school_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "school/school_ability",
+        "base": "school_ability.xlsx",
+        "output": "school_ability_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 2,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "SchoolAbility"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "school/school_ability.py"
+          },
+          {
+            "sheet": "SchoolAbility",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "school/school_spirit",
+        "base": "school_spirit.xlsx",
+        "output": "school_spirit_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "school/school_talent",
+        "base": "school_talent.xlsx",
+        "output": "school_talent_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 2,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "SchoolTalent"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "school/school_talent_data.py"
+          },
+          {
+            "sheet": "SchoolTalent",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "school/spirit",
+        "base": "spirit.xlsx",
+        "output": "spirit_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "sequence/anim/anim_montage_sequence",
+        "base": "anim_montage_sequence.xlsx",
+        "output": "anim_montage_sequence_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "sequence/effect/effect_actor",
+        "base": "effect_actor.xlsx",
+        "output": "effect_actor_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "space",
+        "base": "space.xlsx",
+        "output": "space_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 2,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "space_data,big_world_space,space_map_ui"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "space_data.py"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "航拍图（手绘地图）路径",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "航拍图（手绘地图）分辨率\n\n（目前只支持正方形地图，因此只需要填一个维度即可）",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "航拍图（手绘地图）对应世界空间的尺寸\n\n（目前只支持正方形地图，因此只需要填一个维度即可）",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "航拍图（手绘地图）中心对应世界空间的坐标",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "大地图缩放范围\n\n（临时做法）",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          },
+          {
+            "sheet": "space_map_ui",
+            "key": "",
+            "kind": "change",
+            "col": "小地图显示的世界空间范围的放大比例",
+            "from": "",
+            "to": "export_type: ONLY_CLIENT"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "space_landmark",
+        "base": "space_landmark.xlsx",
+        "output": "space_landmark_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "spawn_world_entity",
+        "base": "spawn_world_entity.xlsx",
+        "output": "spawn_world_entity_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_1/ability",
+        "base": "ability.xlsx",
+        "output": "ability_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Ability",
+            "key": "",
+            "kind": "change",
+            "col": "名称",
+            "from": "",
+            "to": "sub_ab_3"
+          },
+          {
+            "sheet": "Ability",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_1/const",
+        "base": "const.xlsx",
+        "output": "const_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_1/item_drop",
+        "base": "item_drop.xlsx",
+        "output": "item_drop_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无改动，fast-path 复制通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_1/monster",
+        "base": "monster.xlsx",
+        "output": "monster_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无改动，fast-path 复制通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_1/reward",
+        "base": "reward.xlsx",
+        "output": "reward_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_2/const",
+        "base": "const.xlsx",
+        "output": "const_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_2/fabao",
+        "base": "fabao.xlsx",
+        "output": "fabao_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 4,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "Fabao"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "fabao/fabao_data.py"
+          },
+          {
+            "sheet": "Fabao",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "1",
+            "kind": "change",
+            "col": "法宝等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "1",
+            "kind": "change",
+            "col": "技能等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "2",
+            "kind": "change",
+            "col": "法宝等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "FabaoLevel",
+            "key": "2",
+            "kind": "change",
+            "col": "技能等级",
+            "from": "",
+            "to": 1
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_2/guild",
+        "base": "guild.xlsx",
+        "output": "guild_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 6,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "帮派配置",
+            "from": "",
+            "to": "UNIVERSAL"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "Const"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "u_guild_const_data.py"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "CONST"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "强身术"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "强身健体是习武之人的根本，每学习一级可以提高一定的气血上限。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "vitality"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 150
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4901",
+            "kind": "change",
+            "col": "气血上限加成效果的数值",
+            "from": "",
+            "to": 0.001
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "冥想"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "通过冥想凝聚强大的精神力量，修习可以提高法力，每学习一级可以提高一定的魔法上限。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "meditation"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 150
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4902",
+            "kind": "change",
+            "col": "真元上限加成效果的数值",
+            "from": "",
+            "to": 0.001
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "打造技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "铸造名家欧冶子传下的技能，可以提高打造武器的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "blacksmith"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4903",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "裁缝技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "从天衣无缝针法演化而来的技能，可提高制作头盔和衣甲的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "tailoring"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4904",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "等级",
+            "from": "",
+            "to": 1
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "技能名称\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "炼金技巧"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "详细效果\n（在等级数据的第一行配）",
+            "from": "",
+            "to": "秘术士私传的炼金之术，可以提高制作饰品、靴子和腰带的能力。"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "程序效果\n（策划别管）",
+            "from": "",
+            "to": "alchemy"
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "当前等级研发所需进度\n（0代表不用研究）",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需角色等级",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需道具1数量(帮贡数量)",
+            "from": "",
+            "to": 0
+          },
+          {
+            "sheet": "SpellData",
+            "key": "4905",
+            "kind": "change",
+            "col": "学习所需道具2数量(银币数量)",
+            "from": "",
+            "to": 100
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "公式缓存完好，校验通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_2/mail",
+        "base": "mail.xlsx",
+        "output": "mail_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_2/tips",
+        "base": "tips.xlsx",
+        "output": "tips_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_3/ability",
+        "base": "ability.xlsx",
+        "output": "ability_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Ability",
+            "key": "",
+            "kind": "change",
+            "col": "图标",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_3/interaction",
+        "base": "interaction.xlsx",
+        "output": "interaction_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "InteractionConv"
+          },
+          {
+            "sheet": "CONFIG",
+            "key": "",
+            "kind": "change",
+            "col": "",
+            "from": "",
+            "to": "interaction_conv.py"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_3/map",
+        "base": "map.xlsx",
+        "output": "map_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "Icon",
+            "key": "",
+            "kind": "change",
+            "col": "显示条件\n（0: 不显示; 1: 永久显示; 2: 开启地形后显示; 3: 进入视野黑雾显示）",
+            "from": "",
+            "to": ""
+          },
+          {
+            "sheet": "Icon",
+            "key": "",
+            "kind": "change",
+            "col": "点击交互（等同于点击实体）",
+            "from": "",
+            "to": ""
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_3/reward",
+        "base": "reward.xlsx",
+        "output": "reward_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "subdev_3/world_buff",
+        "base": "world_buff.xlsx",
+        "output": "world_buff_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "tips",
+        "base": "tips.xlsx",
+        "output": "tips_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 1,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [
+          {
+            "sheet": "CONFIG",
+            "key": "说明",
+            "kind": "change",
+            "col": "tips配置",
+            "from": "",
+            "to": "dev3_mark"
+          }
+        ],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      },
+      {
+        "group": "world_buff",
+        "base": "world_buff.xlsx",
+        "output": "world_buff_2.xlsx",
+        "stats": {
+          "conflicts": 0,
+          "changed": 0,
+          "inserted": 0,
+          "deleted": 0,
+          "missing": 0
+        },
+        "changes": [],
+        "changes_truncated": false,
+        "cache_message": "无公式单元格，fast-path 通过",
+        "preflight_holds": []
+      }
+    ]
+  },
+  {
     "time": "2026-08-17T17:58:07",
     "mode": "branch_absorb",
     "source_branch": "svn/demo_svn/wc/branches/dev3",

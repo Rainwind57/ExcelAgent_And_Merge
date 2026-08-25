@@ -71,9 +71,25 @@ class Step2ValidateSubAgent:
                 _lr = _locator_results[0] if _locator_results else None
                 validated = self._services.validate_intents(
                     intents, _tmp_res, ctx.session_id, locator_result=_lr)
-                # 收集校验产出的 failures（软错误）
+                # 收集校验产出的 failures
+                # §P0 hard 语义收口：原一律 is_hard=False → COL_NOT_FOUND/TYPE_MISMATCH/
+                # 真悬空占位符全软流到 Step3 写盘才硬 fail（带病落盘）。现据 issue_type
+                # 映射硬类别（与 validator_agent._hard_issue_types 同构：缺必填列/类型不符/
+                # 占位符悬空），硬类提 is_hard=True 前置拦截，避免错误穿过整个 Step2。
+                # 非硬类（如可修复的别名提示）保 soft 让链路继续产部分结果，平衡半完成 vs 全停。
+                from ...subagent.validator_agent import IssueType
+                _HARD_TYPES = {
+                    IssueType.UNIQUE_VIOLATION.value,
+                    IssueType.FORWARD_REF_BROKEN.value,
+                    IssueType.MISSING_REQUIRED.value,
+                    IssueType.COL_NOT_FOUND.value,
+                    IssueType.SCHEMA_MISSING.value,
+                    IssueType.TYPE_MISMATCH.value,
+                }
                 for f in (getattr(_tmp_res, "failures", None) or []):
                     if isinstance(f, dict):
+                        _itype = f.get("issue_type") or f.get("type", "")
+                        _is_hard = _itype in _HARD_TYPES
                         errors.append(StepError(
                             step_id=STEP2_VALIDATE,
                             error_type=f.get("type", "validate_issue"),
@@ -81,7 +97,7 @@ class Step2ValidateSubAgent:
                             table=f.get("table"), sheet=f.get("sheet"),
                             column=f.get("col"),
                             suggestion=f.get("suggestion"),
-                            is_hard=False))
+                            is_hard=_is_hard))
             except Exception as e:  # noqa: BLE001
                 logger.warning("Step2 校验异常", exc_info=True)
                 errors.append(StepError(

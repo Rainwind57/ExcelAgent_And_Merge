@@ -503,11 +503,22 @@ class CodemakerNLParser:
             skill_ctx = ""
         # N1: few-shot 案例注入（同表历史优秀/失败案例，解析示范）
         few_shot = self._build_few_shot_block(text)
+        # 填表规则注入：rules/fill/*.md 用户手打知识，强约束拼进 prompt 前缀
+        fill_rules = ""
+        try:
+            from ..core.rules_loader import load_fill_rules
+            from ..core.skill_context import pre_route
+            fill_rules = load_fill_rules(pre_route(text))
+        except Exception:
+            logger.warning("填表规则加载失败（已降级跳过）", exc_info=True)
+            fill_rules = ""
         prefix = ""
         if skill_ctx:
             prefix = skill_ctx
         if few_shot:
             prefix = f"{prefix}\n\n{few_shot}" if prefix else few_shot
+        if fill_rules:
+            prefix = f"{prefix}\n\n{fill_rules}" if prefix else fill_rules
         if not prefix:
             return base
         return f"{prefix}\n\n{base}"

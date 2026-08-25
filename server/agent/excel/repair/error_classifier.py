@@ -350,8 +350,8 @@ def build_user_friendly(error_type: str, root_cause: str = "",
     if _it == "forward_ref_broken" or _et == "cross_ref_broken":
         _col = failed_col or ""
         return {
-            "reason": f"这项「{_col}」需要先建好依赖的东西才能填，但那个依赖现在还没建出来。",
-            "action": "你可以：①先去建依赖项 ②手动填一个已有的编号 ③点「跳过」放弃此项。",
+            "reason": f"这项「{_col}」要引用的前置数据还没被前面的步骤创建出来，所以现在填不了。",
+            "action": "正常应由系统建好前置数据后自动回填。你可以：①检查那条前置数据是否漏配、补上它 ②手动填一个已存在的编号 ③点「跳过」放弃此项。",
         }
     # dangling FK（写后深度校验）
     if dangling_lines:

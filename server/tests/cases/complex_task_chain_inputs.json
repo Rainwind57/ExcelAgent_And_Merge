@@ -1,0 +1,946 @@
+[
+  {
+    "_meta": {
+      "name": "世界BOSS降临·焚天赤龙（跨6表 add 全链路占位符闭环）",
+      "complexity": "高（跨6表 + 占位符拓扑 + produce/consume 链路）",
+      "note": "activity→reward→combat.combat_data+PveCombatNpc→prefab+interaction 三层对话→spawn_world_entity（BOSS 自身 prefab+interaction 引用 combat_id 触发战斗，引导 NPC 走对话树）",
+      "expect_subtasks": 9,
+      "design_target": "exercises ParseAgent schema-driven DecomposeAgent 拆 ≥9 SubTask；produces_inference 推断 reward→combat→prefab→interaction→spawn 的拓扑序；ValidateAgent FK 层前向引用校验。注意：option 不直接触发战斗，BOSS 战斗由 BOSS 自身 prefab.interaction.effect.key=3001 引用 new_combat_id"
+    },
+    "input": "新增一个限时世界BOSS活动叫'焚天赤龙降临'，activity_id 3001，活动描述'赤龙现世，各路豪杰齐心讨伐，首杀可得传说法宝'，开始时间 2024-12-21 00:00:00，结束时间 2024-12-28 23:59:59。配套首杀奖励包也建一下，reward_id 30010，叫'焚天赤龙首杀奖励'，每日限领 1 次，必给道具 10001 共 20 个，概率 100% 给经验、100% 给金币、金币公式填 800；再加一个保底掉落池 pool_id 3001，属性修改含 PhyAtkCon 范围 100-200 权重 20、MagAtkCon 范围 100-200 权重 20、CritCon 范围 5-15 权重 10，能力类型都填 2。BOSS 战斗也一起配上：在战场 10050 的坐标 (200,0,150) 刷一只 PVE 世界 BOSS，怪物名字叫'焚天赤龙'，model_id 1200，技能列表 9101/9102/9103/9104，AI 用 boss_ai，等级公式 80，气血斜率 60、气血基础 500000，物攻斜率 40、物攻基础 30000，打赢给奖励包 30010，输了和平局都不给。再配一个引导 NPC 叫'赤龙指引人'，model_id 1020，放在战场 10050 坐标 (190,0,140)，玩家点击他弹出对话'焚天赤龙正在肆虐人间，请勇士速速前往讨伐，首杀者将获得传说奖励'，给两个选项：第一个'我这就去讨伐'选完后跳到第二段奖励介绍对话后结束对话；第二个'了解一下奖励'跳到新对话，内容为'首杀奖励包含 20 个精炼石、海量经验与金币，以及随机词条池加成'，再给一个选项'知道了'选完什么都不做结束对话。",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_id",
+        "row_content": {
+          "id": "<new_reward_id>",
+          "name": "焚天赤龙首杀奖励",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10001,
+          "must_items[1].num": 20,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "800"
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "GameplayAbilityChoicePool",
+        "operation": "add",
+        "row_content": {
+          "pool_id": 3001,
+          "rand_weight": 20,
+          "ability_type": 2,
+          "attr_mod": ["PhyAtkCon", 100, 200]
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "GameplayAbilityChoicePool",
+        "operation": "add",
+        "row_content": {
+          "pool_id": 3001,
+          "rand_weight": 20,
+          "ability_type": 2,
+          "attr_mod": ["MagAtkCon", 100, 200]
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "GameplayAbilityChoicePool",
+        "operation": "add",
+        "row_content": {
+          "pool_id": 3001,
+          "rand_weight": 10,
+          "ability_type": 2,
+          "attr_mod": ["CritCon", 5, 15]
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "焚天赤龙首通",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10050,
+          "win_reward": "<new_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_npc_id",
+        "row_content": {
+          "npc_id": "<new_npc_id>",
+          "name": "焚天赤龙",
+          "model_id": 1200,
+          "spell_ids": [9101, 9102, 9103, 9104],
+          "combat_ai_name": "boss_ai",
+          "level_formula": 80,
+          "attribute_base_slopes.HPMaxCon[1]": 60,
+          "attribute_base_slopes.HPMaxCon[0]": 500000,
+          "attribute_base_slopes.WorldAttackCon[1]": 40,
+          "attribute_base_slopes.WorldAttackCon[0]": 30000,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1020,
+          "entity_name": "赤龙指引人",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "焚天赤龙正在肆虐人间，请勇士速速前往讨伐，首杀者将获得传说奖励",
+          "options[0]": "<option_fight_id>",
+          "options[1]": "<option_reward_info_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_fight_id",
+        "row_content": {
+          "option_id": "<option_fight_id>",
+          "option_text": "我这就去讨伐",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_encourage_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_encourage_conv_id",
+        "row_content": {
+          "conv_id": "<new_encourage_conv_id>",
+          "prompt_text": "将军点头：好，去吧，记得保全自身。",
+          "options[0]": "<option_done_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_reward_info_id",
+        "row_content": {
+          "option_id": "<option_reward_info_id>",
+          "option_text": "了解一下奖励",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_reward_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_reward_conv_id",
+        "row_content": {
+          "conv_id": "<new_reward_conv_id>",
+          "prompt_text": "首杀奖励包含 20 个精炼石、海量经验与金币，以及随机词条池加成",
+          "options[0]": "<option_done_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_done_id",
+        "row_content": {
+          "option_id": "<option_done_id>",
+          "option_text": "知道了",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_boss_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_boss_prefab_id>",
+          "entity_class": "WorldNpc",
+          "model_id": 1200,
+          "entity_name": "焚天赤龙",
+          "interaction_id": "<new_boss_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_boss_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_boss_interaction_id>",
+          "effect.key": 3001,
+          "effect.data.3001.combat_id": "<new_combat_id>"
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10050,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "赤龙指引人",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[190, 0, 140]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_boss_spawn_id>",
+          "space_id": 10050,
+          "entity_prefab_id": "<new_boss_prefab_id>",
+          "entity_name": "焚天赤龙",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[200, 0, 150]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 3001,
+          "activity_type": 1,
+          "name": "焚天赤龙降临",
+          "desc": "赤龙现世，各路豪杰齐心讨伐，首杀可得传说法宝",
+          "start_time": "2024-12-21 00:00:00",
+          "end_time": "2024-12-28 23:59:59"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "剑灵坐骑·逐日麒麟全生命周期（跨4目录7表 + 嵌套点分键 + 显式PK混合）",
+      "complexity": "高（aptitude_base 嵌套 + 同主 PK 跨表引用 + 多意图分裂）",
+      "note": "item.ItemBase(蛋道具)→pet.Pet→pet_evolve.PetEvolveData（进化要求灵兽献祭）→combat.spell_data + spell_group",
+      "expect_subtasks": 4,
+      "design_target": "exercises ParseAgent 对'同一主键 pet_id 跨多表 fan-out'拆分；注意 Pet 主表属性用点分键 aptitude_base.*；进化消耗是'献祭灵兽'而非道具，对应 evolve_cost_pets/evolve_cost_pets_num 真实 schema"
+    },
+    "input": "新增一只神话坐骑灵兽叫'逐日麒麟'，model_id 1080，品质 4（红色传说），灵兽类型 1，元素类型 light，灵兽蛋道具 item_id 29001，出战所需人物等级 70，默认加点 3，资质配置：体力资质 8000、物攻资质 3000、法攻资质 3500、物防资质 2000、法防资质 2500。进化路径也配好：进化等级 10，进化为 pet_id 20999 的'逐日麒麟·破晓'，需要献祭进化要求灵兽 pet_id 10999 共 1 只。再为它配一个进化前的过渡技能叫'流光击'，attack 类型、light 元素、单体 180% 伤害倍率；把这个法术放进新技能组 750 里，组名叫'逐日过渡组'。",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "add",
+        "produces": "new_pet_id",
+        "row_content": {
+          "pet_id": "<new_pet_id>",
+          "name": "逐日麒麟",
+          "model_id": 1080,
+          "pet_type": 1,
+          "quality": 4,
+          "elemental_type": "light",
+          "item_id": 29001,
+          "hero_level": 70,
+          "auto_attr_point_alloc_type": 3,
+          "aptitude_base.StrPotCon": 8000,
+          "aptitude_base.PhyatkPotCon": 3000,
+          "aptitude_base.MagatkPotCon": 3500,
+          "aptitude_base.PhydefPotCon": 2000,
+          "aptitude_base.MagdefPotCon": 2500
+        }
+      },
+      {
+        "table": "pet\\pet_evolve.xlsx",
+        "sheet": "PetEvolveData",
+        "operation": "add",
+        "row_content": {
+          "evolve_id": "<new_evolve_id>",
+          "pet_id": "<new_pet_id>",
+          "evolve_level": 10,
+          "evolved_pet_id": 20999,
+          "evolve_cost_pets.1": [10999],
+          "evolve_cost_pets_num.1": [1]
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "produces": "new_spell_id",
+        "row_content": {
+          "id": "<new_spell_id>",
+          "spell_type": "attack",
+          "spell_element": "light",
+          "damage_base_rate": 1.8,
+          "target_num_limit": 1,
+          "settlement_method": 0
+        }
+      },
+      {
+        "table": "combat\\spell_group.xlsx",
+        "sheet": "SpellGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 750,
+          "name": "逐日过渡组",
+          "spell_ids": ["<new_spell_id>"]
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "跨服帮派战赛季重构（跨5表 add+modify+delete 混合 + 删除级联引用清理）",
+      "complexity": "高（add+modify+delete 三态混合 + 前向引用清理）",
+      "note": "city_siege（SiegeAttackableBuilding modify+add / SiegeLayout modify+add）→reward（modify+add）→mail（MailTemplate+GlobalMail add）→guild.WelcomeMessage（delete+add）",
+      "expect_subtasks": 8,
+      "design_target": "exercises ExecuteAgent 对'同表 modify 旧→add 新'混合 + delete 级联清理"
+    },
+    "input": "跨服帮派战第四赛季上线。先改 city_siege 表 SiegeAttackableBuilding id=10001 那条守军记录，把守军数量改成 30、守军战斗1 改为 combat_id 100200、城池等级设为 3；同时新建一条同表守军记录 id=10002，描述'第四赛季朱雀殿堂守军'，城池等级 4、建筑类型 2、守军数量 40、守军战斗1 为 combat_id 100201、战斗2 为 100202、战斗3 为 100203。再改 SiegeLayout 表 layout_id=20001 的大营1位置改成 (100,50,100)，新建一条 layout_id=20002 给新赛场，场景 space_id 10060，大营1传入位置 (50,50,50)、防守大营位置 (200,200,200)。配套奖励也换：把 reward_id 为 20050 的旧赛季首帮奖励的每日限领改成 1 次，新建奖励 reward_id 20055 叫'朱雀逐鹿赛季奖励'，每日限领 5 次，必给道具 10001 共 50 个、道具 10008 共 10 个，概率 100% 给经验、90% 给金币、金币公式填 1000。最后清理上赛季数据：把 guild 表 WelcomeMessage 中 message_id=1 的旧迎新词删掉，并新建一条 message_id=5，简称'朱雀'，前缀'[赛季]'，内容'朱雀逐鹿赛季上线请积极参战'。赛季预热邮件也发：新建邮件模板 template_id 30050，标题'朱雀逐鹿赛季开启'，内容'跨服帮派战第四赛季即将开启，请帮主组织成员准时参战'；配全服邮件 global_id 8，邮件类型 1，发送时间 2025-01-04 20:00:00，发送人'系统'，使用模板 30050，附带奖励包 reward_id 1。",
+    "expected_answer": [
+      {
+        "table": "city\\city_siege.xlsx",
+        "sheet": "SiegeAttackableBuilding",
+        "operation": "modify",
+        "row_key": {"id": 10001},
+        "row_content": {
+          "pve_defender_num": 30,
+          "defend_combat_ids[0]": 100200,
+          "city_level": 3
+        }
+      },
+      {
+        "table": "city\\city_siege.xlsx",
+        "sheet": "SiegeAttackableBuilding",
+        "operation": "add",
+        "row_content": {
+          "id": 10002,
+          "_desc": "第四赛季朱雀殿堂守军",
+          "city_level": 4,
+          "building_type": 2,
+          "pve_defender_num": 40,
+          "defend_combat_ids[0]": 100201,
+          "defend_combat_ids[1]": 100202,
+          "defend_combat_ids[2]": 100203
+        }
+      },
+      {
+        "table": "city\\city_siege.xlsx",
+        "sheet": "SiegeLayout",
+        "operation": "modify",
+        "row_key": {"layout_id": 20001},
+        "row_content": {"camp1_pos": [100, 50, 100]}
+      },
+      {
+        "table": "city\\city_siege.xlsx",
+        "sheet": "SiegeLayout",
+        "operation": "add",
+        "row_content": {
+          "layout_id": 20002,
+          "space_id": 10060,
+          "camp1_in_pos": [50, 50, 50],
+          "camp_def_pos": [200, 200, 200]
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "modify",
+        "row_key": {"id": 20050},
+        "row_content": {"day_limit": 1}
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "row_content": {
+          "id": 20055,
+          "name": "朱雀逐鹿赛季奖励",
+          "day_limit": 5,
+          "must_items[1].item_ids": 10001,
+          "must_items[1].num": 50,
+          "must_items[2].item_ids": 10008,
+          "must_items[2].num": 10,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 90,
+          "gold_formula": "1000"
+        }
+      },
+      {
+        "table": "guild.xlsx",
+        "sheet": "WelcomeMessage",
+        "operation": "delete",
+        "row_key": {"message_id": 1}
+      },
+      {
+        "table": "guild.xlsx",
+        "sheet": "WelcomeMessage",
+        "operation": "add",
+        "row_content": {
+          "message_id": 5,
+          "alias": "朱雀",
+          "prefix": "[赛季]",
+          "content": "朱雀逐鹿赛季上线请积极参战"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "row_content": {
+          "template_id": 30050,
+          "title": "朱雀逐鹿赛季开启",
+          "content": "跨服帮派战第四赛季即将开启，请帮主组织成员准时参战"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 8,
+          "mail_type": 1,
+          "template_id": 30050,
+          "send_time": "2025-01-04 20:00:00",
+          "sender": "系统",
+          "reward_id": 1
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "洞府新玩法·灵泉修炼（跨3目录6表 同xlsx多sheet精准分流 + 复合主键）",
+      "complexity": "高（同 xlsx 5 sheet 分流 + BuildingInteract 多状态行 + District/ResidenceEntry 复合引用）",
+      "note": "item.ItemBase(图纸)→residence_building(BuildingType+ResidenceBuilding+BuildingInteract×3)→residence_entry(District)→residence_temple(ResidenceTemple)→residence_entry(ResidenceEntry)",
+      "expect_subtasks": 9,
+      "design_target": "exercises LocatorAgent 对'residence 同 xlsx 多 sheet'精准分流 + ValidateAgent 对复合主键 building_type 双行校验；列名全部对齐真实 row2（building_item_id/area_x/state_id/character_montage 等）"
+    },
+    "input": "给洞府新增一种修炼建筑'灵泉'。建筑类型 building_type 用 15，对应的实体类型填 ResidenceBuildingMeditate，一级分类界面填'修炼'、二级分类界面填'灵泉汇气'，洞府 1 级最多放 1 个、2 级最多放 2 个、3 级最多放 3 个（其它等级 0）。再建一个建筑实例叫'高级灵泉'，建筑道具编号 22300，建筑名称'高级灵泉'，建筑等级 2，建筑类型用新建的 15，模型 model_id 2207001，地图图标id 4020，升级所需洞府等级 2，建筑占地面积 area_x=3 area_y=3，建筑图纸道具用新建的 item_id 12080。这个图纸道具也建一下：叫'灵泉图纸'，品质 2，道具类型 4，图标'Icon_lingquan_blueprint'，最大堆叠 99，可丢弃。灵泉建筑类型配三段交互动画：第一段状态 state_id='idle'，角色蒙太奇 character_montage='LingquanIdle.graph'，建筑状态 building_state=0，软停止 soft_stop=1；第二段 state_id='meditate'，character_montage='LingquanMeditate.graph'，building_state=1，soft_stop=0；第三段 state_id='overflow'，character_montage='LingquanOverflow.graph'，building_state=2，soft_stop=0。再加一个新州片区叫'灵泉谷' district_id=108，名称'灵泉谷'，所属州 state_id=3，选后传送坐标 (220,20,-500)；并配一个该片区里的洞府关卡'灵泉秘境3-1'，战斗 id 用 combat_id 100090108，所需洞府等级 3，土地庙建筑用 building_item_id 22300，关卡图标'lingquan_03.png'，描述'灵泉深处有古修士遗留的阵法，击败守阵灵体可激活更深处的灵脉'。最后新建灵泉谷片区的入口 Prefab：入口id entry_id=10150，名称'灵泉谷入口'，归属片区 district_id=108，候选 prefab_id 8040，正式 prefab_id 8010，关联的洞府 residence_id=30010。",
+    "expected_answer": [
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_blueprint_item_id",
+        "row_content": {
+          "item_id": "<new_blueprint_item_id>",
+          "name": "灵泉图纸",
+          "quality": 2,
+          "item_type": 4,
+          "icon": "Icon_lingquan_blueprint",
+          "max_stack": 99,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingType",
+        "operation": "add",
+        "produces": "new_building_type",
+        "row_content": {
+          "building_type": 15,
+          "name": "灵泉",
+          "entity_type": "ResidenceBuildingMeditate",
+          "primary_class": "修炼",
+          "secondary_class": "灵泉汇气",
+          "level_building_limited[0]": 1,
+          "level_building_limited[1]": 2,
+          "level_building_limited[2]": 3
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "ResidenceBuilding",
+        "operation": "add",
+        "row_content": {
+          "building_item_id": 22300,
+          "name": "高级灵泉",
+          "level": 2,
+          "building_type": "<new_building_type>",
+          "model_id": 2207001,
+          "map_icon_id": 4020,
+          "residence_level": 2,
+          "blueprint_item_id": "<new_blueprint_item_id>",
+          "area_x": 3,
+          "area_y": 3
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingInteract",
+        "operation": "add",
+        "row_content": {
+          "building_type": "<new_building_type>",
+          "state_id": "idle",
+          "character_montage": "LingquanIdle.graph",
+          "building_state": 0,
+          "soft_stop": 1
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingInteract",
+        "operation": "add",
+        "row_content": {
+          "building_type": "<new_building_type>",
+          "state_id": "meditate",
+          "character_montage": "LingquanMeditate.graph",
+          "building_state": 1,
+          "soft_stop": 0
+        }
+      },
+      {
+        "table": "residence\\residence_building.xlsx",
+        "sheet": "BuildingInteract",
+        "operation": "add",
+        "row_content": {
+          "building_type": "<new_building_type>",
+          "state_id": "overflow",
+          "character_montage": "LingquanOverflow.graph",
+          "building_state": 2,
+          "soft_stop": 0
+        }
+      },
+      {
+        "table": "residence\\residence_entry.xlsx",
+        "sheet": "District",
+        "operation": "add",
+        "produces": "new_district_id",
+        "row_content": {
+          "district_id": 108,
+          "name": "灵泉谷",
+          "state_id": 3,
+          "pos_list": [[220, 20, -500]]
+        }
+      },
+      {
+        "table": "residence\\residence_temple.xlsx",
+        "sheet": "ResidenceTemple",
+        "operation": "add",
+        "row_content": {
+          "id": "<new_temple_id>",
+          "name": "灵泉秘境3-1",
+          "desc": "灵泉深处有古修士遗留的阵法，击败守阵灵体可激活更深处的灵脉",
+          "combat_id": 100090108,
+          "residence_level": 3,
+          "building_item_id": 22300,
+          "icon": "lingquan_03.png"
+        }
+      },
+      {
+        "table": "residence\\residence_entry.xlsx",
+        "sheet": "ResidenceEntry",
+        "operation": "add",
+        "row_content": {
+          "entry_id": 10150,
+          "name": "灵泉谷入口",
+          "district_id": "<new_district_id>",
+          "residence_id": 30010,
+          "candidate_prefab_id": 8040,
+          "prefab_id": 8010
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "多任务批量输入·日常配置三连（一次性 3 个独立任务，测多意图拆分与并行）",
+      "complexity": "中高（3 个独立任务同批次 + 各自跨2-3表 + 无交叉依赖）",
+      "note": "任务A 商人NPC+interaction+spawn(3表) | 任务B 药品ItemBase+Potion(2表) | 任务C 邮件MailTemplate+GlobalMail(2表)",
+      "expect_subtasks": 7,
+      "design_target": "exercises ParseAgent 对'多任务无交叉依赖'批量拆分为并行 SubTask + ExecuteAgent 同层并行派发"
+    },
+    "input": "帮我一次性配三样东西。第一样：新增一个道具商人 NPC 叫'黑市商人'，model_id 1022，放在 space_id 10005 坐标 (40,0,50)，玩家点击后弹出对话'腥风血雨之地，唯有奇货可居'，选项'看看货物'和'告辞'，点'看看货物'后跳到新对话'黑市商人不置可否地将货摊一摆'，再给一个选项'算了'选完什么都不做结束对话。第二样：新增一个药品叫'九转还魂丹'，品质 4，道具类型 3，图标'Icon_potion_jiuzhuan'，最大堆叠 10，不可丢弃，使用效果 id 为 10050，使用效果回血 80、回蓝 50，效果描述'原地复活并恢复部分气血真元'。第三样：新增一个邮件模板叫'回归玩家召唤'，template_id 30060，标题'久别重逢，江湖仍在'，内容'少侠阔别已久，武林风云再起，附上回归礼包助你重振旗鼓'，同时配全服邮件 global_id 9 使用该模板，发送人'系统'，发送时间 2025-01-01 00:00:00，附带奖励包 reward_id 10099。",
+    "expected_answer": [
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1022,
+          "entity_name": "黑市商人",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id",
+        "row_content": {
+          "conv_id": "<new_conv_id>",
+          "prompt_text": "腥风血雨之地，唯有奇货可居",
+          "options[0]": "<option_look_id>",
+          "options[1]": "<option_leave_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_look_id",
+        "row_content": {
+          "option_id": "<option_look_id>",
+          "option_text": "看看货物",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_look_conv_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_look_conv_id",
+        "row_content": {
+          "conv_id": "<new_look_conv_id>",
+          "prompt_text": "黑市商人不置可否地将货摊一摆",
+          "options[0]": "<option_done_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_leave_id",
+        "row_content": {
+          "option_id": "<option_leave_id>",
+          "option_text": "告辞",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_done_id",
+        "row_content": {
+          "option_id": "<option_done_id>",
+          "option_text": "算了",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10005,
+          "entity_prefab_id": "<new_prefab_id>",
+          "entity_name": "黑市商人",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[40, 0, 50]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_potion_item_id",
+        "row_content": {
+          "item_id": "<new_potion_item_id>",
+          "name": "九转还魂丹",
+          "quality": 4,
+          "item_type": 3,
+          "icon": "Icon_potion_jiuzhuan",
+          "max_stack": 10,
+          "droppable": 0
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Potion",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_potion_item_id>",
+          "desc": "原地复活并恢复部分气血真元",
+          "usage_effect.id": 10050,
+          "usage_effect.args.hp": 80,
+          "usage_effect.args.mp": 50
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "久别重逢，江湖仍在",
+          "content": "少侠阔别已久，武林风云再起，附上回归礼包助你重振旗鼓"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 9,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "系统",
+          "send_time": "2025-01-01 00:00:00",
+          "reward_id": 10099
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "主线剧情·探寻失落神器（跨7表 add + modify 混合 + 前向引用 reward 反向消费）",
+      "complexity": "高（quest 主线 + 多级对话树 + 战斗 + 奖励前置 produce 后置 consume + modify 既有 quest 串联）",
+      "note": "quest.QuestGroup+Quest(add)→reward.Reward(add)→combat_data+PveCombatNpc(add)→entity_prefab+interaction 4层对话→spawn_world_entity→quest.Quest(modify next_quest_ids 接续旧任务)",
+      "expect_subtasks": 10,
+      "design_target": "exercises ValidateAgent FK 拓扑层'quest.npc_ids 前向引用未建 prefab'反问 + produces_inference 对 quest→combat→reward→prefab 复杂可达图；option 不直接绑定 combat_id，BOSS 战斗由 spawn_world_entity 旁路关联"
+    },
+    "input": "加一条新的主线任务剧情线叫'探寻失落神器'。任务组 group_id 700，组名'神器现世'，任务类型 1（主线）。任务号 260700，归到这个组，限定条件填 hero_min_level:50（至少 50 级可接），描述写'传闻上古神器碎落于九幽之地，需寻访三位守器长老集齐碎片'。目标类型用 Conversation（与守器长老对话完成）。奖励包先建好 reward_id 20070，叫'寻器历程奖励'，每日限领 1 次，必给道具 10001 共 15 个，概率 100% 给经验、100% 给金币、金币公式填 600，奖励在任务完成时发放。这任务还要打一场 BOSS 战，战斗配置在战场 space_id 10030 坐标 (300,0,200) 刷'九幽守护者'，model_id 1150，技能 9201/9202，AI 用 boss_ai，等级公式 70，气血斜率 55、气血基础 200000，物攻斜率 35、物攻基础 15000，打赢给奖励包 20070。任务里要刷三位守器长老 NPC，但只新建第一位（后两位复用已有的 prefab_id 8060、8061）。新建的长老叫'守器长老·青' model_id 1025，放在 space_id 10030 坐标 (280,0,180)，点击后展开对话树：长老第一句话'年轻人，神器非儿戏，你可有守护苍生之志？'，给选项'我愿一试'跳第二句话'很好，先去击败九幽守护者证明你的实力'，这个第二句话再给一个选项'我出发了'选完什么都不做结束对话；还有一个选项'容我再想想'直接结束对话。最后，把已有的 quest_id 260601 那条任务的 next_quest_ids 改成 [260700]，让玩家做完上一章自动接到这一章。",
+    "expected_answer": [
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_id",
+        "row_content": {
+          "id": 20070,
+          "name": "寻器历程奖励",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10001,
+          "must_items[1].num": 15,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "600"
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "九幽守护者战",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10030,
+          "win_reward": "<new_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_npc_id",
+        "row_content": {
+          "npc_id": "<new_npc_id>",
+          "name": "九幽守护者",
+          "model_id": 1150,
+          "spell_ids": [9201, 9202],
+          "combat_ai_name": "boss_ai",
+          "level_formula": 70,
+          "attribute_base_slopes.HPMaxCon[1]": 55,
+          "attribute_base_slopes.HPMaxCon[0]": 200000,
+          "attribute_base_slopes.WorldAttackCon[1]": 35,
+          "attribute_base_slopes.WorldAttackCon[0]": 15000,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_elder_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_elder_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1025,
+          "entity_name": "守器长老·青",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3006,
+          "effect.data.3006.conv_id": "<new_conv_id_1>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id_1",
+        "row_content": {
+          "conv_id": "<new_conv_id_1>",
+          "prompt_text": "年轻人，神器非儿戏，你可有守护苍生之志？",
+          "options[0]": "<option_try_id>",
+          "options[1]": "<option_think_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "produces": "new_conv_id_2",
+        "row_content": {
+          "conv_id": "<new_conv_id_2>",
+          "prompt_text": "很好，先去击败九幽守护者证明你的实力",
+          "options[0]": "<option_depart_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_try_id",
+        "row_content": {
+          "option_id": "<option_try_id>",
+          "option_text": "我愿一试",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": "<new_conv_id_2>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_depart_id",
+        "row_content": {
+          "option_id": "<option_depart_id>",
+          "option_text": "我出发了",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "produces": "option_think_id",
+        "row_content": {
+          "option_id": "<option_think_id>",
+          "option_text": "容我再想想",
+          "option_function.function_type": 0
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_spawn_id>",
+          "space_id": 10030,
+          "entity_prefab_id": "<new_elder_prefab_id>",
+          "entity_name": "守器长老·青",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[280, 0, 180]],
+          "dir_list": [0],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "QuestGroup",
+        "operation": "add",
+        "produces": "new_group_id",
+        "row_content": {
+          "group_id": 700,
+          "quest_type": 1,
+          "name": "神器现世",
+          "qualifier": "hero_min_level:50"
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "add",
+        "produces": "new_quest_id",
+        "row_content": {
+          "quest_id": 260700,
+          "group_id": "<new_group_id>",
+          "name": "探寻失落神器",
+          "desc": "传闻上古神器碎落于九幽之地，需寻访三位守器长老集齐碎片",
+          "target.key": "Conversation",
+          "target.data": {"conv_id": "<new_conv_id_1>"},
+          "npc_ids": ["<new_elder_prefab_id>", 8060, 8061],
+          "rewards": ["<new_reward_id>"]
+        }
+      },
+      {
+        "table": "quest\\quest.xlsx",
+        "sheet": "Quest",
+        "operation": "modify",
+        "row_key": {"quest_id": 260601},
+        "row_content": {"next_quest_ids": [260700]}
+      }
+    ]
+  }
+]

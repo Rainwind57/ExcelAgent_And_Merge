@@ -17,7 +17,6 @@ server/agent/excel/
 │
 ├── agent.py               # TableAgent：自然语言 → Excel CRUD（+ run_as_writer 管道Step6执行器）
 ├── operation_orchestrator.py  # 多操作编排（拓扑排序 + 符号校验 + sub_tasks 装配）
-├── task_chain_adapter.py  # task_chain.json 结构 → 内部 NLIntent 适配层
 ├── llm_context.py         # LLM上下文构建器（Token感知 + 5 Skill注入 + 系统提示词）
 ├── skill_loader.py        # YAML skill 配置加载器
 ├── skill_context.py       # Skill 运行期上下文
@@ -85,24 +84,19 @@ server/agent/excel/
 ├── parser/                # 通用文件解析器（多模态→DocIntent）
 │   └── file_parser.py     # .md/.xlsx/.csv/.txt 解析
 │
-├── skills/                # Skill 配置文件 + 派生产物
-│   ├── column_short_form.yaml       # 列名缩写
-│   ├── sheet_aliases.yaml           # sheet 别名
+├── skills/                # Skill 配置 + 派生产物（详见 skills/README.md）
 │   ├── parser_config.yaml           # 解析器配置
+│   ├── sheet_aliases.yaml           # sheet 别名
+│   ├── column_short_form.yaml       # 列名缩写
 │   ├── index_builder_hints.yaml     # 索引构建提示
-│   ├── table_constraints.md         # 表约束
-│   ├── cross_table_chain_principles.md  # 跨表链原则
-│   ├── formula_agent.md             # 公式 agent
-│   ├── case_quest_npc_optimization.md   # NPC 优化案例
+│   ├── docs/              # 文档（复盘/原则/公式）
+│   ├── scripts/           # 工具脚本（derive_required_fields.py）
 │   ├── L1_derived/      # 自动派生（value_constraints/cascade_rules/column_aliases，.svnignore）
 │   ├── L2_runtime/      # 运行期产物（.runtime.json/.yaml，.svnignore）
 │   ├── L3_anti_patterns/ # 反模式
 │   └── _pending/        # 待定
 │
-├── evidence/              # 证据 JSONL（.svnignore）
-├── dialogs/               # 对话记录（.svnignore）
-├── dialog_examples/       # 对话示例（.svnignore）
-└── dialog_failures/       # 对话失败案例（.svnignore）
+└── core/                # 核心编排（含 dialogs/dialog_examples/dialog_failures/evidence 运行数据）
 ```
 
 > 注：顶层公共 API 通过 `__init__.py` 透传，`from agent.excel.<name> import X` 路径保持兼容。子目录划分：
@@ -113,6 +107,7 @@ server/agent/excel/
 > - `cli/` — CLI 入口+接口
 > - `core/` — agent + orchestrator + skill + 上下文构建等核心编排
 > - `pipeline/` `subagent/` `skills/` — 原有子目录
+> - 用户手写业务规则在项目根 `rules/`（填表规则 fill/ + 校验规则 validate/），与 skills 隔离
 
 ---
 

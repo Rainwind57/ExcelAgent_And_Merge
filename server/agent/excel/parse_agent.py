@@ -110,6 +110,12 @@ class ParseAgent:
         # 每次 parse 重置全段 locator_results 收集
         self._last_locator_results = []
         self._last_column_extraction = None
+        # §P1-2.1 Step1 全局 deadline：超时立即冻结当前产出 + 走 _splitter_baseline，
+        # 不再叠 LLM。默认 60s（env CODEMAKER_STEP1_DEADLINE_S 可调）。
+        import time as _time_p
+        import os as _os_p
+        _dl = int(_os_p.getenv("CODEMAKER_STEP1_DEADLINE_S", "60"))
+        self._step1_deadline = _time_p.monotonic() + _dl
         # §优化①：入口先分段（0 LLM）。segments 存到实例属性供 Step1 复用（消除
         # Step1 重复调 split_multi_intent 的冗余——同函数同 text 结果一致）。
         try:
@@ -165,7 +171,9 @@ class ParseAgent:
         §优化①：段间默认串行；CODEMAKER_PARSE_SEGMENT_CONCURRENCY=1 开并发。
         段级覆盖对账：某段 0 条 → 该段重跑一次（便宜），仍空则记 warning。
         """
-        concurrency = os.getenv("CODEMAKER_PARSE_SEGMENT_CONCURRENCY", "0") == "1"
+        # §优化①：段间默认并发（原默认串行,12 段 = 12×LLM RTT 串行等待,Step1 慢根因）。
+        # 设 CODEMAKER_PARSE_SEGMENT_CONCURRENCY=0 可显式退回串行。
+        concurrency = os.getenv("CODEMAKER_PARSE_SEGMENT_CONCURRENCY", "1") == "1"
 
         def _do_one(seg):
             seg_text = getattr(seg, "text", seg) if not isinstance(seg, str) else seg
@@ -218,14 +226,26 @@ class ParseAgent:
             return intents
 
         all_split: list = []
-        if concurrency and len(segs) >= 3:
+        if concurrency and len(segs) >= 2:
             from concurrent.futures import ThreadPoolExecutor
+            # §P1-2.1 deadline 检查：并发前若已超 Step1 deadline，冻结产出走 baseline
+            import time as _t_dl
+            _dl = getattr(self, "_step1_deadline", None)
+            if _dl is not None and _t_dl.monotonic() > _dl:
+                self._think(f"ParseAgent Step1 deadline 超时，冻结并发段路径走 baseline")
+                return []  # 调用方走 _splitter_baseline
             with ThreadPoolExecutor(
-                    max_workers=min(3, len(segs))) as ex:
+                    max_workers=min(5, len(segs))) as ex:
                 for r in ex.map(_do_one, segs):
                     all_split.extend(r)
         else:
+            import time as _t_dl2
+            _dl = getattr(self, "_step1_deadline", None)
             for seg in segs:
+                # §P1-2.1 每段前查 deadline，超时冻结剩余段
+                if _dl is not None and _t_dl2.monotonic() > _dl:
+                    self._think(f"ParseAgent Step1 deadline 超时，剩余 {len(segs)-segs.index(seg)} 段冻结")
+                    break
                 all_split.extend(_do_one(seg))
         if not all_split:
             self._think("ParseAgent 多段全产空,回退 splitter_baseline")
@@ -237,14 +257,110 @@ class ParseAgent:
             self._last_locator_results[0] if self._last_locator_results else None)
         self._think(
             f"ParseAgent 多段分解产出 {len(all_split)} 条 SplitIntent"
-            f"({len(segs)} 段,{'并发' if concurrency and len(segs) >= 3 else '串行'})")
+            f"({len(segs)} 段,{'并发' if concurrency and len(segs) >= 2 else '串行'})")
         return self._assemble(all_split, text, self._last_locator_result)
+
+    def _scrub_narrative_scalar(self, nl_intents: list) -> None:
+        """§P1 缺陷A 修复：灌值守卫 choke point。
+
+        所有 Step1 子路径（DecomposeAgent LLM / _splitter_baseline / CrossTableIntentSplitter）
+        产出的 NLIntent 在汇合点（_assemble / parse_baseline）统一过此闸。按列类型精准判：
+          - 数字/布尔标量列填入含中文（标点或汉字）且值
+            → 灌值（数字列不该含叙述）→ 清空该字段（置空待 Step2 补），不丢整条 intent
+          - 落在 str/描述/text 列 → 合法保留（活动描述/对话文本本就长）
+        列类型查 decompose_agent._col_type_for（已修缺陷B，正确比对 row1/row2 + 取冒号后类型）。
+        通用判据（列类型 + 值特征），不绑业务词/表/测例/长度阈——原 >30 字阈放过短碎片
+        （如「包也建一下，」7 字灌进 int 列），现按列类型+中文特征统一拦。
+        """
+        if not nl_intents:
+            return
+        _da = self._decompose_agent
+        # 中文字符范围（含标点/汉字），与 _coerce_field_simple 多值校验同源
+        import re as _re_ch
+        _cn_char_re = _re_ch.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]")
+        for it in nl_intents:
+            fields = (it.extras or {}).get("fields")
+            if not isinstance(fields, dict) or not fields:
+                continue
+            stem = getattr(it, "table_hint", "") or ""
+            sheet = getattr(it, "sheet_hint", "") or ""
+            for _fk in list(fields.keys()):
+                _fv = fields[_fk]
+                _fvs = str(_fv).strip() if _fv is not None else ""
+                if not _fvs:
+                    continue
+                # 占位符/纯数字/list/dict 合法放行
+                if (_fvs.startswith("<") and _fvs.endswith(">")) or _fvs == "<auto>":
+                    continue
+                _stripped = _fvs.replace(",", "").replace("，", "")
+                if _stripped.lstrip("-").isdigit():
+                    continue
+                try:
+                    float(_stripped)
+                    continue
+                except ValueError:
+                    pass
+                if _fvs.startswith("[") or _fvs.startswith("{"):
+                    continue
+                # §P0 数字索引键盲区修复：键为列号索引（int 或纯数字 str）=
+                # LLM 退化把列序号当键（fields 键约定为列名，纯数字绝非列名）。
+                # 此类键无法定位真实列 → _col_type_for 必返空 → 下方 scalar-num/
+                # bool 判定恒假 → 中文碎片放行灌库（reward 行 ={2:'...',42:'...'}
+                # 即此盲区）。通用拦截：数字索引键含中文叙述值 = 灌值污染，整键
+                # 删除（无可映射列，保留只会致 Step3 match 失败翻转整条 intent）。
+                _is_num_key = (isinstance(_fk, int)
+                               or (isinstance(_fk, str) and _fk.strip().isdigit()))
+                if _is_num_key and _cn_char_re.search(_fvs):
+                    del fields[_fk]
+                    try:
+                        self._think(
+                            f"灌值守卫：删除 {stem}/{sheet} 数字索引键[{_fk}]"
+                            f"（列号索引键含中文=LLM退化灌值,无可映射列,整键剔除）")
+                    except Exception:
+                        pass
+                    continue
+                _ct = _da._col_type_for(stem, sheet, str(_fk)) if _da else ""
+                _ctl = (_ct or "").lower()
+                _is_scalar_num = ("int" in _ctl or "long" in _ctl
+                                  or "float" in _ctl or "double" in _ctl
+                                  or "number" in _ctl or "decimal" in _ctl)
+                _is_scalar_bool = "bool" in _ctl
+                if (_is_scalar_num or _is_scalar_bool) and _cn_char_re.search(_fvs):
+                    # §枚举转码前置：int/bool 列填中文标签（如"节日"）先查 enum_resolver
+                    # 转数字码，命中则改写 fields 消除灌值，避免清空后 Step2 缺值。
+                    # 转码失败才清空（置空待 Step2 补），与原行为一致。
+                    _mapped = None
+                    try:
+                        from .core.enum_resolver import get_enum_resolver as _ger
+                        _er = _ger()
+                        _mapped = _er.resolve_label(stem, sheet, str(_fk), _fvs)
+                    except Exception:
+                        _mapped = None
+                    if _mapped is not None:
+                        fields[_fk] = _mapped
+                        try:
+                            self._think(f"灌值守卫：枚举转码 {stem}/{sheet} 列[{_fk}]"
+                                        f"「{_fvs}」→{_mapped}")
+                        except Exception:
+                            pass
+                    else:
+                        fields[_fk] = ""  # 清空灌值字段，置空待 Step2 补
+                        try:
+                            self._think(f"灌值守卫：清空 {stem}/{sheet} 列[{_fk}]"
+                                        f"（含中文值落在{_ctl}列，已置空待 Step2 补）")
+                        except Exception:
+                            pass
 
     def _assemble(self, split_intents: list, text: str,
                   locator_result: Optional[LocatorResult]) -> list[NLIntent]:
         """SplitIntent[] → NLIntent[] + produces 推断（公共尾部）。"""
         # §3.1 step 6a: SplitIntent → NLIntent 适配（SubTask 超集）
         nl_intents = [self._split_to_nl(si, text) for si in split_intents]
+        # §P1 缺陷A 修复：灌值守卫 choke point 化。_assemble 是 DecomposeAgent LLM 路径
+        # 的汇合点，所有 SplitIntent→NLIntent 在此统一过 _scrub_narrative_scalar 一道闸，
+        # 兜住 LLM 退化把长叙述灌进数字/布尔列的 intent（清空灌值字段，不丢整条）。
+        # 与 parse_baseline 的同方法配合，覆盖 Step1 全部子路径。
+        self._scrub_narrative_scalar(nl_intents)
         # §3.1 step 5: produces 推断（关系图驱动,原地补 produces_label/consumes 占位）
         try:
             infer_produces_consumes(nl_intents)
@@ -278,6 +394,10 @@ class ParseAgent:
                               ai_check_skipped=True)
             for si in splitter_intents
         ]
+        # §P1 缺陷A 修复：splitter_baseline 兜底产出的 NLIntent 也过 _scrub_narrative_scalar，
+        # 兜住零 LLM 旁路（_splitter_baseline/CrossTableIntentSplitter 不经 _to_split_intents）
+        # 的灌值 intent。与 _assemble 同方法，覆盖 Step1 全部子路径。
+        self._scrub_narrative_scalar(nl_intents)
         try:
             infer_produces_consumes(nl_intents)
         except Exception:

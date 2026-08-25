@@ -1,0 +1,2 @@
+{"ts": "2026-08-24T13:17:53+08:00", "session_id": "default", "table_stem": "exclusive_state", "sheet": "State", "intent_action": "add", "dry_run": false, "col": {}, "row": {}, "ok": true, "needs_confirm": false, "user_corrected": false, "corrected_to": null, "skill_enabled": true}
+{"ts": "2026-08-24T14:10:23+08:00", "session_id": "default", "table_stem": "exclusive_state", "sheet": "State", "intent_action": "add", "dry_run": false, "col": {}, "row": {}, "ok": true, "needs_confirm": false, "user_corrected": false, "corrected_to": null, "skill_enabled": true}
