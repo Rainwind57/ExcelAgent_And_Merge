@@ -221,7 +221,21 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
             scrollToBottom()
           }
         } else if (evt.type === 'thinking') {
-          curMsg().thinking_steps.push({ phase: evt.phase, detail: evt.detail })
+          // 结构化事件：phase 以 __json: 前缀标记，detail 是 JSON 字符串。
+          // 预解析到 ts.jsonKind/jsonData，模板按 kind 渲染专门卡片（如 intent_list
+          // 表格），而非折叠成单行文本。非该前缀的 thinking 走原文本行。
+          const _ph = evt.phase || ''
+          const _isJson = typeof _ph === 'string' && _ph.startsWith('__json:')
+          if (_isJson) {
+            let _parsed = null
+            try { _parsed = JSON.parse(evt.detail) } catch (e) { _parsed = null }
+            curMsg().thinking_steps.push({
+              phase: _ph, detail: evt.detail,
+              jsonKind: _ph.slice(7), jsonData: _parsed,
+            })
+          } else {
+            curMsg().thinking_steps.push({ phase: evt.phase, detail: evt.detail })
+          }
           await nextTick(); scrollToBottom()
         } else if (evt.type === 'tool') {
           curMsg().tool_calls.push({ name: evt.name || '', desc: evt.desc || '', ok: evt.ok !== false, cmd: evt.cmd || '', result: evt.result || '', show: false })
@@ -246,6 +260,8 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
           tm.askMode = null
           tm.askCollapsed = false  // 要求 C：提交后折叠
           tm.askUserReply = ''    // 要求 C：记录用户提交了什么
+          tm.askBatchFill = {}   // UX Pack: 批量 COL_NOT_FOUND 按行真实列名填值
+          tm.askBatchDelete = {} // UX Pack: 批量 COL_NOT_FOUND 按行勾选删除
           await nextTick(); scrollToBottom()
         }
       }
@@ -484,6 +500,48 @@ async function replyAskPk(agentMsg) {
   // 要求 C：折叠 + INFO 摘要
   agentMsg.askUserReply = `✓ 已采纳：${_replySummary}，继续配置中...`
   agentMsg.askCollapsed = true
+  try {
+    await fetch('/api/agent/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (e) {
+    // 静默
+  }
+}
+
+// 批量 COL_NOT_FOUND 询问:单 intent 多个对不上的列名 → 一张 ask card,
+// 按行单独填真实列名 / 勾选删 / 一键全部删除。
+async function replyAskColNotFoundBatch(agentMsg, opts = {}) {
+  if (agentMsg.askResolved) return
+  agentMsg.askResolved = true
+  agentMsg.askMode = 'batch_field'
+  const cols = []
+  let nDelete = 0
+  let nFill = 0
+  for (const bc of (agentMsg.ask?.batch_columns || [])) {
+    const _delete = opts.delete_all === true || !!agentMsg.askBatchDelete?.[bc.col]
+    let _fill = (agentMsg.askBatchFill?.[bc.col] || '').trim()
+    if (!_fill && !_delete && bc.suggested) {
+      _fill = bc.suggested  // 默认接收推荐（未触填或勾删除时自动用推荐）
+    }
+    if (_delete) nDelete++
+    else if (_fill) nFill++
+    cols.push({
+      col: bc.col,
+      fill_value: _delete ? '' : _fill,
+      delete: _delete,
+    })
+  }
+  agentMsg.askUserReply = `批量处理 ${cols.length} 列：${nFill} 改名、${nDelete} 删`
+  agentMsg.askCollapsed = true
+  const body = {
+    session_id: sessionId.value,
+    mode: 'batch_field',
+    columns: cols,
+    delete_all: opts.delete_all === true,
+  }
   try {
     await fetch('/api/agent/reply', {
       method: 'POST',
@@ -740,9 +798,29 @@ onMounted(() => {
               <span v-if="msg.thinking_live" class="think-live">进行中…</span>
             </div>
             <div v-if="msg.show_thinking" class="think-list">
-              <div v-for="(ts, i) in msg.thinking_steps" :key="'t' + i" class="think-line">
-                <span class="think-phase">{{ stepLabel(ts.phase) }}</span>
-                <span class="think-desc">{{ sanitizeDetail(ts.detail) }}</span>
+              <div v-for="(ts, i) in msg.thinking_steps" :key="'t' + i">
+                <!-- 结构化意图清单表格（Step1 解析结果，人工校验是否漏意图/错路由） -->
+                <div v-if="ts.jsonKind === 'intent_list' && ts.jsonData" class="think-intent-card">
+                  <div class="think-intent-title">📋 Step1 解析意图清单（{{ ts.jsonData.total }} 条）</div>
+                  <table class="think-intent-table">
+                    <thead>
+                      <tr><th>#</th><th>操作</th><th>表/Sheet</th><th>定位</th><th>关键信息</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(r, ri) in ts.jsonData.rows" :key="ri">
+                        <td class="ti-idx">{{ r.idx }}</td>
+                        <td class="ti-act">{{ r.action }}</td>
+                        <td class="ti-loc">{{ r.loc }}</td>
+                        <td class="ti-locate">{{ r.locate }}</td>
+                        <td class="ti-info">{{ r.info }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-else class="think-line">
+                  <span class="think-phase">{{ stepLabel(ts.phase) }}</span>
+                  <span class="think-desc">{{ sanitizeDetail(ts.detail) }}</span>
+                </div>
               </div>
               <div v-for="(s, i) in msg.steps" :key="'s' + i" class="think-line">
                 <span class="think-phase">{{ s.ok ? '✅' : '❌' }}</span>
@@ -975,7 +1053,7 @@ onMounted(() => {
             <!-- 要求 C：折叠态：一行 INFO 摘要（记录用户提交了什么） -->
             <div v-if="msg.askCollapsed" class="ask-collapsed-info">
               <span class="ask-collapsed-icon">✓</span>
-              <span class="ask-collapsed-text">{{ msg.askUserReply || '已提交，续跑中...' }}</span>
+              <span class="ask-collapsed-text">{{ msg.askUserReply || '已提交修正，继续执行...' }}</span>
             </div>
             <!-- 展开态：完整 ask 卡片 -->
             <template v-else>
@@ -985,37 +1063,70 @@ onMounted(() => {
               <!-- 要求 B：优先渲染 user_friendly 大白话，fallback root_cause -->
               <span v-if="msg.ask.user_friendly" class="ask-cause ask-cause--friendly">{{ msg.ask.user_friendly.reason }}</span>
               <span v-else class="ask-cause">原因：{{ msg.ask.root_cause }}</span>
+              <!-- 醒目三联：当前值 → 应填形态 → 建议值（仅当定位到具体列时） -->
+              <div v-if="msg.ask.failed_col && (msg.ask.current_val || msg.ask.expected_type || msg.ask.suggested_id != null)" class="ask-fix-summary">
+                <span v-if="msg.ask.current_val" class="afs-cur">当前值：「{{ msg.ask.current_val }}」</span>
+                <span v-if="msg.ask.expected_type" class="afs-arrow">→ 应填：{{ msg.ask.expected_type }}</span>
+                <span v-if="msg.ask.suggested_id != null" class="afs-sug">💡 建议：「{{ msg.ask.suggested_id }}」</span>
+              </div>
               <span v-if="msg.ask.attempted_strategies" class="ask-strats">已试：{{ msg.ask.attempted_strategies }}</span>
-              <span v-if="msg.ask.snip" class="ask-snip">原指令：「{{ msg.ask.snip }}」</span>
+              <span v-if="msg.ask.snip" class="ask-snip">指令原文：「{{ msg.ask.snip }}」</span>
             </div>
             <!-- 要求 B：user_friendly.action 优先渲染 -->
             <div class="ask-hint">{{ (msg.ask.user_friendly && msg.ask.user_friendly.action) || msg.ask.suggestion }}</div>
             <div v-if="msg.ask.example" class="ask-example">参考写法：{{ msg.ask.example }}</div>
             <template v-if="!msg.askResolved">
-              <!-- 取值不确定统一交互:建议ID + 接受/自定义输入（pk_conflict / id_suggest） -->
-              <template v-if="(msg.ask.mode_hint === 'pk_conflict' || msg.ask.mode_hint === 'id_suggest') && msg.ask.suggested_id != null">
+              <!-- 取值不确定统一交互:建议值 + 输入框（pk_conflict / id_suggest / value_input） -->
+              <template v-if="(msg.ask.mode_hint === 'pk_conflict' || msg.ask.mode_hint === 'id_suggest' || msg.ask.mode_hint === 'value_input') && msg.ask.suggested_id != null">
                 <div class="ask-pk-suggest">
-                  建议 ID：<b>{{ msg.ask.suggested_id }}</b>
-                  <input v-model="msg.askCustomId" type="number" class="ask-input ask-input--pk" :placeholder="`或输入其他 ID（默认 ${msg.ask.suggested_id}）`">
+                  建议值：<b>{{ msg.ask.suggested_id }}</b>
+                  <input v-model="msg.askCustomId" type="number" class="ask-input ask-input--pk" :placeholder="`或输入其他值（默认 ${msg.ask.suggested_id}）`">
                 </div>
                 <div class="ask-actions">
-                  <button class="confirm-btn confirm-yes" @click="replyAskPk(msg)">接受并续跑</button>
-                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过</button>
+                  <button class="confirm-btn confirm-yes" @click="replyAskPk(msg)">接受，继续</button>
+                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
+                </div>
+              </template>
+              <!-- 批量 COL_NOT_FOUND 询问:单 intent 多个列名对不上真实表头 -->
+              <template v-else-if="msg.ask.mode_hint === 'col_not_found_batch'">
+                <div class="ask-batch-rows">
+                  <div v-for="(bc, i) in msg.ask.batch_columns" :key="'cnf'+i" class="ask-batch-row">
+                    <div class="ask-batch-col">列[{{ bc.col }}]</div>
+                    <div v-if="bc.suggested" class="ask-batch-suggest">💡 推荐: {{ bc.suggested }}</div>
+                    <div v-else class="ask-batch-no-suggest">⚠️ 无相似真实列，建议勾选删除</div>
+                    <div class="ask-batch-controls">
+                      <input
+                        v-model="msg.askBatchFill[bc.col]"
+                        type="text"
+                        class="ask-input ask-input--batch"
+                        :placeholder="bc.suggested ? `填 ${bc.suggested}` : '可填真实列名'"
+                        :disabled="msg.askBatchDelete[bc.col] || false"
+                      >
+                      <label class="ask-batch-delete-label">
+                        <input type="checkbox" v-model="msg.askBatchDelete[bc.col]" class="ask-batch-delete-cb"> 删此列
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="ask-actions">
+                  <button class="confirm-btn confirm-yes" @click="replyAskColNotFoundBatch(msg, {})">提交修正</button>
+                  <button class="confirm-btn confirm-warn" @click="replyAskColNotFoundBatch(msg, { delete_all: true })">全部删除</button>
+                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
                 </div>
               </template>
               <!-- 其他失败:保留原文本填值 -->
               <template v-else>
-                <textarea v-model="msg.askReplyText" class="ask-input" placeholder="例：建筑类型填 5；数字/枚举列请填数字或编号，写完点提交续跑"></textarea>
+                <textarea v-model="msg.askReplyText" class="ask-input" placeholder="在此输入正确的值，如：5 或 100"></textarea>
                 <div class="ask-actions">
-                  <button class="confirm-btn confirm-yes" @click="replyAsk(msg, 'nl')">提交续跑</button>
-                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过</button>
+                  <button class="confirm-btn confirm-yes" @click="replyAsk(msg, 'nl')">提交修正</button>
+                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
                 </div>
               </template>
             </template>
             <template v-else>
               <div class="confirm-resolved">
-                <span v-if="msg.askMode === 'skip'">已跳过，记失败继续后续子任务。</span>
-                <span v-else>已提交，续跑中…</span>
+                <span v-if="msg.askMode === 'skip'">已跳过此项，继续后续任务。</span>
+                <span v-else>已提交修正，继续执行…</span>
               </div>
             </template>
             </template>
@@ -1029,7 +1140,7 @@ onMounted(() => {
               <span class="failure-type">{{ f.type }}</span>
               <span class="failure-cause">原因：{{ f.root_cause }}</span>
               <span v-if="f.attempted_strategies" class="failure-strats">已试：{{ f.attempted_strategies }}</span>
-              <span v-if="f.snip" class="failure-snip">原指令：「{{ f.snip }}」</span>
+              <span v-if="f.snip" class="failure-snip">指令原文：「{{ f.snip }}」</span>
               <span v-if="f.suggestion" class="failure-hint">建议：{{ f.suggestion }}</span>
               <span v-if="f.user_reply" class="failure-reply">用户回复：{{ f.user_reply }}</span>
             </div>
@@ -1375,7 +1486,13 @@ export default {
 .ask-collapsed-icon { font-weight: 600; }
 .ask-collapsed-text { color: var(--text-secondary); }
 /* 要求 B：user_friendly 大白话样式 */
-.ask-cause--friendly { color: var(--text-primary); font-weight: 500; }
+.ask-cause--friendly { color: var(--text-primary); font-weight: 600; font-size: 0.95rem; line-height: 1.4; }
+/* 醒目三联：当前值 → 应填形态 → 建议值，让用户一眼看清改哪个字段怎么改 */
+.ask-fix-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 8px; border-radius: 6px; background: rgba(220, 53, 69, 0.10); border-left: 3px solid var(--accent, #dc3545); font-size: 0.9rem; font-weight: 600; }
+.ask-fix-summary .afs-cur { color: var(--accent, #dc3545); }
+.ask-fix-summary .afs-arrow { color: var(--text-muted, #6b7280); font-weight: 400; }
+.ask-fix-summary .afs-exp { color: var(--text-primary, #1f2937); }
+.ask-fix-summary .afs-sug { color: var(--success, #198f54); font-weight: 700; background: rgba(25, 143, 84, 0.12); padding: 2px 6px; border-radius: 4px; }
 .ask-icon { color: var(--accent); font-weight: 600; margin-bottom: 6px; }
 .ask-detail { display: flex; flex-direction: column; gap: 2px; font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 6px; }
 .ask-loc { color: var(--accent); font-weight: 500; }
@@ -1389,6 +1506,19 @@ export default {
 .ask-pk-suggest { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; font-size: 0.9rem; }
 .ask-pk-suggest b { color: var(--primary, #2563eb); font-size: 1rem; }
 .ask-input--pk { flex: 1 1 160px; min-height: 0; padding: 6px 8px; }
+
+.ask-batch-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.ask-batch-row { padding: 6px 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg-input, rgba(255,255,255,0.04)); }
+.ask-batch-col { color: var(--accent); font-weight: 500; font-size: 0.9rem; }
+.ask-batch-suggest { color: var(--primary, #2563eb); font-size: 0.85rem; margin: 2px 0 4px; }
+.ask-batch-no-suggest { color: var(--text-muted); font-size: 0.82rem; margin: 2px 0 4px; }
+.ask-batch-controls { display: flex; align-items: center; gap: 8px; }
+.ask-input--batch { flex: 1 1 200px; min-height: 0; padding: 4px 8px; font-size: 0.88rem; }
+.ask-input--batch:disabled { opacity: 0.4; }
+.ask-batch-delete-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
+.ask-batch-delete-cb { margin: 0; }
+.confirm-warn { background: rgba(255, 165, 0, 0.85); color: #fff; }
+.confirm-warn:hover { background: rgba(255, 165, 0, 1); }
 
 .failures-card { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: rgba(220, 53, 69, 0.06); }
 .failures-icon { color: var(--accent); font-weight: 600; margin-bottom: 6px; }
@@ -1682,6 +1812,16 @@ export default {
 .think-line .think-phase { color: var(--accent); font-weight: 600; min-width: 40px; flex-shrink: 0; }
 .think-line .think-desc { color: var(--text-muted); word-break: break-all; }
 .think-line .think-desc b { color: var(--text-secondary); }
+/* Step1 意图清单表格：清晰对齐展示解析结果，便于人工校验漏意图/错路由 */
+.think-intent-card { margin: 6px 0; padding: 8px; border: 1px solid var(--info, #2563eb); border-radius: 6px; background: rgba(37, 99, 235, 0.06); }
+.think-intent-title { font-size: 0.85rem; font-weight: 600; color: var(--info, #2563eb); margin-bottom: 6px; }
+.think-intent-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; table-layout: fixed; }
+.think-intent-table th, .think-intent-table td { border: 1px solid var(--border, #e5e7eb); padding: 4px 6px; vertical-align: top; word-break: break-all; }
+.think-intent-table th { background: var(--bg-secondary, #f3f4f6); color: var(--text-secondary, #374151); font-weight: 600; text-align: left; }
+.think-intent-table td.ti-idx { text-align: center; width: 32px; }
+.think-intent-table td.ti-act { width: 56px; font-weight: 600; color: var(--primary, #2563eb); }
+.think-intent-table td.ti-loc { width: 22%; }
+.think-intent-table td.ti-locate { width: 22%; }
 .tool-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); overflow: hidden; font-size: 0.78rem; }
 .tool-card.tool-ok { border-left: 3px solid var(--success); }
 .tool-card.tool-fail { border-left: 3px solid var(--danger); }

@@ -1,0 +1,595 @@
+[
+  {
+    "_meta": {
+      "name": "新门派·太虚剑宗全套配置（中文策划口吻，4表 add + 门派神通树 + 灵根映射 + 天赋二层 + 邮件公告）",
+      "complexity": "高（school 目录4表联动 + 同 xlsx 双 sheet + 天赋层级父列引用 + 邮件2表）",
+      "note": "school.School→school_ability(SchoolAbility+SchoolAbilityLevel 同表双sheet)→school_spirit(SchoolSpirit 双行)→school_talent(SchoolTalent 三层+SchoolTalentLevel)→mail(MailTemplate+GlobalMail)。全部按真实 row2 列名：school_id/model_id/combat_model_id/school_ability_id[0]/school_type/qualifier/level/cost_num/upgrade_level/common_spell_id/spirit_buffs[0]/layer/column/parent_columns 等",
+      "expect_subtasks": 19,
+      "design_target": "exercises LocatorAgent 对 school/ 目录多文件分流 + 同 xlsx 多 sheet 精准落位 + 中文行业词（门派/神通/心法/灵根/天赋/心法升阶）对齐真实列名"
+    },
+    "input": "新增一个门派叫'太虚剑宗'，门派编号 9，门派类型 1，大世界模型 1027，战斗模型 1074，先配四个神通：第一个神通'太虚剑意'，描述'以虚御实，剑出无痕，每回合自动凝成太虚剑气，剑气越多，追斩伤害越高'，配两套心法，心法一叫'剑意·蓄'，描述'开局即得剑气，快速进入节奏'，心法二叫'剑意·绝'，描述'击杀敌方时额外获得剑气'；第二个神通'裂空斩'，描述'撕开空间，对单体打出三段斩击，每段威力递增'，心法一叫'裂空·碎'，描述'暴击概率逐段提升'，心法二叫'裂空·连'，描述'释放后不进入休息'；第三个神通'万剑归宗'，描述'驱使剑气齐射多个敌人，命中越多剑气越多'，心法一叫'归宗·雨'，描述'覆盖范围扩大'，心法二叫'归宗·化劲'，描述'暴击转化为稳定伤害'；第四个神通'无相护体'，描述'以无相罡气护身，受击时概率格挡并反击'，心法一叫'无相·觉'，描述'面对高速敌人格挡概率提升'，心法二叫'无相·传'，描述'释放时人宠共同护体'。这四个神通每级消耗灵石 0，一级升一级要人物 1 级，技能编号按顺序 901、902、903、904。再把神通和灵根绑定：太虚剑意绑金灵根给天赋 600001，裂空斩绑木灵根给天赋 600002，万剑归宗绑水灵根给天赋 600002，无相护体绑火灵根给天赋 600001。门派天赋盘配一个：天赋主键 9011，名字'破军'，功法描述'伤害提升20%'，图标'Icon_120_shentong_1.png'，门派 9，层级 1，所在列 1；它的下层天赋 9021，名字'贪狼'，功法描述'伤害提升30%'，图标'Icon_120_shentong_2.png'，门派 9，层级 2，所在列 1，上一层功法所在列填'1'。再补两条天赋等级：破军 1 级描述'伤害提升20%'被动 600003，破军 2 级描述'伤害提升40%'被动 600003。最后给新门派发一封开宗立派的全服邮件：邮件模板标题'太虚剑宗开宗立派'，内容'太虚剑宗今日开宗，广纳天下英才，共证剑道'，全服邮件 global_id 20，邮件类型 1，发送人'系统'，发送时间 2026-09-01 00:00:00，不带奖励。",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "add",
+        "produces": "new_school_id",
+        "row_content": {
+          "school": "<new_school_id>",
+          "name": "太虚剑宗",
+          "school_type": 1,
+          "model_id": 1027,
+          "combat_model_id": 1074,
+          "school_ability_id[0]": "<new_ability1_id>",
+          "school_ability_id[1]": "<new_ability2_id>",
+          "school_ability_id[2]": "<new_ability3_id>",
+          "school_ability_id[3]": "<new_ability4_id>"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability1_id",
+        "row_content": {
+          "school_ability_id": "<new_ability1_id>",
+          "name": "太虚剑意",
+          "desc": "以虚御实，剑出无痕，每回合自动凝成太虚剑气，剑气越多，追斩伤害越高",
+          "unlock_level": 1,
+          "mental_1_name": "剑意·蓄",
+          "mental_1_desc": "开局即得剑气，快速进入节奏",
+          "mental_2_name": "剑意·绝",
+          "mental_2_desc": "击杀敌方时额外获得剑气"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability1_level_id",
+        "row_content": {
+          "id": "<new_ability1_level_id>",
+          "school_ability_id": "<new_ability1_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 901
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability2_id",
+        "row_content": {
+          "school_ability_id": "<new_ability2_id>",
+          "name": "裂空斩",
+          "desc": "撕开空间，对单体打出三段斩击，每段威力递增",
+          "unlock_level": 1,
+          "mental_1_name": "裂空·碎",
+          "mental_1_desc": "暴击概率逐段提升",
+          "mental_2_name": "裂空·连",
+          "mental_2_desc": "释放后不进入休息"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability2_level_id",
+        "row_content": {
+          "id": "<new_ability2_level_id>",
+          "school_ability_id": "<new_ability2_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 902
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability3_id",
+        "row_content": {
+          "school_ability_id": "<new_ability3_id>",
+          "name": "万剑归宗",
+          "desc": "驱使剑气齐射多个敌人，命中越多剑气越多",
+          "unlock_level": 1,
+          "mental_1_name": "归宗·雨",
+          "mental_1_desc": "覆盖范围扩大",
+          "mental_2_name": "归宗·化劲",
+          "mental_2_desc": "暴击转化为稳定伤害"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability3_level_id",
+        "row_content": {
+          "id": "<new_ability3_level_id>",
+          "school_ability_id": "<new_ability3_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 903
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability4_id",
+        "row_content": {
+          "school_ability_id": "<new_ability4_id>",
+          "name": "无相护体",
+          "desc": "以无相罡气护身，受击时概率格挡并反击",
+          "unlock_level": 1,
+          "mental_1_name": "无相·觉",
+          "mental_1_desc": "面对高速敌人格挡概率提升",
+          "mental_2_name": "无相·传",
+          "mental_2_desc": "释放时人宠共同护体"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability4_level_id",
+        "row_content": {
+          "id": "<new_ability4_level_id>",
+          "school_ability_id": "<new_ability4_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 904
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability1_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 1,
+          "spirit_buffs[0]": 600001
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability2_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 2,
+          "spirit_buffs[0]": 600002
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability3_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 3,
+          "spirit_buffs[0]": 600002
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability4_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 4,
+          "spirit_buffs[0]": 600001
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "add",
+        "produces": "new_talent1_id",
+        "row_content": {
+          "id": "<new_talent1_id>",
+          "name": "破军",
+          "desc": "伤害提升20%",
+          "icon": "Icon_120_shentong_1.png",
+          "school_id": "<new_school_id>",
+          "layer": 1,
+          "column": 1
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "add",
+        "produces": "new_talent2_id",
+        "row_content": {
+          "id": "<new_talent2_id>",
+          "name": "贪狼",
+          "desc": "伤害提升30%",
+          "icon": "Icon_120_shentong_2.png",
+          "school_id": "<new_school_id>",
+          "layer": 2,
+          "column": 1,
+          "parent_columns": [1]
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalentLevel",
+        "operation": "add",
+        "produces": "new_talent_level1_id",
+        "row_content": {
+          "id": "<new_talent_level1_id>",
+          "desc": "伤害提升20%",
+          "talent_id": "<new_talent1_id>",
+          "level": 1,
+          "buff_id": 600003
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalentLevel",
+        "operation": "add",
+        "produces": "new_talent_level2_id",
+        "row_content": {
+          "id": "<new_talent_level2_id>",
+          "desc": "伤害提升40%",
+          "talent_id": "<new_talent1_id>",
+          "level": 2,
+          "buff_id": 600003
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "太虚剑宗开宗立派",
+          "content": "太虚剑宗今日开宗，广纳天下英才，共证剑道"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 20,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "系统",
+          "send_time": "2026-09-01 00:00:00",
+          "reward_id": 0
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "新江湖公告·月华庆典全服邮件（中文策划口吻，单意图两表联动）",
+      "complexity": "中（MailTemplate→GlobalMail 前向引用，纯中文描述，不带英文字段）",
+      "note": "mail.MailTemplate 自增模板 + GlobalMail 消费 template_id 前向引用；沿用既有 reward_id 10001",
+      "expect_subtasks": 2,
+      "design_target": "exercises ParseAgent 对纯中文意图提取 template 与 global 两级 + produces_inference 对 template_id 前向引用闭环"
+    },
+    "input": "月华庆典要开了，帮我发一封全服邮件。邮件模板：标题'月华庆典开启'，内容'月华照耀九州，庆典开启，登录即可领取好礼，祝少侠武运昌隆'。全服邮件编号 21，类型 1，发送人'系统'，发送时间 2026-10-01 00:00:00，附上奖励包 10001。",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "月华庆典开启",
+          "content": "月华照耀九州，庆典开启，登录即可领取好礼，祝少侠武运昌隆"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 21,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "系统",
+          "send_time": "2026-10-01 00:00:00",
+          "reward_id": 10001
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "游戏内提示文案·日常提醒批量新增（中文策划口吻，tips 单表批量 add）",
+      "complexity": "低（tips 单表同模式批量，策划文档关键词 vs 程序引用 key 双轨映射）",
+      "note": "tips sheet 首列分段/文档对照关键字，value/key/type 三字段；key 唯一、同系统聚合",
+      "expect_subtasks": 4,
+      "design_target": "exercises DecomposeAgent 对'同模式批量'的合并识别 + LocatorAgent 定位 tips 表；同时训练中文'策划文档关键字 vs 程序引用 key'双轨理解"
+    },
+    "input": "帮我把几条游戏内提示文案配一下。第一条：'使用药品获得经验已达到今日上限'，程序引用 key 用 TID_TIPS_POTION_EXP_LIMITED_2，类型 tips；第二条：'灵兽升级已达到当前等级上限'，key 用 TID_TIPS_PET_EXP_LIMIT_TIPS_2，类型 tips；第三条：'帮派资金不足，无法升级该建筑'，key 用 TID_TIPS_GUILD_FUNDS_LACK，类型 tips；第四条：'当前网络波动，请稍后重试'，key 用 TID_TIPS_NETWORK_RETRY，类型 tips。",
+    "expected_answer": [
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "使用药品获得经验已达到今日上限",
+          "key": "TID_TIPS_POTION_EXP_LIMITED_2",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "灵兽升级已达到当前等级上限",
+          "key": "TID_TIPS_PET_EXP_LIMIT_TIPS_2",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "帮派资金不足，无法升级该建筑",
+          "key": "TID_TIPS_GUILD_FUNDS_LACK",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "当前网络波动，请稍后重试",
+          "key": "TID_TIPS_NETWORK_RETRY",
+          "type": "tips"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "限时活动·九霄论剑（中文策划口吻，activity 单表 add + 日期段）",
+      "complexity": "低（activity 单表，中文起止时间字段）",
+      "note": "activity.Activity 行：id/activity_type/name/desc/start_time/end_time；时间用中文明文",
+      "expect_subtasks": 1,
+      "design_target": "exercises ParseAgent 从中文自然语言提取活动 id/名称/描述/起止时间并落到 Activity 表"
+    },
+    "input": "开一个限时活动叫'九霄论剑'，活动编号 3060，活动描述'九霄之上，群雄论剑，活动期间内每日可参与一次剑试'，开始时间 2026-11-01 00:00:00，结束时间 2026-11-15 23:59:59。",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 3060,
+          "activity_type": 1,
+          "name": "九霄论剑",
+          "desc": "九霄之上，群雄论剑，活动期间内每日可参与一次剑试",
+          "start_time": "2026-11-01 00:00:00",
+          "end_time": "2026-11-15 23:59:59"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "门派神通微调·两个门派各改一处（中文策划口吻，school 2表 modify + row_key 定位）",
+      "complexity": "中（school.School modify + school_ability.SchoolAbility modify，行定位靠中文名称）",
+      "note": "既有数据：school 1='剑修' 战斗模型 1074，school 2='风法' 战斗模型 1067；神通 1001='御剑'、2001='驭风'；仅字段级 modify，校验 row_key 定位与字段值覆盖",
+      "expect_subtasks": 2,
+      "design_target": "exercises LocatorAgent 对'中文名称→行'的定位（需在 pristine 中匹配 name 列）+ ExecuteAgent 字段级 modify；训练中文行业词'战斗模型''神通描述'到列名映射"
+    },
+    "input": "剑修的战斗模型换成 1075，然后把'驭风'这条神通的描述改成'每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势'。",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "modify",
+        "row_key": {
+          "school": 1
+        },
+        "row_content": {
+          "combat_model_id": 1075
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "modify",
+        "row_key": {
+          "school_ability_id": 2001
+        },
+        "row_content": {
+          "desc": "每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "新建门派归属神兽·青鸾（中文策划口吻，跨3表 add + 门派神通 + 灵根 + 全服邮件）",
+      "complexity": "高（school.School + school_ability×2 + school_spirit×2 + mail×2）",
+      "note": "新门派编号 10，类型 2（法术），大世界模型 1028、战斗模型 1068；两神通技能 1001/1002；灵根映射木/水；邮件2表",
+      "expect_subtasks": 9,
+      "design_target": "exercises DecomposeAgent 对'新建门派'这一高频策划意图的 schema-driven 拆表；无英文字段，全靠中文语义"
+    },
+    "input": "新建一个法术门派叫'青鸾阁'，门派编号 10，门派类型 2，大世界模型 1028，战斗模型 1068。给它配两个神通：第一个叫'鸾鸣九霄'，描述'召唤青鸾鸣啼，对多个敌人造成法术伤害并削弱其速度'，心法一叫'鸾鸣·迅'，描述'额外降低敌人速度'，心法二叫'鸾鸣·愈'，描述'命中时回复自身真元'，每级消耗灵石 0，一级升一级要人物 1 级，技能编号 1001；第二个叫'青羽庇护'，描述'以青鸾羽翼庇护全队，持续回复气血'，心法一叫'青羽·固'，描述'护盾额外抵挡法术伤害'，心法二叫'青羽·扬'，描述'治疗目标时额外清除减益'，每级消耗灵石 0，一级升一级要人物 1 级，技能编号 1002。灵根映射：鸾鸣九霄绑木灵根给天赋 600002，青羽庇护绑水灵根给天赋 600001。最后发一封全服邮件：标题'青鸾阁新门派上线'，内容'青鸾阁今日现世，修炼法术的少侠可前往拜师'，全服邮件编号 22，类型 1，发送人'系统'，发送时间 2026-12-01 00:00:00，不带奖励。",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "add",
+        "produces": "new_school_id",
+        "row_content": {
+          "school": "<new_school_id>",
+          "name": "青鸾阁",
+          "school_type": 2,
+          "model_id": 1028,
+          "combat_model_id": 1068,
+          "school_ability_id[0]": "<new_ability1_id>",
+          "school_ability_id[1]": "<new_ability2_id>"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability1_id",
+        "row_content": {
+          "school_ability_id": "<new_ability1_id>",
+          "name": "鸾鸣九霄",
+          "desc": "召唤青鸾鸣啼，对多个敌人造成法术伤害并削弱其速度",
+          "unlock_level": 1,
+          "mental_1_name": "鸾鸣·迅",
+          "mental_1_desc": "额外降低敌人速度",
+          "mental_2_name": "鸾鸣·愈",
+          "mental_2_desc": "命中时回复自身真元"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability1_level_id",
+        "row_content": {
+          "id": "<new_ability1_level_id>",
+          "school_ability_id": "<new_ability1_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 1001
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability2_id",
+        "row_content": {
+          "school_ability_id": "<new_ability2_id>",
+          "name": "青羽庇护",
+          "desc": "以青鸾羽翼庇护全队，持续回复气血",
+          "unlock_level": 1,
+          "mental_1_name": "青羽·固",
+          "mental_1_desc": "护盾额外抵挡法术伤害",
+          "mental_2_name": "青羽·扬",
+          "mental_2_desc": "治疗目标时额外清除减益"
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability2_level_id",
+        "row_content": {
+          "id": "<new_ability2_level_id>",
+          "school_ability_id": "<new_ability2_id>",
+          "level": 0,
+          "cost_num": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 1002
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability1_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 2,
+          "spirit_buffs[0]": 600002
+        }
+      },
+      {
+        "table": "school\\school_spirit.xlsx",
+        "sheet": "SchoolSpirit",
+        "operation": "add",
+        "row_content": {
+          "school_ability_id": "<new_ability2_id>",
+          "school_id": "<new_school_id>",
+          "spirit_id": 3,
+          "spirit_buffs[0]": 600001
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "青鸾阁新门派上线",
+          "content": "青鸾阁今日现世，修炼法术的少侠可前往拜师"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 22,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "系统",
+          "send_time": "2026-12-01 00:00:00",
+          "reward_id": 0
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "门派神通删除与名称修正（中文策划口吻，school 2表 delete+modify 混合）",
+      "complexity": "中（school_ability.SchoolAbility delete + school.School modify）",
+      "note": "删除测试神通 8010（'TEST'，其等级行 id=8010000）；剑修名称从'剑修'改成'剑宗'。modify 的 row_key 用 school=1",
+      "expect_subtasks": 3,
+      "design_target": "exercises ExecuteAgent delete 级联（神通主表 + 等级子表）+ modify 行定位；训练'下架''改名'等中文动词"
+    },
+    "input": "把测试神通'TEST'下架掉，它对应的等级数据也一起清掉；另外把门派'剑修'的名字改成'剑宗'。",
+    "expected_answer": [
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "delete",
+        "row_key": {
+          "school_ability_id": 8010
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "delete",
+        "row_key": {
+          "id": 8010000
+        }
+      },
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "modify",
+        "row_key": {
+          "school": 1
+        },
+        "row_content": {
+          "name": "剑宗"
+        }
+      }
+    ]
+  }
+]

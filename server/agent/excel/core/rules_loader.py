@@ -86,6 +86,13 @@ def _deep_merge(base: dict, extra: dict) -> dict:
     return base
 
 
+def _norm_col(c: str) -> str:
+    """列名归一：去类型后缀(:int 等)/空白/小写。供 primary_key 列名比对。"""
+    if not c:
+        return ""
+    return str(c).split(":")[0].strip().lower()
+
+
 # ── 填表规则（Step1 prompt 注入）────────────────────────────────
 
 def _load_fill_files() -> dict[str, str]:
@@ -210,7 +217,7 @@ def get_required_fields_overlay() -> dict:
 
 
 def get_enum_overlay() -> dict:
-    """校验规则中 enum:[...] 列 → {stem: {sheet: {col_lower: set(values)}}}。
+    """校验规则中 enum:[...] 列 -> {stem: {sheet: {col_lower: set(values)}}}。
 
     供 validate_field_layer 的 enum_set 白名单检查用（val 必须 ∈ set）。
     """
@@ -233,6 +240,40 @@ def get_enum_overlay() -> dict:
     return out
 
 
+def get_primary_key_overlay() -> dict:
+    """校验规则中 sheet 级 ``primary_key`` 声明 -> {stem: {sheet: [col1, col2, ...]}}。
+
+    支持复合主键：在 sheet 级（与 ``columns`` 同层）声明 ``primary_key: [列1, 列2]``，
+    Step2/Step3 的唯一性/冲突检测按"组合值"判定而非单列，避免误把同一实体的
+    多个等级行（如 fabao.FabaoLevel 的 (法宝id, 法宝等级)）判成 PK 冲突。
+
+    返回结构：
+        {stem_lower: {sheet_name: ["col1", "col2"]}}
+    - 列名保留 yaml 原写法（中文表头/英文规范名），由消费者按 _norm_col 比对。
+    - 单元素 ``primary_key: [id]`` 等价于旧列级 ``unique: true``，两条路收敛。
+    - ``*`` 通配（``"*"`` 表/sheet）照常解析，由消费者按通配规则应用。
+    """
+    rules = load_validate_rules()
+    out: dict = {}
+    for stem, sheets in rules.items():
+        if not isinstance(sheets, dict):
+            continue
+        for sheet, cfg in sheets.items():
+            if not isinstance(cfg, dict):
+                continue
+            pk = cfg.get("primary_key")
+            if isinstance(pk, str):
+                pk = [pk]
+            if not isinstance(pk, (list, tuple)) or not pk:
+                continue
+            # 去空/去类型后缀但保留大小写（消费者统一 _norm_col 比对）
+            cols = [str(c).split(":")[0].strip() for c in pk
+                    if c is not None and str(c).strip()]
+            if cols:
+                out.setdefault(str(stem).lower(), {})[str(sheet)] = cols
+    return out
+
+
 def reset_cache() -> None:
     """丢弃缓存（规则文件热更新后调用）。"""
     global _VALIDATE_CACHE, _FILL_CACHE
@@ -241,10 +282,12 @@ def reset_cache() -> None:
 
 
 __all__ = [
+    "_norm_col",
     "load_fill_rules",
     "load_validate_rules",
     "get_value_constraints_overlay",
     "get_required_fields_overlay",
     "get_enum_overlay",
+    "get_primary_key_overlay",
     "reset_cache",
 ]

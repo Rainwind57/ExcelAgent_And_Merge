@@ -1,0 +1,89 @@
+"""补充 item 行17/20 + reward 冲突，凑够 15+ 冲突。
+
+分支值相对 trunk 基准真实差异化（名称列语义替换，非 dev1_i17 占位符）。
+"""
+import subprocess
+from pathlib import Path
+from openpyxl import load_workbook
+
+WC = Path(__file__).resolve().parent.parent / "svn" / "demo_svn" / "wc"
+DEV1 = WC / "branches" / "dev1"
+DEV2 = WC / "branches" / "dev2"
+TRUNK = WC / "trunk"
+# 原始种子 trunk（永不被脚本污染）：读 base 必须从这里取，否则多次 seed 叠加后缀
+SEED_TRUNK = Path(__file__).resolve().parent.parent / "_seed_data" / "trunk"
+
+
+def _name_variant(base_val, branch: str) -> str:
+    """名称列(string)相对 base 的语义替换：换成语义相似但真实不同的词，非后缀占位符。"""
+    _SEMANTIC = {
+        ("云砂晶", "dev1"): "云晶砂", ("云砂晶", "dev2"): "流云砂", ("云砂晶", "trunk"): "云母砂", ("云砂晶", "subdev_1"): "晶砂",
+        ("测试奖励1", "dev1"): "试炼奖励一", ("测试奖励1", "dev2"): "历练奖励壹", ("测试奖励1", "trunk"): "挑战奖励甲",
+        ("测试奖励2", "dev1"): "试炼奖励二", ("测试奖励2", "dev2"): "历练奖励贰", ("测试奖励2", "trunk"): "挑战奖励乙",
+        ("测试奖励3", "dev1"): "试炼奖励三", ("测试奖励3", "dev2"): "历练奖励叁", ("测试奖励3", "trunk"): "挑战奖励丙",
+        ("测试奖励4", "dev1"): "试炼奖励四", ("测试奖励4", "dev2"): "历练奖励肆", ("测试奖励4", "trunk"): "挑战奖励丁",
+        ("测试奖励5", "dev1"): "试炼奖励五", ("测试奖励5", "dev2"): "历练奖励伍", ("测试奖励5", "trunk"): "挑战奖励戊",
+        ("境界1药物", "dev1"): "筑基灵药", ("境界1药物", "dev2"): "练气妙药", ("境界1药物", "trunk"): "凝气灵液",
+        ("境界2药物", "dev1"): "金丹妙药", ("境界2药物", "dev2"): "元婴灵丹", ("境界2药物", "trunk"): "化神神药",
+        ("境界3药物", "dev1"): "大乘仙丹", ("境界3药物", "dev2"): "渡劫灵药", ("境界3药物", "trunk"): "飞升神丹",
+    }
+    sv = str(base_val).strip() if base_val is not None else ""
+    key = (sv, branch)
+    if key in _SEMANTIC:
+        return _SEMANTIC[key]
+    suffix = {"dev1": "·精", "dev2": "·极", "trunk": "·改", "subdev_1": "·异"}.get(branch, "·改")
+    return sv + suffix
+
+
+def _cell(xlsx: Path, sheet: str, row: int, col: int):
+    wb = load_workbook(xlsx, read_only=True)
+    if sheet not in wb.sheetnames:
+        wb.close(); return None
+    v = wb[sheet].cell(row, col).value
+    wb.close()
+    return v
+
+
+def _set_commit(path: Path, sheet: str, edits: list, wc: Path, msg: str):
+    wb = load_workbook(path)
+    ws = wb[sheet]
+    n = 0
+    for r, c, v in edits:
+        if ws.cell(r, c).value != v:
+            ws.cell(r, c).value = v
+            n += 1
+    if n:
+        wb.save(path)
+        subprocess.run(["svn", "commit", "-m", msg, str(wc)],
+                       capture_output=True, text=True, encoding="utf-8")
+        print(f"  {msg} ({n} cells)")
+    else:
+        print(f"  skip {msg} (no change)")
+    wb.close()
+
+
+# base = 种子 trunk 同名表
+item_base = SEED_TRUNK / "item" / "item.xlsx"
+# absorb: dev1/dev2 item 行17/20 名称相对基准语义替换
+_set_commit(DEV1 / "item" / "item.xlsx", "ItemBase",
+           [(17, 2, _name_variant(_cell(item_base, "ItemBase", 17, 2), "dev1")),
+            (20, 2, _name_variant(_cell(item_base, "ItemBase", 20, 2), "dev1"))], DEV1, "dev1 item r17/20")
+_set_commit(DEV2 / "item" / "item.xlsx", "ItemBase",
+           [(17, 2, _name_variant(_cell(item_base, "ItemBase", 17, 2), "dev2")),
+            (20, 2, _name_variant(_cell(item_base, "ItemBase", 20, 2), "dev2"))], DEV2, "dev2 item r17/20")
+
+# reward 双方改行5/7 name（相对 trunk reward 基准语义替换）
+rw1 = DEV1 / "reward.xlsx"
+rw2 = DEV2 / "reward.xlsx"
+rw_base = SEED_TRUNK / "reward.xlsx"
+if rw1.exists() and rw2.exists() and rw_base.exists():
+    wb = load_workbook(rw1)
+    sn = wb.sheetnames[0] if wb.sheetnames else None
+    wb.close()
+    if sn:
+        _set_commit(rw1, sn, [(5, 2, _name_variant(_cell(rw_base, sn, 5, 2), "dev1")),
+                              (7, 2, _name_variant(_cell(rw_base, sn, 7, 2), "dev1"))], DEV1, "dev1 reward 冲突")
+        _set_commit(rw2, sn, [(5, 2, _name_variant(_cell(rw_base, sn, 5, 2), "dev2")),
+                              (7, 2, _name_variant(_cell(rw_base, sn, 7, 2), "dev2"))], DEV2, "dev2 reward 冲突")
+
+print("done")

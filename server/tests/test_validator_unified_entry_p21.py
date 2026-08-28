@@ -26,6 +26,7 @@ def _make_validator():
     v.parser = None  # validate() 不需 parser（仅 _validate_forward_refs_llm 需,默认 off）
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     v._thinking_sink = None  # add_thinking 检测 None 跳过（base.py:85）
     return v
 
@@ -153,9 +154,11 @@ class TestValidateWithSchemaGetterUnifiedP21:
 
 class TestTwoEntriesShareFieldLayerP21:
     def test_validate_and_validate_two_layer_same_col_not_found(self):
-        """同一 intent + schema → validate() 与 validate_two_layer() 都检出 col_not_found。
+        """同一 intent + schema → validate() 检出 col_not_found；validate_two_layer()
+        在检出后自动解决（无 cb 时幻觉列删），故 tips 不再残留该 tip。
 
-        P21 核心目标：消除「同输入不同路径结论不同」。
+        P21 核心目标：消除「同输入不同路径结论不同」——两入口共享同一字段层检测，
+        validate_two_layer 是 validate 的超集（检测 + 解决）。
         """
         v = _make_validator()
         it = _intent(fields={"魔法值": 999})
@@ -166,10 +169,9 @@ class TestTwoEntriesShareFieldLayerP21:
         # validate_two_layer()
         r_two_layer = v.validate_two_layer([it], schema_getter=sg)
 
-        # 两入口都检出 col_not_found 魔法值
+        # validate() 检出 col_not_found 魔法值
         v_issues = [i for i in r_validate["issues"] if "魔法值" in i]
-        tl_tips = [t for t in r_two_layer["tips"]
-                   if t.get("issue_type") == IssueType.COL_NOT_FOUND.value
-                   and t.get("col") == "魔法值"]
         assert len(v_issues) >= 1, "validate() 应检出（P21 字段层）"
-        assert len(tl_tips) >= 1, "validate_two_layer() 应检出（原字段层）"
+        # validate_two_layer() 自动解决（无 cb → 幻觉列删）
+        assert "魔法值" not in it.extras["fields"], \
+            "validate_two_layer() 应自动解决（删除幻觉列魔法值）"

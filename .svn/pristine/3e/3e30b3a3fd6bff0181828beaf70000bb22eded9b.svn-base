@@ -1,0 +1,142 @@
+# 合并引导（merge guidance）性能优化诊断方案
+
+> 范围：`server/routers/merge_branch.py` + `server/engine/` + `merge/`。
+> 目标：解释「前端点击后加载分支 ~10s」「两分支比对慢」的根因，给出分优先级的优化方案（含改动点 / 预期收益 / 风险 / 验证手段）。
+> 本文仅诊断与方案，不含代码改动。
+
+---
+
+## 1. 现状与耗时拆解
+
+### 1.1 链路
+- 前端合并引导主入口在 `server/routers/merge_branch.py`（前缀 `/api/merge/branch`）。
+- 分支内容已在本地 SVN 工作副本（`merge/svn/demo_svn/wc/...`），**引导路径本身不做 checkout**。「加载分支」≈ 读取该分支下所有 `.xlsx` + 取 SVN rev 元信息 + 导出 base(LCA)。
+- 比对为 3-way：base(LCA) + source + target。
+
+### 1.2 关键端点
+| 端点 | file:line | 作用 |
+|---|---|---|
+| GET `/dirs` | merge_branch.py:299 | 列分支目录下拉，`_DIRS_CACHE` 30s；**每个目录 rglob + `_collect_table_keys`** |
+| GET `/log` | merge_branch.py:541 | `svn log -l 200 --xml`，`_LOG_CACHE` 30s |
+| GET `/tables` | merge_branch.py:585 | src/tgt 共有表名（两侧 rglob） |
+| POST `/preview-base` | merge_branch.py:364 | 算 src/tgt HEAD + LCA base rev；两 `svn log` 并行 |
+| POST `/compare` | merge_branch.py:1123 | `asyncio.to_thread(branch_compare)`，同步阻塞 |
+| POST `/compare/async` | merge_branch.py:1179 | 入队 + `threading.Thread`，返回 task_id |
+| GET `/compare/progress/{id}` | merge_branch.py:1209 | SSE 进度 |
+
+### 1.3 10s「加载分支」耗时构成（按贡献排序）
+1. **SVN base 整目录导出** — `_prepare_base_export`（merge_branch.py:791）→ `_svn_export_dir`（:773/785）`subprocess svn export -r {rev}` 整个 base 目录到 tmp，timeout 120s。**单项最大成本**，每次 compare 都重导。
+2. **`svn log` / `svn info` 子进程 每次是一个新进程 spawn。即便有 `_prefill_rev_cache`（:174，一次 `svn info -R`）与 `_rev_cache`（:126，per-request），冷启动仍有 1 个 `svn info -R` + 1~2 个 `svn log --stop-on-copy`（`_copyfrom_chain_svn` :205 / `_lca_svn` :238）。
+3. **`/dirs` 深度遍历** — `_collect_table_keys`（:603）对**每个**分支目录 `rglob("*.xlsx")`；`ca/dev/` 下 380 个分支目录时，冷 `/dirs` 一次 rglob 海量目录 → 秒级。
+4. **按文件 `_svn_cat`** — `_compare_one_table`（:1329）在指定 rev 且无 base 导出时，逐文件 `subprocess svn cat`（:678/685）。
+5. **Windows 进程 spawn 开销** — 每次 `svn ...` ≈ 100ms+ 起步，多个串行累加。
+
+### 1.4 比对慢耗时构成
+1. **零缓存重解析** — `read_group_files`（engine/parser.py:170）/ `read_excel`（:26）/ `read_formulas_and_comments`（:123）**无 `@lru_cache`、无磁盘缓存** → 每次 compare 全量重读重解析所有 xlsx，大表（如 10w 行）主导耗时。
+2. **无变更跳过发生在读取之后** — `_build_group`（merge_stages.py:197）先 `read_group_files`（:220）再判 rev 全等跳过（:235）→ **浪费一次全量 IO+解析**。
+3. **公式/批注 sheet 退回 Python 三重循环** — `compare_sheet`（engine/compare.py:423）有公式/批注即走 fallback（:622+），向量化路径（`_compare_sheet_vectorized`:228）快 10~50× 但被跳过。
+4. **小文件 openpyxl 公式/批注多遍解析** — ≤500KB 文件仍走 openpyxl 公式/批注加载（≥500KB 已跳过，parser.py:13/138）。
+5. **ProcessPool 在 Windows 上的 spawn 成本** — `parallel_map_tables`（engine/parallel_compare.py:47）≥4 表用 ProcessPool，Windows spawn 重导入模块树；4 表阈值可能给小合并反而增加开销。
+6. **大结果序列化** — `model_dump_json`（merge_branch.py:1143）大表 ~0.3s（已用 sparse 行缓解）。
+
+### 1.5 已有缓存（不要重复造）
+| 缓存 | file:line | 类型 |
+|---|---|---|
+| `_DIRS_CACHE` | merge_branch.py:276 | 内存，TTL 30s |
+| `_LOG_CACHE` | merge_branch.py:282 | 内存 dict，TTL 30s |
+| `_rev_cache` | merge_branch.py:126 | 内存，per-request |
+| `bp_cache`（branch point） | merge_branch.py:1061 | 内存，per-request |
+| `_col_letter` lru | compare.py:15 | 内存 512 |
+| `_prefetch_inflight` / `_AI_PREFETCH_POOL` | merge_branch.py:53/49 | AI 建议去重/预热 |
+
+**关键缺口：无任何磁盘级结果缓存；read/compare 函数无 `@lru_cache`。**
+
+---
+
+## 2. 根因小结
+
+- **10s 主因**：SVN `export` 整 base 目录（每次 compare 重导）+ 多次 `svn` 子进程 spawn + `/dirs` 对全部分支深度 rglob。
+- **比对慢主因**：零缓存 → 每次全量重解析 + 重 diff；无变更跳过排在读取之后；公式 sheet 退回 Python 三重循环。
+
+SVN 全程走 `subprocess.run(["svn", ...])`，**无 pysvn**（全仓 grep 无命中），故每次 svn 调用都付进程创建成本。
+
+---
+
+## 3. 优化方案（按优先级）
+
+### P0-1　无变更跳过提前到读取之前（快赢，低风险）
+- **改动点**：`merge_stages.py:220` 与 `:235`。把「src/tgt/base 三者 rev 全等 → 跳过」判断上移到 `read_group_files` 之前。rev 可由 `_prefill_rev_cache`（`svn info -R`，不读文件）获得，无需先解析 xlsx。
+- **预期收益**：无变更 sheet/表 整段跳过 read+parse+diff，大表秒级节省。
+- **风险**：低。SVN rev 粒度上 rev 相等即内容相同。需确认 capped/补丁表 rev 语义一致。
+- **验证**：对一张已知无变更的大表 compare，前后计时；应直接跳过。
+
+### P0-2　`_collect_table_keys` 按 (dir, mtime) 缓存（快赢，低风险）
+- **改动点**：`merge_branch.py:603`。`/dirs`、`/tables`、每次 compare 都调它 rglob。改为以 `(dir_path, dir_mtime)` 为 key 的缓存，mtime 变化才失效。
+- **预期收益**：重复列出/比对同分支免去重复 rglob；`/dirs` 冷启动（380 目录）显著加速。
+- **风险**：低。目录 mtime 不覆盖子文件变化时需用 max(子文件 mtime) 或 svn rev 作 key（更稳）。
+- **验证**：`/dirs` 冷/热两次计时。
+
+### P0-3　base 导出按 base_rev 磁盘复用（针对 10s 主因，中风险）
+- **改动点**：`merge_branch.py:791` `_prepare_base_export`。导出目录以 `base_rev` 为 key 缓存到磁盘 tmp；同 rev 直接复用，不再每次 `svn export` 整目录。
+- **预期收益**：消除每次 compare 的整目录 export（10s 中最大单项）。
+- **风险**：中。SVN rev 不可变 → 缓存安全；需 tmp 目录清理与容量控制；注意 export 目录路径稳定性。
+- **验证**：同 base_rev 连续两次 compare，第二次应跳过 export。
+
+### P1-1　解析结果磁盘缓存（中等收益，中风险）
+- **改动点**：`engine/parser.py:26`/`:123`。以 `(file_path, svn_rev)` 为 key 缓存 `read_excel`/`read_formulas_and_comments`（pickle/msgpack）。rev 不可变 → 安全。
+- **预期收益**：重复比对同表同 rev 免解析，大表（10w 行）秒级节省。
+- **风险**：中。内存上升需 LRU 上限 + 磁盘淘汰；公式/批注缓存随 rev 失效。
+- **验证**：同 rev 两次 compare，第二次解析段耗时趋零。
+
+### P1-2　compare 结果缓存（中等收益，中风险）
+- **改动点**：`engine/compare.py:423`。以 `(src_rev, tgt_rev, base_rev, table, sheet)` 为 key 缓存 `compare_sheet` 结果。三元组确定 → 结果确定。
+- **预期收益**：重复比对同三元组免 diff 计算。
+- **风险**：中。结果对象大，需磁盘+LRU；前端 `resolveCell` 改的是 `compareResp`（不触发后端重算），后端缓存仍有效；`/apply` 后 rev 变化自然失效。需确认人工改值不污染缓存键。
+- **验证**：同三元组二次 compare 计时段趋零。
+
+### P1-3　公式/批注 sheet 走向量化路径（公式表多时收益大，中高风险）
+- **改动点**：`engine/compare.py:423`/`:228`/`:622+`。当前有公式/批注即整体退回 Python 三重循环。改为：值用 numpy 向量化 diff，公式/批注单独 sparse 补差，不整体回退。
+- **预期收益**：公式 sheet 从三重循环 → 向量化，10~50×。
+- **风险**：中高。需保证 diff 语义一致，必补单测。
+- **验证**：公式表 compare 前后计时 + 结果 diff 一致性比对。
+
+### P1-4　并行/批量 svn cat（低中风险）
+- **改动点**：`merge_branch.py:1329`/`:678`。按 rev 取文件用 `_svn_cat`（每文件一进程）时，改批量 `svn cat` 或 `svn export -r` 整批，减少进程数。
+- **预期收益**：减少 Windows 进程 spawn 开销。
+- **风险**：低中。
+
+### P2-1　pysvn 替代 subprocess（高收益但高风险，需先评估可用性）
+- **改动点**：重写 svn 访问层（`_svn_export_dir`/`_svn_cat`/`_dir_head`/`_rev_info_cached`/`_prefill_rev_cache`/`/log`/`svn_history.py` 全部）。
+- **预期收益**：消除每次 svn 调用进程 spawn（Windows ~100ms/call），尤其 `_prefill_rev_cache`/log/export。
+- **风险**：高。pysvn 在 Windows 编译/安装麻烦，引入依赖；需重写访问层。**先做可用性 PoC，不可行则放弃。**
+
+### P2-2　持久化 + 流式响应（大合并收益，高风险）
+- **改动点**：大表 compare 结果磁盘持久化，前端 SSE 流式分批返回，减少 `model_dump_json` 一次性 0.3s 与大 payload传输。
+- **风险**：高，改前后端协议。
+
+---
+
+## 4. 不建议再动的点（已优化）
+- `python-calamine`（Rust）已是快路径；openpyxl 仅公式/批注且 ≥500KB 已跳过（parser.py:13/138）。
+- ProcessPool ≥4 表、ThreadPool per-sheet、sparse Phase A（compare.py:657）、`_col_letter` lru、`rev_cache`/`bp_cache`/`_DIRS_CACHE`/`_LOG_CACHE` 已有。
+- 向量化 numpy 路径已实现，仅触发条件受限（P1-3 放宽触发即可，不必重写）。
+
+---
+
+## 5. 建议落地顺序
+1. **P0-1** 无变更跳过提前 — 最快见效、风险最低，先做。
+2. **P0-3** base export 按 rev 磁盘复用 — 直击 10s 主因。
+3. **P0-2** `_collect_table_keys` 缓存 — 解决 `/dirs` 冷启动。
+4. **P1-1** 解析结果磁盘缓存 — 重复比对同 rev 表显著加速。
+5. **P1-3** 公式 sheet 向量化 — 公式表多时收益最大。
+6. **P1-2** compare 结果缓存。
+7. P2 仅在 P达标时评估（pysvn 需先 PoC）。
+
+---
+
+## 6. 验证手段（先量化再优化）
+- 在 `branch_compare`（merge_branch.py:1025）入口与各阶段（`_prepare_base_export`、`_prefill_rev_cache`、`read_group_files`、`_build_group`、`compare_sheet`、`model_dump_json`）加 `time.perf_counter()` 计时日志，跑一次真实合并，定位实际占比，避免凭猜改。
+- 对 `/dirs`、`/preview-base`、`/compare/async` 分别计时，区分「10s 是哪一个端点」。
+- 用 `cProfile` 围绕 `branch_compare` 采样，确认 CPU 是否落在 openpyxl/Python 循环/SVN subprocess。
+
+> 结论：10s 的最大杠杆是 **base export 按 rev 复用 + `/dirs` 深度 rglob 缓存**；比对慢的最大杠杆是 **解析/diff 结果缓存 + 无变更跳过提前 + 公式 sheet 向量化**。P0 三项即可显著缩短，且风险可控。

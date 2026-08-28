@@ -155,9 +155,16 @@ def _is_type_cell(v) -> bool:
     # name:type 形式（冒号分隔，左侧为标识符，右侧为类型名）
     if ":" in s:
         name, _, type_part = s.partition(":")
-        return bool(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name.strip())) and bool(
-            re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_\[\], ]*", type_part.strip())
-        )
+        name = name.strip()
+        type_part = type_part.strip()
+        # 左侧 name 允许中英文标识符（如 灵兽id:int、ability_id:int、dan_id:int）。
+        # 原 _IDENT_RE 仅 ASCII，把 perf 表/中文前缀类型行（灵兽id:int）误判为数据行，
+        # 导致 data_start_row 错标为类型行行号（2 而非 3）。
+        name_ok = bool(name) and bool(
+            re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name)
+            or re.fullmatch(r"[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*", name))
+        type_ok = bool(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_\[\], ]*", type_part))
+        return name_ok and type_ok
     # 纯类型名：仅匹配已知原始类型词，避免 attack/gold/defense 等数据值误判
     _PRIMITIVE_TYPES = {
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",

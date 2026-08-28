@@ -190,6 +190,49 @@ def _existing_values_from_rows(headers, rows) -> dict:
     return existing
 
 
+def _composite_existing_from_rows(headers, rows, pk_norm_cols: list) -> set:
+    """从 rows 算复合主键组合值集合（§复合键 ④ 组合唯一性用）。
+
+    pk_norm_cols: 复合键列名的小写归一名列表（如 ['法宝id', '法宝等级']）。
+    返回 { (v1, v2, ...) } 每行 PK 列值的 str 元组集合（仅含行内 PK 列全非空者）。
+    单元素列集合时仍返回（语义即单列，供统一接口）。
+    """
+    if not rows or not headers or not pk_norm_cols:
+        return set()
+    # 列名归一小写 -> 列索引
+    idx_of = {}
+    for i, h in enumerate(headers):
+        if h is None:
+            continue
+        nl = (str(h) or "").split(":")[0].strip().lower()
+        if nl and nl not in idx_of:
+            idx_of[nl] = i
+    pick_idx = []
+    for pc in pk_norm_cols:
+        if not pc:
+            continue
+        idx = idx_of.get(pc.lower()) if isinstance(pc, str) else idx_of.get(pc)
+        if idx is None:
+            return set()  # 任一 PK 列不在表头 → 无法算组合，返空让上层放行
+        pick_idx.append(idx)
+    if len(pick_idx) < 2:
+        return set()
+    out = set()
+    for row in rows:
+        combo = []
+        ok = True
+        for idx in pick_idx:
+            v = row[idx] if idx < len(row) else None
+            sv = str(v).strip() if v is not None else ""
+            if not sv:
+                ok = False
+                break
+            combo.append(sv)
+        if ok:
+            out.add(tuple(combo))
+    return out
+
+
 def _read_existing_values(cli, path, sheet, headers) -> dict:
     """读表数据 + 算每列已有值集合（§4 ④唯一性用）。
 
@@ -221,12 +264,21 @@ def _rows_to_dicts(headers, rows) -> list:
     return out
 
 
-def build_data_getter(agent, intents: list = None):
+def build_data_getter(agent, intents: list = None, sheet_resolver=None):
     """构造 data_getter 供 validate_field_layer 用（§2.2 schema_bundle 精细化）。
 
     data_getter(intent) -> dict {
-        path, stem, sheet, cli, existing_values, result_rows
+        path, stem, sheet, cli, existing_values, result_rows,
+        pk_cols, composite_existing, vc, enum_set
     }
+
+    sheet_resolver: 可选 callable(path, intent) -> str，供 sheet_hint 空时统一
+        解析目标 sheet。不传则回退 _resolve_sheet(agent, stem)（旧路径，与 Step3
+        不一致——多 sheet 表会落到首 sheet）。传入与 Step3 同源的 _resolve_sheet
+        可保 Step2/Step3 sheet 判定一致，根治"校验读错 sheet → PK 漏检"。
+
+    pk_cols/composite_existing: §复合主键注入。data_getter 读 rules overlay 的
+        primary_key，按列名算目标 sheet 的组合值集合，供 validator 组合唯一性检测。
 
     复用 agent.cli + _stem_to_path + read_sheet + read_header。
     vc/enum_set 由 validate_field_layer 内部纯函数读,或调用方额外注入。
@@ -234,26 +286,46 @@ def build_data_getter(agent, intents: list = None):
     Args:
         agent: TableAgent 实例（提供 cli + path 解析）
         intents: 预留（批量预取优化,现状按需 lazy）
+        sheet_resolver: 见上，统一 sheet 解析入口
 
     Returns:
         data_getter callable
     """
     cli = getattr(agent, "cli", None)
+    # 预载 rules 的 primary_key overlay（{stem_lower: {sheet: [cols]}}）
+    try:
+        from .core.rules_loader import get_primary_key_overlay, _norm_col
+        _pk_overlay = get_primary_key_overlay() or {}
+    except Exception:
+        _pk_overlay = {}
+        _norm_col = lambda c: (str(c or "").split(":")[0].strip().lower())  # noqa: E731
 
     def _data_getter(intent):
         stem = getattr(intent, "table_hint", "") or ""
         sheet = getattr(intent, "sheet_hint", "") or ""
-        # sheet 回退：sheet_hint 空时经 TableResolver 解析（4-step ParseAgent
-        # 产 intent 有时只填 table_hint），否则 existing_values 恒空 → 核心4 PK
-        # 检测漏检 → 冲突落 Step3 半成品路径。
+        # sheet 回退：sheet_hint 空时统一走与 Step3 同源的 _resolve_sheet(path,intent)
+        # （若调用方传 sheet_resolver），否则回退 resolver 首业务 sheet（旧路径，
+        # 与 Step3 不一致——多 sheet 表会错读导致 PK 漏检）。
         if not sheet and stem:
             sheet = _resolve_sheet(agent, stem)
         path = _stem_to_path(agent, stem)
         # path 回退：_stem_to_path 漏时也经 resolver 取 path
         if path is None and stem:
             path = _resolve_path(agent, stem)
+        # §sheet 一致性：sheet_hint 空且调用方注入 sheet_resolver → 走与 Step3 同源
+        # 的 _resolve_sheet(path, intent)，保证校验与执行判同一 sheet。
+        if (not getattr(intent, "sheet_hint", None)) and path is not None \
+                and callable(sheet_resolver):
+            try:
+                _rs = sheet_resolver(path, intent)
+                if _rs:
+                    sheet = _rs
+            except Exception:
+                logger.debug("sheet_resolver 失败 stem=%s", stem, exc_info=True)
         existing_values = {}
         result_rows = []
+        headers = []
+        rows = []
         if cli is not None and path is not None and sheet:
             try:
                 read_header = getattr(cli, "read_header", None)
@@ -335,10 +407,33 @@ def build_data_getter(agent, intents: list = None):
         except Exception:
             logger.debug("rules enum overlay 加载失败 stem=%s sheet=%s",
                          stem, sheet, exc_info=True)
+        # §复合主键：取本表本 sheet 的 PK 列（rules primary_key 声明优先），
+        # 算目标 sheet 的组合值集合，供 validator 组合唯一性检测。
+        pk_cols: list = []
+        if stem and sheet:
+            _stem_l = stem.lower()
+            if _stem_l in _pk_overlay:
+                sheets_map = _pk_overlay[_stem_l]
+                if isinstance(sheets_map, dict):
+                    pk_cols = sheets_map.get(sheet) or sheets_map.get(
+                        next((s for s in sheets_map
+                              if s and s.lower() == sheet.lower()), None), []) or []
+                    if not pk_cols and "*" in sheets_map:
+                        pk_cols = sheets_map.get("*") or []
+        composite_existing = set()
+        if pk_cols and len(pk_cols) >= 2 and headers and result_rows:
+            try:
+                composite_existing = _composite_existing_from_rows(
+                    headers, rows, [_norm_col(c) for c in pk_cols if c])
+            except Exception:
+                logger.debug("composite_existing 算失败 stem=%s sheet=%s",
+                             stem, sheet, exc_info=True)
         return {
             "path": path, "stem": stem, "sheet": sheet, "cli": cli,
             "existing_values": existing_values,
             "result_rows": result_rows,
+            "pk_cols": pk_cols,
+            "composite_existing": composite_existing,
             "vc": vc,
             "enum_set": enum_set,
         }
@@ -348,4 +443,5 @@ def build_data_getter(agent, intents: list = None):
 
 __all__ = ["build_data_getter", "_stem_to_path",
            "_resolve_sheet", "_resolve_path",
-           "_read_existing_values", "_rows_to_dicts"]
+           "_read_existing_values", "_rows_to_dicts",
+           "_existing_values_from_rows", "_composite_existing_from_rows"]

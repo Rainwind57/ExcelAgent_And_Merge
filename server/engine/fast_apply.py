@@ -129,7 +129,8 @@ def _replace_cell(row: _xet.Element, target: _xet.Element, col0: int, value: Any
     old_r = target.get("r") or ""
     m = re.match(r"[A-Z]+", old_r)
     letter = m.group() if m else _col_letter(col0)
-    newc = _make_cell(letter, value, style=target.get("s"))
+    row_num = re.sub(r"^\D+", "", old_r)
+    newc = _make_cell(letter + row_num, value, style=target.get("s"))
     cells = list(row)
     pos = cells.index(target)
     row.remove(target)

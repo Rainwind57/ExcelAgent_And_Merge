@@ -25,6 +25,7 @@ def _make_validator():
     v._parser = None
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     return v
 
 
@@ -195,4 +196,123 @@ class TestDedupPlaceholderNormalizationO20e:
         n = v._dedup_intents(intents)
         assert n == 0  # id=1 vs id=2 真实差异 → 不去重
         assert len(intents) == 2
+
+
+class TestInterPkDupPack2:
+    """Pack 2：批内同表同 sheet 同 PK 列同值但 fields 不同（含 name 冲突）的去重。
+
+    实证 bench 样例：reward_id=100608 复用 3 次（首通/冰封首通/冰封里程碑 不同
+    name），item_id=29012 复用 3 次（冰魄碎片/之戒 name 冲突）→ Step3 first 写
+    入，rest 撞 pk_conflict 入 failures 噪音。改前移 Step2 处理。
+    """
+
+    def _make_reward_it(self, name, pk=100608, action="add"):
+        return NLIntent(action=action, table_hint="reward", sheet_hint="Reward",
+                        raw=name, extras={"fields": {"reward_id": pk, "name": name}})
+
+    def _make_data_getter(self, existing_pks=None):
+        if existing_pks is None:
+            existing_pks = {"100001", "100002", "100003"}
+        return lambda it: {"existing_values": {"reward_id": existing_pks},
+                           "stem": getattr(it, "table_hint", ""),
+                           "sheet": getattr(it, "sheet_hint", "")}
+
+    def _make_validator_with_cache(self):
+        v = _make_validator()
+        v._pk_cols_cache = {"reward": {"reward_id"}, "item": {"item_id"}}
+        return v
+
+    def test_three_same_pk_snowball_increment(self):
+        """同 PK 3 个不同 name → first 保持 100608，2/3 雪球递增 100609/100610，name 保留。"""
+        v = self._make_validator_with_cache()
+        intents = [self._make_reward_it("首通奖励包"),
+                   self._make_reward_it("冰封首通"),
+                   self._make_reward_it("冰封里程碑")]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(),
+            schema_getter=None)
+        assert n == 2
+        pks = [it.extras["fields"]["reward_id"] for it in intents]
+        names = [it.extras["fields"]["name"] for it in intents]
+        assert pks == [100608, 100609, 100610]
+        assert names == ["首通奖励包", "冰封首通", "冰封里程碑"]
+
+    def test_no_pk_cache_uses_schema_getter(self):
+        """_pk_cols_cache 空 → fallback schema_getter 表头含 id 列定位 PK。"""
+        v = _make_validator()  # _pk_cols_cache=None → _load_pk_cols_cache 可能为空
+        v._pk_cols_cache = {}  # 显式空 → 不 fallback load
+        intents = [self._make_reward_it("first"),
+                   self._make_reward_it("second")]
+        schema_getter = lambda it: (
+            ["reward_id", "reward_name", "reward_value"], ["int", "string", "int"]
+            if getattr(it, "table_hint", "").lower() == "reward"
+            else ([], []))
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter({"100001"}),
+            schema_getter=schema_getter)
+        assert n == 1
+        assert intents[0].extras["fields"]["reward_id"] == 100608
+        assert intents[1].extras["fields"]["reward_id"] == 100609
+
+    def test_no_callback_skip_for_non_numeric_pk(self):
+        """无 cb + first PK 非数字 → _next_n=None → mark skipped（无可建议改号）。"""
+        v = self._make_validator_with_cache()
+        intents = [
+            NLIntent(action="add", table_hint="reward", sheet_hint="Reward",
+                     raw="first", extras={"fields": {"reward_id": "FROZEN_PACK",
+                                                     "name": "first"}}),
+            NLIntent(action="add", table_hint="reward", sheet_hint="Reward",
+                     raw="second", extras={"fields": {"reward_id": "FROZEN_PACK",
+                                                      "name": "second"}}),
+        ]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(set()),
+            schema_getter=None)
+        assert n == 1
+        assert intents[0].extras["fields"]["reward_id"] == "FROZEN_PACK"
+        assert getattr(intents[1].validation, "skipped", False) is True
+
+    def test_callback_ask_accept_suggest_changes_pk(self):
+        """有 _ask_callback → 走 _ask_pk_conflict ask；accept_suggest=True 自动改号。"""
+        v = self._make_validator_with_cache()
+        v._ask_callback = lambda q: {"mode": "field", "accept_suggest": True}
+        intents = [self._make_reward_it("first"),
+                   self._make_reward_it("second")]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(),
+            schema_getter=None)
+        assert n == 1
+        assert intents[0].extras["fields"]["reward_id"] == 100608
+        assert intents[1].extras["fields"]["reward_id"] == 100609
+
+    def test_callback_skip_marks_skipped(self):
+        """用户 mode=skip → mark_intent_skipped 阻断 Step3 写盘。"""
+        v = self._make_validator_with_cache()
+        v._ask_callback = lambda q: {"mode": "skip"}
+        intents = [self._make_reward_it("first"),
+                   self._make_reward_it("second")]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(),
+            schema_getter=None)
+        assert n == 1
+        assert getattr(intents[1].validation, "skipped", False) is True
+
+    def test_single_pk_dup_intra_batch_no_op(self):
+        """组内只有 1 个成员（无重复）→ noop 返回 0。"""
+        v = self._make_validator_with_cache()
+        intents = [self._make_reward_it("solo")]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(), schema_getter=None)
+        assert n == 0
+
+    def test_different_pks_not_grouped(self):
+        """同表同 sheet 但 PK 值不同 → 不分组（无 inter_pk_dup 触发）。"""
+        v = self._make_validator_with_cache()
+        intents = [self._make_reward_it("a", pk=100001),
+                   self._make_reward_it("b", pk=100002)]
+        n = v._dedup_inter_pk_dup(
+            intents, data_getter=self._make_data_getter(), schema_getter=None)
+        assert n == 0
+        assert intents[0].extras["fields"]["reward_id"] == 100001
+        assert intents[1].extras["fields"]["reward_id"] == 100002
 

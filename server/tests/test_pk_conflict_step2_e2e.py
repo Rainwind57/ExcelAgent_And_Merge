@@ -45,6 +45,7 @@ def _make_validator():
     v._parser = None
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     return v
 
 
@@ -124,7 +125,7 @@ class TestPkConflictStep2E2E:
         assert out["ok"] is False
 
     def test_no_callback_non_blocking(self, monkeypatch):
-        """无 callback(非交互场景) → 要求 A:标 skipped 阻断,不卡死也不写半成品。"""
+        """无 callback(非交互场景) → 自动改号为下一可用 ID，ok=True 不卡死。"""
         monkeypatch.setattr(
             "agent.excel.core.operation_orchestrator.OperationOrchestrator._topo_order",
             staticmethod(lambda intents: list(range(len(intents)))), raising=False)
@@ -134,9 +135,9 @@ class TestPkConflictStep2E2E:
         ev = {"reward_id": {99001, 100}, "名称": set()}
         dg = _data_getter(ev)
         out = v.validate_two_layer([it], schema_getter=sg, data_getter=dg)
-        # 要求 A：无 cb → 标 skipped 阻断（ok=False），不再 ok=True 恒非阻断
-        assert out["ok"] is False
-        assert it.extras["fields"]["reward_id"] == 99001  # 不改
+        # 无 cb → 自动改号兜底（不卡死），PK 改为下一可用 ID
+        assert out["ok"] is True
+        assert it.extras["fields"]["reward_id"] == 99002  # 自动改号
 
     def test_proactive_scan_when_field_map_misses(self, monkeypatch):
         """field_map 漏检(intent fields 键不含表头列名) → 主动扫兜底查占用。"""

@@ -30,6 +30,7 @@ def _make_validator(llm_verdict=""):
     v.parser = SimpleNamespace()  # truthy,通过 `if not self.parser` guard
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     # mock _llm_judge_forward_ref 返固定 verdict + 记录调用
     calls: list[tuple] = []
     def _judge(to_stem, field, value):

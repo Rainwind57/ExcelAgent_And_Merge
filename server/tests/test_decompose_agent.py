@@ -423,7 +423,8 @@ def test_single_table_no_cross():
     # 单表:只查不改
     lr = la.locate("查询灵兽饕餮")
     assert not lr.is_cross_table, f"单表查询不应跨表: cross={lr.is_cross_table}"
-    assert len(lr.candidates) <= 1, f"单表应 ≤1 候选: {len(lr.candidates)}"
+    _rule = [c for c in lr.candidates if getattr(c, "level", "") != "column_extract"]
+    assert len(_rule) <= 1, f"单表规则候选应 ≤1（参考候选不计）: {len(_rule)}"
     print("PASS single_table_no_cross: 单表查询不误触发跨表链")
 
 

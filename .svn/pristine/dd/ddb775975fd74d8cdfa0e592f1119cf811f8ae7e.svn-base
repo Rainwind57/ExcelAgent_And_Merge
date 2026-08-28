@@ -1,0 +1,84 @@
+"""TableAgent._do_append 主键占用校验测试。
+
+验证：新增行主键（第一列）若已被占用 → 阻止写入并提示更换；未占用 → 正常追加。
+"""
+from __future__ import annotations
+import sys
+import os
+import types
+import tempfile
+import shutil
+from pathlib import Path
+from openpyxl import Workbook
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.cli_interface import StubCodeMakerCLI
+from agent.agent import TableAgent, AgentResult
+
+results = []
+
+
+def check(name, cond, detail=""):
+    results.append((name, cond))
+    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  [{detail}]" if detail and not cond else ""))
+
+
+tmp = tempfile.mkdtemp()
+try:
+    ws = Path(tmp)
+    cli = StubCodeMakerCLI(workspace=ws, header_row=1, data_start_row=5)
+
+    # 建表：表头行1，数据行5起，预置 id=5
+    wb = Workbook()
+    s = wb.active
+    s.title = "Sheet1"
+    s.cell(1, 1, "技能id")
+    s.cell(1, 2, "名称")
+    s.cell(5, 1, 5)
+    s.cell(5, 2, "a")
+    p = ws / "test.xlsx"
+    wb.save(p)
+
+    # 用 SimpleNamespace 持有 cli，绑定 _do_append 及其依赖的写后处理方法
+    # （_auto_sort_after_write 仅依赖 self.cli；_refresh_index_after_write 依赖 self.live_index）
+    agent = types.SimpleNamespace(cli=cli, live_index=False)
+    do_append = TableAgent._do_append.__get__(agent)
+    agent._auto_sort_after_write = TableAgent._auto_sort_after_write.__get__(agent)
+    agent._refresh_index_after_write = TableAgent._refresh_index_after_write.__get__(agent)
+    agent._verify_write_back = TableAgent._verify_write_back.__get__(agent)
+    agent._allocate_pk = TableAgent._allocate_pk.__get__(agent)
+    agent._is_misplaced_pk = TableAgent._is_misplaced_pk.__get__(agent)
+    agent._check_missing_required_after_add = TableAgent._check_missing_required_after_add.__get__(agent)
+
+    # T1: 新增 id=5（已占用）→ 拦截
+    res1 = AgentResult(ok=True, intent=None)
+    do_append(p, "Sheet1", {1: 5, 2: "b"}, res1)
+    check("T1 占用拦截", not res1.ok, res1.message)
+    check("T1 提示含已存在", "已存在" in res1.message, res1.message)
+
+    # T2: 新增 id=6（未占用）→ 成功
+    res2 = AgentResult(ok=True, intent=None)
+    do_append(p, "Sheet1", {1: 6, 2: "c"}, res2)
+    check("T2 新增成功", res2.ok, res2.message)
+    check("T2 表体含列名+值", bool(res2.result_rows)
+          and any(r["col_name"] == "技能id" and r["new_value"] == 6 for r in res2.result_rows),
+          str(res2.result_rows))
+
+    # T3: 再次新增 id=6（刚追加，现占用）→ 拦截
+    res3 = AgentResult(ok=True, intent=None)
+    do_append(p, "Sheet1", {1: 6, 2: "d"}, res3)
+    check("T3 二次占用拦截", not res3.ok, res3.message)
+
+    # T4: 未提供主键（values 无 col=1）→ 不拦截，正常追加
+    res4 = AgentResult(ok=True, intent=None)
+    do_append(p, "Sheet1", {2: "e"}, res4)
+    check("T4 无主键不拦截", res4.ok, res4.message)
+
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+if __name__ == "__main__":
+    passed = sum(1 for _, c in results if c)
+    print(f"\n{passed}/{len(results)} passed")
+    sys.exit(0 if passed == len(results) else 1)

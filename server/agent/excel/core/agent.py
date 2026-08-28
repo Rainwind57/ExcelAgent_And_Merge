@@ -2434,6 +2434,47 @@ class TableAgent:
         except Exception:
             return True, ""
 
+    # 中文枚举列缓存：(stem, sheet, col) -> bool，进程内不变（表结构静态）
+    _cn_enum_col_cache: dict = {}
+
+    def _is_cn_enum_column(self, stem: str, sheet: str, col_name: str) -> bool:
+        """int 列标注但现有数据存中文 → 中文枚举列（如 activity_type:int 实际存
+        「春节活动」）。此类列中文值合法，不应报「无法转 int」。"""
+        key = (stem, sheet, str(col_name).split(":")[0].strip())
+        if key in self._cn_enum_col_cache:
+            return self._cn_enum_col_cache[key]
+        result = False
+        try:
+            if not key[0] or not key[1] or not key[2] or self.cli is None:
+                return False
+            path = None
+            for _t in (self.cli.list_tables() if hasattr(self.cli, "list_tables") else []):
+                if getattr(_t, "stem", None) == stem or str(_t).endswith(f"/{stem}.xlsx") or str(_t).endswith(f"\\{stem}.xlsx"):
+                    path = getattr(_t, "path", _t)
+                    break
+            if path is None:
+                return False
+            headers = self.cli.read_header(path, sheet)
+            rows = self.cli.read_sheet(path, sheet)
+            idx = None
+            for i, h in enumerate(headers):
+                if h and str(h).split(":")[0].strip() == key[2]:
+                    idx = i
+                    break
+            if idx is None:
+                return False
+            import re as _re_cn
+            for row in (rows or []):
+                if idx < len(row):
+                    v = row[idx]
+                    if v is not None and _re_cn.search(r"[\u4e00-\u9fff]", str(v)):
+                        result = True
+                        break
+        except Exception:
+            result = False
+        self._cn_enum_col_cache[key] = result
+        return result
+
     def _coerce_value(self, col_type: str, value, stem: str = "", sheet: str = "", col_name: str = ""):
         """类型强制转换：按列类型把值转为对应 Python 类型，不满足类型约束则阻止写入。
 
@@ -2461,6 +2502,10 @@ class TableAgent:
             return None, f"列[{col_name}]标 <auto>（输入未提及，留空待补）", None
         if sv.startswith("<") and sv.endswith(">") and len(sv) >= 3:
             return None, f"列[{col_name}]占位符 {sv} 未替换，跳过该列", None
+        # 空值（灌值守卫清空/枚举转码失败置空）→ 留空不写该列，不报错。
+        # 原空串落到 int() 抛 ValueError → 报「值''无法转为整数」假失败。
+        if sv == "":
+            return None, None, None
         if value is None or not col_type:
             return value, None, None
         ct = col_type.lower().strip()
@@ -2496,6 +2541,10 @@ class TableAgent:
                     enum_val = er.resolve_label(stem, sheet, col_name, sv)
                     if enum_val is not None:
                         return enum_val, None, None
+                    # §中文枚举列放行：int 列标注但现有数据存中文 → 中文值合法，
+                    # 直接写入原值（activity_type:int 实际存「春节活动」）。
+                    if self._is_cn_enum_column(stem, sheet, col_name):
+                        return value, None, None
                     # D10: LLM 辅助枚举发现（resolve 未命中 → LLM 推断 + register pending）
                     # §P0-4 零LLM gate：Step3 (execute_no_llm=True) 禁止发 LLM，
                     # 枚举推断交回 Step2 处理（Step2 应已拦 TYPE_MISMATCH + ask 用户）。
@@ -3202,12 +3251,104 @@ class TableAgent:
                 + (f" [歧义候选{len(row_match.alternatives)}个]" if row_match.ambiguous else ""))
         self._fill_row_evidence(res, row_match, intent.locator_value or "",
                                 path, sheet, loc_match.index)
-        # 删除是不可逆操作：LLM 仲裁后仍存在歧义时拒绝静默执行，要求用户明确指定
+        # 删除是不可逆操作：LLM 仲裁后仍存在歧义时不能静默删任一行。改为 needs_confirm
+        # 暂停：列出全部候选行（row_evidence.alternatives 已含 summary 供前端渲染候选卡片），
+        # confirm_token 编码全部候选行号，确认=删除全部匹配行（契合「删除…名称为 X 的行」
+        # 的语义=删除所有匹配行）；用户若只删部分，可单独发「删除 {stem} 第N行」走
+        # _apply_row_override。原直接判 failure 不给选择 → activity 春节活动命中行11/12
+        # 却只能整体失败，用户无法完成删除。
         if row_match.ambiguous:
-            alt = "、".join(f"行{r}「{v}」" for r, v in
-                            [(row_match.row, row_match.value)] + row_match.alternatives)
-            res.add("locate_row_ambiguous", False, f"歧义未解除：{alt}")
-            res.message = f"「{intent.locator_value}」命中多行同名候选，删除操作需明确指定：{alt}"
+            _cands = [(row_match.row, row_match.value)] + list(row_match.alternatives)
+            _ambig_rows = sorted({_r for _r, _ in _cands})
+            _alt = "、".join(f"行{_r}「{_v}」" for _r, _v in _cands)
+            _ask_cb = getattr(self, "_ask_callback", None)
+            # §多行选择删除（用户需求）：交互场景 + env CODEMAKER_AMBIG_DELETE_ASK=1 时，
+            # 走 Step3 内 ask 通道发 mode_hint="row_multiselect" 卡片（候选行带 summary），
+            # 前端渲染行前勾选框 + 确认按钮，reply 带 selected_rows=[行号...]，本步即时
+            # 降序删选中行（单次交互，不走 confirm_token 二次往返）。env=0 / 非交互场景
+            # 保持 needs_confirm + ambig_delete token（删全部候选，token 支持子集由前端拼），
+            # 兼容现有确认按钮前端，不回归。边界独立于旧 verify/repair 路径。
+            if _ask_cb is not None and os.getenv("CODEMAKER_AMBIG_DELETE_ASK", "0") == "1":
+                _cand_rows = [
+                    {"row": _r, "value": _v,
+                     "summary": self._row_summary(path, sheet, _r,
+                                                 skip_col=loc_match.index)}
+                    for _r, _v in _cands]
+                _q = {
+                    "reason": f"「{intent.locator_value}」命中 {len(_ambig_rows)} 行同名候选，请勾选要删除的行后确认",
+                    "error_type": "ambiguous_delete",
+                    "root_cause": f"删除不可逆且命中多行：{_alt}，需用户选择具体行",
+                    "table": path.stem, "sheet": sheet,
+                    "failed_col": loc_match.column or "",
+                    "failed_val": intent.locator_value or "",
+                    "attempted_strategies": "行定位 + LLM 仲裁仍歧义",
+                    "mode_hint": "row_multiselect",
+                    "rows": _cand_rows,
+                    "suggestion": "勾选要删的行后点「确认删除」；不删点「跳过」",
+                    "snip": (getattr(intent, "raw", "") or "")[:120],
+                    "user_friendly": {
+                        "reason": (f"「{intent.locator_value}」命中 {_ambig_rows} 多行同名"
+                                   f"（{_alt}），删除不可逆，需你选要删哪几行。"),
+                        "action": "勾选要删的行后点确认；不想删点跳过。"},
+                }
+                _reply = _ask_cb(_q) or {}
+                if _reply.get("mode") == "skip":
+                    res.ok = True
+                    res.message = "已取消删除（用户跳过多行选择）"
+                    res.add("delete_row", False, "用户跳过多行删除选择")
+                    return res
+                _sel = _reply.get("selected_rows") or []
+                if not _sel:
+                    # 前端未实现 row_multiselect → 回退 needs_confirm（删全部，兼容现前端）
+                    res.needs_confirm = True
+                    res.confirm_kind = "ambiguous_delete"
+                    res.confirm_token = (
+                        f"ambig_delete:{path.stem}:{sheet}:"
+                        f"{','.join(str(_r) for _r in _ambig_rows)}")
+                    res.add("locate_row_ambiguous", True,
+                            f"命中 {len(_ambig_rows)} 行（前端未实现勾选，回退删全部）：{_alt}")
+                    res.message = (
+                        f"「{intent.locator_value}」命中 {len(_ambig_rows)} 行同名候选：{_alt}。"
+                        f"确认将删除以上全部行。")
+                    return res
+                # 降序删选中行（保行号稳定）+ 记 result_rows
+                header = self.cli.read_header(path, sheet)
+                deleted = []
+                for _r in sorted({_x for _x in _sel if _x}, reverse=True):
+                    _rd = self._read_row_data(path, sheet, _r)
+                    if not _rd:
+                        continue
+                    _rr = self.cli.delete_row(path, sheet, _r)
+                    if _rr is not None and getattr(_rr, "ok", False):
+                        res.add("delete_row", True, f"删除行 row={_r}")
+                        for ci in sorted(_rd.keys()):
+                            self._add_result_row(res, ci,
+                                self._col_name(header, ci), old_value=_rd[ci])
+                        deleted.append(_r)
+                    else:
+                        res.add("delete_row", False,
+                                f"删除行 {_r} 失败：{getattr(_rr,'error','') if _rr else ''}")
+                if deleted:
+                    self._refresh_index_after_write(path)
+                    res.ok = True
+                    res.message = (f"已删除 {sheet} 行 "
+                                   f"{','.join(str(r) for r in sorted(deleted))}（用户勾选）")
+                else:
+                    res.ok = False
+                    res.message = "未删除任何行（勾选行已变更或删失败）"
+                return res
+            # 默认/非交互：needs_confirm 暂停（删全部候选，token 支持子集由前端拼）
+            res.needs_confirm = True
+            res.confirm_kind = "ambiguous_delete"
+            res.confirm_token = (
+                f"ambig_delete:{path.stem}:{sheet}:"
+                f"{','.join(str(_r) for _r in _ambig_rows)}")
+            res.add("locate_row_ambiguous", True,
+                    f"命中 {len(_ambig_rows)} 行同名候选，暂停待确认删除：{_alt}")
+            res.message = (
+                f"「{intent.locator_value}」命中 {len(_ambig_rows)} 行同名候选：{_alt}。\n"
+                f"确认将删除以上全部 {len(_ambig_rows)} 行；"
+                f"若只删部分请单独指定行号（如「删除 {path.stem} 第11行」）。")
             return res
         row = row_match.row
 
@@ -3849,13 +3990,17 @@ class TableAgent:
                 if str(col_name).strip().isdigit():
                     _narr_skipped.append(f"{col_name}（纯数字=列序号索引键,退化,跳过）")
                     continue
-                # §叙述值跳过兜底（泛化）：上游 LLM/legacy 路径偶发退化把整段叙述当
-                # 单字段值灌进列。这类值写进 int/枚举列必然 type 校验失败 →
-                # execute_failed_no_llm。在写前跳过该列（不写），让行其余列正常写入，
-                # 避免整行因叙述值失败。通用判据（值内容特征），不绑业务词/表/测例。
-                # §P1 降阈+类型对齐：原 >50 字阈放过短叙述串（如 40 字「30010，叫焚天...」
-                # 灌 int 列）。现按"含中文标点/汉字 + 非纯数字/列表"统一判，与
-                # _scrub_narrative_scalar / _coerce_field_simple 同源判据。
+                # §叙述值跳过兜底（泛化）：仅对 int/float/bool 数字列跳过「含中文标点
+                # 的整段叙述」（如「30010，叫焚天赤龙…」灌 int 列）。str/string 列
+                # （名称/描述）中文值正常保留；int 枚举列的单个中文标签（如「节日」，
+                # 无标点）也保留，交 Step2 报 TYPE_MISMATCH + ask 用户填数字码。
+                _col_type_hint = self._get_col_type(stem, sheet, str(col_name)) or ""
+                _ct_low = str(_col_type_hint).lower()
+                _is_num_col = bool(_ct_low) and ("int" in _ct_low or "float" in _ct_low
+                                                  or "bool" in _ct_low
+                                                  or "number" in _ct_low
+                                                  or "long" in _ct_low
+                                                  or "double" in _ct_low)
                 _vs = str(val).strip() if val is not None else ""
                 if _vs and not (_vs.startswith("<") and _vs.endswith(">")):
                     _stripped = _vs.replace(",", "").replace("，", "")
@@ -3870,10 +4015,12 @@ class TableAgent:
                             and not _vs.startswith("[")
                             and not _vs.startswith("{")):
                         import re as _re_ch
-                        if _re_ch.search(
-                                r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", _vs):
+                        _has_cn = bool(_re_ch.search(r"[\u4e00-\u9fff]", _vs))
+                        _has_punct = bool(_re_ch.search(
+                            r"[，。；、！？（）【】…：]", _vs))
+                        if _has_cn and _is_num_col and _has_punct:
                             _narr_skipped.append(
-                                f"{col_name}（值含中文似叙述，跳过）")
+                                f"{col_name}（数字列值含中文标点似叙述，跳过）")
                             continue
                 # 多 id 消歧：泛「id/编号」且 sheet 有多个 id 列 → 中止提示重试
                 ambig, cands = self._check_id_ambiguity(headers, str(col_name))
@@ -4374,6 +4521,33 @@ class TableAgent:
                     f"无法解析新增内容（{sheet} 仅含无锚点碎片、无有效标识，"
                     f"疑 Step1 误切他表片段，已跳过不写）")
                 return res
+        # §复合主键写盘唯一性校验：读 rules primary_key 声明，组合重复才阻止写入，
+        # 单列重复但组合不同（如 FabaoLevel (法宝id=5, 法宝等级=1/2/3)）作为合法不同
+        # 行放行，根治单列 _do_append 误拦同一实体的多等级行。无声明时退回下方
+        # 单列 PK 检查，保持旧行为。
+        _comp_pk_cols: list = []
+        if hasattr(self, "_load_composite_pk_for_sheet"):
+            try:
+                _comp_pk_cols = self._load_composite_pk_for_sheet(path, sheet)
+            except Exception:
+                _comp_pk_cols = []
+        if len(_comp_pk_cols) >= 2:
+            _check_fn = getattr(self, "_check_composite_pk_conflict", None)
+            _comp_conflict = _check_fn(
+                path, sheet, values, _comp_pk_cols) if callable(_check_fn) else None
+            if _comp_conflict is not None:
+                _combo_desc = _comp_conflict
+                res.add("pk_conflict", False,
+                        f"复合主键组合已存在：{_combo_desc}")
+                res.message = (f"新增失败：复合主键组合「{_combo_desc}」已存在，"
+                               f"请改用其他组合或修改已有行")
+                return res
+            # 复合键判定通过（组合未占用）→ 跳过单列 pk 检查，直接写盘
+            # （单列重复在复合键里合法，不应拦）
+            _dw = getattr(self, "_do_append_write", None)
+            if callable(_dw):
+                return _dw(path, sheet, values, res)
+            return TableAgent._do_append_write.__get__(self)(path, sheet, values, res)
         pk_val = values.get(PK_COL)
         if pk_val is not None and str(pk_val).strip():
             pk_str = str(pk_val).strip()
@@ -4402,6 +4576,17 @@ class TableAgent:
                     res.add("pk_conflict", False, f"ID [{pk_str}] 已被占用")
                     res.message = f"新增失败：ID [{pk_str}] 已存在，请更换 ID 后重试"
                     return res
+        # 写盘 + 写后验证（单列/复合主键共用）。getattr 兜底：self 可能是
+        # SimpleNamespace mock（未绑定 _do_append_write），此时直接用类方法 __get__ 调
+        _dw = getattr(self, "_do_append_write", None)
+        if callable(_dw):
+            return _dw(path, sheet, values, res)
+        return TableAgent._do_append_write.__get__(self)(path, sheet, values, res)
+
+    def _do_append_write(self, path: Path, sheet: str, values: dict[int, any],
+                        res: AgentResult) -> AgentResult:
+        """实际调 cli.append_row + 写后验证（单列/复合主键共用）。从 _do_append 拆出。"""
+        PK_COL = 1
         r = self.cli.append_row(path, sheet, values)
         res.final = r
         # A2/AD1/AD2：消费 cli_result.hold_events → 软失败 + SSE（CLI 构造事件，agent 上报）。
@@ -4502,6 +4687,100 @@ class TableAgent:
             res.add("append_row", False, r.error or "")
             res.message = "新增行失败"
         return res
+
+    def _load_composite_pk_for_sheet(self, path: Path, sheet: str) -> list:
+        """读 rules primary_key overlay 取本 (stem, sheet) 的复合主键列名列表。
+
+        _do_append 写盘时调用，无声明返回空列表（退回单列 PKCOL=1 检查）。
+        缓存按 (path, sheet) 懒加载，写盘热路径不重复解析 yaml。
+        """
+        if not hasattr(self, "_composite_pk_cache"):
+            self._composite_pk_cache = {}
+        key = (str(path), sheet)
+        cached = self._composite_pk_cache.get(key)
+        if cached is not None:
+            return cached
+        cols: list = []
+        try:
+            from ..rules_loader import get_primary_key_overlay
+            overlay = get_primary_key_overlay() or {}
+            stem = path.stem.lower()
+            sheets_map = overlay.get(stem)
+            if isinstance(sheets_map, dict):
+                cols = list(sheets_map.get(sheet) or [])
+                if not cols:
+                    for sn, cs in sheets_map.items():
+                        if sn and sn.lower() == sheet.lower():
+                            cols = list(cs or [])
+                            break
+        except Exception:
+            logger.debug("composite pk overlay 加载失败 %s/%s", path, sheet, exc_info=True)
+            cols = []
+        self._composite_pk_cache[key] = cols
+        return cols
+
+    def _check_composite_pk_conflict(self, path: Path, sheet: str,
+                                      values: dict[int, any],
+                                      pk_cols: list) -> Optional[str]:
+        """复合主键写盘冲突检测：组合值已存在返回组合描述串，否则 None。
+
+        values: {1-based col_idx: val}（写盘格式）。
+        pk_cols: 列名列表（rules primary_key 声明）。
+        按 headers 把列名归一回 1-based idx，从 values 取各列值组成组合，
+        与现有数据行的同列组合比对，组合重复即冲突。
+        """
+        if not pk_cols or len(pk_cols) < 2 or not values:
+            return None
+        try:
+            headers = self.cli.read_header(path, sheet) if self.cli else []
+        except Exception:
+            headers = []
+        if not headers:
+            return None
+        # 列名归一(小写+去后缀) -> 1-based col_idx
+        def _nl(h):
+            return (str(h or "").split(":")[0].strip().lower())
+        idx_of = {}
+        for i, h in enumerate(headers, 1):
+            nl = _nl(h)
+            if nl and nl not in idx_of:
+                idx_of[nl] = i
+        pick_idx = []
+        for c in pk_cols:
+            nl = _nl(c)
+            if not nl or nl not in idx_of:
+                return None  # 任一 PK 列不在表头 → 无法判组合，放行交单列兜底
+            pick_idx.append(idx_of[nl])
+        combo = []
+        for ci in pick_idx:
+            v = values.get(ci)
+            sv = str(v).strip() if v is not None else ""
+            if not sv:
+                # 复合键某列缺值 → 无法定夺组合，放行（必填逻辑另拦）
+                return None
+            combo.append(sv)
+        combo_t = tuple(combo)
+        try:
+            rows = self.cli.read_sheet(path, sheet)
+        except Exception:
+            rows = []
+        for r in rows:
+            if not r:
+                continue
+            vals = []
+            ok = True
+            for ci in pick_idx:
+                cv = r[ci - 1] if ci - 1 < len(r) else None
+                sv = str(cv).strip() if cv is not None else ""
+                if not sv:
+                    ok = False
+                    break
+                vals.append(sv)
+            if ok and tuple(vals) == combo_t:
+                # 组合重复 → 冲突
+                names = [c.split(":")[0].strip() for c in pk_cols]
+                return ",".join(f"{n}={v}" for n, v in zip(names, combo))
+        return None
 
     def _check_missing_required_after_add(self, path, sheet, headers, values, res,
                                           intent=None) -> None:
@@ -4790,8 +5069,15 @@ class TableAgent:
                 if path is None and stem:
                     path = _resolve_path(self, stem)
                 sheet = getattr(intent, "sheet_hint", "") or ""
-                if not sheet and stem:
-                    sheet = _resolve_sheet(self, stem)
+                # §sheet 一致性：sheet_hint 空时复用与 Step3 _phase_partition 同源的
+                # _resolve_sheet(path, intent)（agent 自有方法，sheet 消歧用 raw 关键词 +
+                # row_aliases + LLM 兜底），保证校验 schema 读到的 sheet 与执行写盘 sheet
+                # 一致，根治"校验判 Fabao → 执行写 FabaoLevel"错读漏检 PK 冲突。
+                if path is not None and not sheet and stem:
+                    try:
+                        sheet = self._resolve_sheet(path, intent) or ""
+                    except Exception:
+                        sheet = ""
                 if path is None or not sheet:
                     return [], []
                 try:
@@ -4801,7 +5087,16 @@ class TableAgent:
                 except Exception:
                     return [], []
 
-            _dg = build_data_getter(self, intents)
+            _dg = build_data_getter(
+                self, intents,
+                sheet_resolver=lambda p, i: self._resolve_sheet(p, i))
+            # §FK 名→id 自动解析（V2 Step2 前置，0 LLM）：DecomposeAgent 常把被引用
+            # 实体名直接填进 int/编号 FK 列（如 SchoolSpirit.神通id=裂空斩、灵根id=
+            # 金灵根）。enum_resolver 只覆盖本表枚举映射，跨表 FK 名无映射 → 落
+            # TYPE_MISMATCH ask，建议值仅 min(existing) 占位（非真解析），accept 也
+            # 写错值（裂空斩≠该列最小值101，应是能力表里裂空斩的真实 id）。此处跨表
+            # 精确名匹配出唯一行的 PK → 改写 fields[col]=PK，让 validate 直接判通过。
+            self._auto_resolve_fk_names(intents, _stream_res)
             _vr = self._validator_agent.validate_two_layer(
                 intents, schema_getter=_sg, data_getter=_dg,
                 locator_result=locator_result,
@@ -4858,6 +5153,105 @@ class TableAgent:
             logger.warning("Step2 validate_two_layer 失败", exc_info=True)
         return intents
 
+    def _auto_resolve_fk_names(self, intents: list,
+                               _stream_res: "AgentResult" = None) -> int:
+        """跨表 FK 名→id 自动解析（V2 Step2 前置，0 LLM）。
+
+        DecomposeAgent 常把被引用实体名直接填进 int/编号 FK 列（SchoolSpirit.神通id
+        =「裂空斩」、灵根id=「金灵根」）。enum_resolver 仅覆盖本表枚举映射，跨表 FK
+        名无映射 → 落 TYPE_MISMATCH ask，建议值仅是 min(existing_values) 占位（非真
+        解析），accept 也写错值。此处对 add 的 int/编号类列填中文值做跨表精确名匹配：
+        唯一命中行 + 该行有 PK → 改写 fields[col]=PK，让 validate 直接见 int 过校验。
+
+        保守条件：仅 add；值含中文且非数字；仅 id/编号类列；跨表 exact 全表唯一 +
+        单行唯一（多命中/无命中不动，交 ask 不误填）。
+        """
+        n = 0
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields")
+            if not isinstance(fields, dict) or not fields:
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip()
+            for col, val in list(fields.items()):
+                if not isinstance(val, str):
+                    continue
+                vs = val.strip()
+                if not vs or vs.lstrip("-").isdigit():
+                    continue
+                if vs.startswith("<") and vs.endswith(">"):
+                    continue
+                if not any(ord(c) > 127 for c in vs):
+                    continue
+                _col_clean = str(col).split(":")[0].strip()
+                if "id" not in _col_clean.lower() and "编号" not in _col_clean:
+                    continue
+                _new_id = self._resolve_fk_name_to_id(vs, exclude_stem=stem)
+                if _new_id is not None:
+                    fields[col] = _new_id
+                    n += 1
+                    try:
+                        if _stream_res is not None:
+                            _stream_res.add_thinking("校验",
+                                f"FK 名→id 自动解析：{stem}/{sheet} 列[{_col_clean}] "
+                                f"「{vs}」→ {_new_id}")
+                    except Exception:
+                        pass
+        return n
+
+    def _resolve_fk_name_to_id(self, name: str,
+                              exclude_stem: str = "") -> Optional[int]:
+        """跨表精确名匹配 → 唯一引用行的 PK。多命中/无命中返回 None（不误填）。
+
+        注：_cross_table_search 的 match_type=="exact" 实为 contains（v in k or k in v），
+        需再按 cell 值精确相等收紧，否则「裂空」会命中「裂空斩·改」等超集。
+        """
+        try:
+            _cands = self._cross_table_search(
+                name, exclude_stem=exclude_stem, top_k_tables=10)
+        except Exception:
+            return None
+        _exact_row: Optional[tuple] = None
+        _hit_tables = 0
+        _ambiguous = False
+        for _c in (_cands or []):
+            if _c.get("match_type") != "exact":
+                continue
+            _ms = [m for m in (_c.get("matches") or [])
+                   if str(m.get("value", "")).strip() == str(name).strip()]
+            if not _ms:
+                continue
+            _hit_tables += 1
+            if _hit_tables > 1:
+                return None  # 跨多表同名，不自动填
+            if len(_ms) > 1:
+                _ambiguous = True  # 同表多行同名
+                continue
+            _exact_row = (_c.get("table_stem"), _c.get("sheet"), _ms[0].get("row"))
+        if _exact_row is None or _ambiguous:
+            return None
+        _t_stem, _t_sheet, _row = _exact_row
+        _path = self._find_table_by_stem(_t_stem)
+        if _path is None:
+            return None
+        try:
+            _pk_idx = self._locate_pk_col(_path, _t_sheet)
+        except Exception:
+            _pk_idx = None
+        if not _pk_idx:
+            return None
+        try:
+            _rv = self.cli.read_cell(_path, _t_sheet, _row, _pk_idx)
+            if getattr(_rv, "ok", False) and _rv.data is not None:
+                return int(_rv.data)
+        except (ValueError, TypeError):
+            return None
+        except Exception:
+            return None
+        return None
+
     def _apply_ai_intent_check(self, intents: list, text: str,
                                _stream_res: "AgentResult",
                                _4step_parsed: bool = False) -> list:
@@ -4891,6 +5285,26 @@ class TableAgent:
                 return intents
             missing = ai_check.get("missing", [])
             corr = ai_check.get("corrections", [])
+            # §边界修复（问题B）：幻觉意图过滤。原 ai_verify_intents 只查漏(missing)
+            # 不查多，DecomposeAgent 幻产意图（如用户没要 guild/Library 却产一条）直接
+            # 进 Step2/3，到写盘才发现必填列缺失或写入脏数据。现扩展 prompt 产 extra
+            # 字段（幻觉意图下标列表），此处对照用户原文过滤掉。
+            extra_idxs = ai_check.get("extra", []) or []
+            if extra_idxs:
+                # 校验下标合法性 + 对照原文二次确认（防 AI 误判）
+                _valid_extra: list[int] = []
+                for _ei in extra_idxs:
+                    if isinstance(_ei, int) and 0 <= _ei < len(intents):
+                        _valid_extra.append(_ei)
+                if _valid_extra:
+                    _extra_desc = ", ".join(
+                        f"#{_ei}({getattr(intents[_ei],'table_hint','') or ''}/"
+                        f"{getattr(intents[_ei],'sheet_hint','') or ''})"
+                        for _ei in _valid_extra)
+                    _stream_res.add_thinking("解析",
+                        f"AI 幻觉检测：过滤 {_valid_extra} 个无原文依据意图: {_extra_desc}")
+                    intents = [it for _idx, it in enumerate(intents)
+                               if _idx not in set(_valid_extra)]
             # §优化④：4-step 已分段 → 按段重跑 decompose_segment（便宜），不跑 parse_multi
             if (missing and _4step_parsed
                     and hasattr(self, '_decompose_agent')
@@ -4987,6 +5401,22 @@ class TableAgent:
         _stream_res = self._wire_sinks(
             AgentResult(ok=True, intent=NLIntent(raw=text)))
         _stream_res.add_thinking("V2", "▶ run_v2 入口（4-Step 硬隔离）")
+        # §确认令牌短路（V2）：复用 legacy _run_confirmed 的	delete/col_delete/
+        # search: token 直接执行已确认操作（跳过 4-Step 重解析，避免重定位漂移）。
+        # _run_confirmed 不识别的 token（ap:/cascade_set_pk:）返回 None → 继续走 V2
+        # 流水线，由 ctx.confirm_token 透传给 Step3 → _run_single 设 extras 确认标记。
+        if confirm_token:
+            _stream_res.add_thinking("执行",
+                f"检测到确认令牌「{confirm_token}」，跳过 4-Step 重解析，直接执行已确认操作")
+            _confirmed = self._run_confirmed(confirm_token, text, confirm_cascade)
+            if _confirmed is not None:
+                if self._agent_thinking_sink is not None and _confirmed.thinking_steps:
+                    for _ts in _confirmed.thinking_steps:
+                        self._agent_thinking_sink(
+                            _ts.get("phase", ""), _ts.get("detail", ""))
+                _stream_res.thinking_steps.extend(_confirmed.thinking_steps)
+                _confirmed.thinking_steps = _stream_res.thinking_steps
+                return _confirmed
         # §低危修复：per-run 新建 LLMCounter（替代 reset 共享实例）。
         # 原入口 reset() 清 _instance_stats → 单实例跨请求（agent_service 单例 agent）
         # 串行 reset 互踩（请求 A 计数被请求 B reset 清零）+ 并发同实例 reset 互踩。
@@ -5008,7 +5438,7 @@ class TableAgent:
         ctx = StepContext(
             session_id=session_id or "default", user_text=text,
             legacy_agent=self, thinking_sink=self._agent_thinking_sink,
-            cancel_event=_run_cancel)
+            cancel_event=_run_cancel, confirm_token=confirm_token)
         # 服务对象收口 SubAgent 所需的 legacy 接口（替代原 agent=self 散播私态）。
         # services 内部委托 legacy 私有方法（S4 提取为纯服务后去 agent 句柄）。
         services = ExcelAgentServices(legacy_agent=self)
@@ -5066,6 +5496,25 @@ class TableAgent:
             all_steps.extend(steps)
             # Step3 的 failures 直接聚合到顶层（原经 s4 复制，口径漂移风险）
             all_failures.extend(s3.artifacts.get("failures", []) or [])
+        # §确认信号回流：Step3 把行未找到/级联删除/反模式等 needs_confirm 信号落入
+        # s3.failures（每条带 confirm_token/confirm_kind/pending_search）。run_v2 需
+        # 回填顶层 AgentResult 的对应字段，否则 _finalize_crud 的确认分支永远不触发
+        # （needs_confirm=False/confirm_token=None → 不暂存 pending → 前端拿不到
+        # 确认按钮 + confirm_token 无法续传 → 行定位值找不到的跨表搜索确认链断裂）。
+        _confirm_failure = None
+        for _f in (s3.artifacts.get("failures", []) if s3 else []) or []:
+            if isinstance(_f, dict) and _f.get("confirm_token"):
+                _confirm_failure = _f
+                break
+        if _confirm_failure:
+            _stream_res.needs_confirm = True
+            _stream_res.confirm_token = _confirm_failure.get("confirm_token")
+            _stream_res.confirm_kind = _confirm_failure.get("confirm_kind") or ""
+            if _confirm_failure.get("pending_search"):
+                _stream_res.pending_search = _confirm_failure["pending_search"]
+            # 行歧义删除候选行回填：_finalize_crud 据此映射 row_alternatives 给前端渲染。
+            if _confirm_failure.get("row_evidence"):
+                _stream_res.row_evidence = _confirm_failure["row_evidence"]
         if s4:
             if s4.artifacts.get("summary"):
                 _stream_res.message = s4.artifacts["summary"]
@@ -5455,6 +5904,12 @@ class TableAgent:
                     stem = getattr(intent, "table_hint", "") or ""
                     path = _stem_to_path(self, stem)
                     sheet = getattr(intent, "sheet_hint", "") or ""
+                    # §sheet 一致性（同 _sg）：sheet_hint 空时与执行同源 _resolve_sheet
+                    if path is not None and not sheet and stem:
+                        try:
+                            sheet = self._resolve_sheet(path, intent) or ""
+                        except Exception:
+                            sheet = ""
                     if path is None or not sheet:
                         return [], []
                     try:
@@ -5463,7 +5918,9 @@ class TableAgent:
                         return list(headers or []), list(type_row or [])
                     except Exception:
                         return [], []
-                _6step_dg = build_data_getter(self, intents)
+                _6step_dg = build_data_getter(
+                    self, intents,
+                    sheet_resolver=lambda p, i: self._resolve_sheet(p, i))
                 _vr6 = self._validator_agent.validate_two_layer(
                     intents, schema_getter=_6step_sg,
                     data_getter=_6step_dg, locator_result=None)
@@ -6139,6 +6596,20 @@ class TableAgent:
                 return None
             value = ":".join(parts[4:]) if len(parts) > 4 else ""
             return self._execute_confirmed_cross_search(stem, sheet, col_idx, value, text)
+        # ambig_delete token：删除歧义命中的多行（第4段为逗号分隔行号列表）
+        # 用户确认 = 删除全部候选行；降序删以保持行号稳定。
+        if kind == "ambig_delete":
+            stem = parts[1]
+            sheet = parts[2]
+            rows_csv = parts[3] if len(parts) > 3 else ""
+            _amb_rows: list[int] = []
+            for _x in str(rows_csv).split(","):
+                _x = _x.strip()
+                if _x.isdigit():
+                    _amb_rows.append(int(_x))
+            if not _amb_rows:
+                return None
+            return self._execute_confirmed_ambiguous_delete(stem, sheet, _amb_rows, text)
         if len(parts) != 4:
             return None
         stem, sheet, target = parts[1], parts[2], parts[3]
@@ -6265,6 +6736,58 @@ class TableAgent:
             res.ok = False
             res.add("delete_row", False, r.error or "")
             res.message = "删除行失败"
+        return res
+
+    def _execute_confirmed_ambiguous_delete(self, stem: str, sheet: str,
+                                            rows: list[int],
+                                            text: str = "") -> AgentResult:
+        """确定性删除多行歧义命中（由 confirm_token=ambig_delete:... 指定）。
+
+        契合「删除…名称为 X 的行」语义=删除全部匹配行。降序删除以保持行号稳定
+        （先删大行号，小行号不受位移影响）。行可能已被变更 → 跳过无数据行。
+        每行记录被删内容到 result_rows，供前端展示 + 反查。
+        """
+        res = self._wire_sinks(AgentResult(ok=True, intent=NLIntent(action="delete", raw=text)))
+        res.table_stem = stem
+        res.table_sheet = sheet
+        path = self._find_table_by_stem(stem)
+        if path is None:
+            res.ok = False
+            res.add("resolve_table", False, f"确认令牌指向的表「{stem}」不存在")
+            res.message = f"确认失败：找不到表「{stem}」（可能已变更）"
+            return res
+        res.add("resolve_table", True, str(path))
+        res.add("resolve_sheet", True, sheet)
+
+        header = self.cli.read_header(path, sheet)
+        deleted: list[int] = []
+        last_r = None
+        # 降序删除：删大行号在前，避免删小行号后下方行号位移
+        for _r in sorted({ri for ri in rows if ri}, reverse=True):
+            _row_data = self._read_row_data(path, sheet, _r)
+            if not _row_data:
+                res.add("delete_row", False, f"行 {_r} 无数据（已变更），跳过")
+                continue
+            _rr = self.cli.delete_row(path, sheet, _r)
+            last_r = _rr if _rr is not None else last_r
+            if _rr is not None and _rr.ok:
+                res.add("delete_row", True, f"删除行 row={_r}")
+                for ci in sorted(_row_data.keys()):
+                    self._add_result_row(res, ci, self._col_name(header, ci),
+                                         old_value=_row_data[ci])
+                deleted.append(_r)
+            else:
+                _err = (_rr.error if _rr is not None else "删除失败")
+                res.add("delete_row", False, f"删除行 {_r} 失败：{_err}")
+        if deleted:
+            res.final = last_r
+            _dl = "、".join(str(r) for r in sorted(deleted))
+            res.message = f"已删除：{sheet} 行 {_dl}（共 {len(deleted)} 行，歧义命中全部删除）"
+            res.ok = True
+            self._refresh_index_after_write(path)
+        else:
+            res.ok = False
+            res.message = "确认失败：未删除任何行（候选行可能已被变更），请重新发起删除"
         return res
 
     def _execute_confirmed_col_delete(self, path: Path, sheet: str, col: int,
@@ -6765,7 +7288,7 @@ class TableAgent:
             except Exception:
                 logger.warning("Step3 AI 计划增强失败，降级用原 fields", exc_info=True)
         res.add_thinking("计划", f"构造操作计划——单表指令 {intent.action}，目标 {path.stem}/{sheet}")
-        res.add("Step3计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
+        res.add("写入计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
 
     def _phase_validate(self, intent: NLIntent, path: Path, sheet: str,
                         res: AgentResult) -> None:
@@ -6778,7 +7301,7 @@ class TableAgent:
             if not _has_loc and not _has_row_override:
                 res.ok = False
                 res._hard_blocked = True
-                res.add("Step4校验", False,
+                res.add("写前校验", False,
                         f"缺少行定位值：{intent.action} 操作需 locator_value 或 row_override")
                 res.add_thinking("校验", f"❌ Hard gate 拒绝：{intent.action} 缺行定位值（早失败，不进 Step5）")
                 return
@@ -6810,7 +7333,7 @@ class TableAgent:
         elif intent.extras.get("source") == "splitter":
             res.add_thinking("校验", "splitter intent 跳过 AI 校验（#25），走规则校验")
         res.add_thinking("校验", "写前校验——硬规则类型/约束校验由分支内部执行")
-        res.add("Step4校验", True, "写前校验通过")
+        res.add("写前校验", True, "写前校验通过")
 
     def _merge_applicable(self, intent: NLIntent) -> bool:
         """是否走 LLM 合并路径(confirm+plan+validate 单次调用)。
@@ -6936,9 +7459,9 @@ class TableAgent:
                 f"建议：{merged.get('suggestions', [])}")
         res.add_thinking("计划",
             f"构造操作计划(合并)——单表指令 {intent.action}，目标 {path.stem}/{sheet}")
-        res.add("Step3计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
+        res.add("写入计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
         res.add_thinking("校验", "写前校验——硬规则类型/约束校验由分支内部执行")
-        res.add("Step4校验", True, "写前校验通过")
+        res.add("写前校验", True, "写前校验通过")
         return path, sheet
 
     def _phase_execute(self, intent: NLIntent, path: Path, sheet: str,
@@ -6980,25 +7503,44 @@ class TableAgent:
                             _auto_cols, path.stem, sheet)
             # 必填/跨表引用占位未解 → 才弹问
             if _required_cols:
-                # §自引用豁免：<new_xxx_id> 且 label == 本 intent produces_label →
-                # 主键自动分配（Step3 _do_append 自增 + _capture_produced 捕获真实 id），
-                # 非"前序产出未对上"，不弹问。清空该字段让 _do_append 走自增分支。
+                # §主键列占位豁免：add 意图主键列（表头首列）填 <new_xxx> 占位符 =
+                # 主键自动分配（_do_append 自增），无需引用任何 produces。LLM 产
+                # produces 标签名与占位符名常不一致（<new_entity_id> vs
+                # new_gate_prefab_id），仅靠 label 精确匹配会漏 → 用「首列位置」判主键。
+                _pk_header = ""
+                try:
+                    _hdrs = (self.cli.read_header(path, sheet)
+                             if hasattr(self.cli, "read_header") else [])
+                    if _hdrs:
+                        _pk_header = str(_hdrs[0] or "").split(":")[0].strip()
+                except Exception:
+                    _pk_header = ""
+                # §自引用豁免：<new_xxx_id> 且 label == 本 intent produces_label
                 _self_prod = (getattr(intent, "produces_label", None)
                               or (intent.extras or {}).get("produces"))
                 if _self_prod:
                     _self_prod = str(_self_prod).strip()
-                    _filtered: list[str] = []
-                    for _c in _required_cols:
-                        _v = str(_fields_pre.get(_c) or "").strip()
-                        _lbl = (_v[1:-1].strip()
-                                if (_v.startswith("<") and _v.endswith(">")) else "")
-                        if _lbl == _self_prod:
-                            _fields_pre[_c] = ""  # 主键留空 → 自增分配
-                            res.add_thinking("执行",
-                                f"列[{_c}] 自引用占位 {_v}（本步 produces），已留空自增分配")
-                            continue
-                        _filtered.append(_c)
-                    _required_cols = _filtered
+                _filtered: list[str] = []
+                for _c in _required_cols:
+                    _v = str(_fields_pre.get(_c) or "").strip()
+                    _lbl = (_v[1:-1].strip()
+                            if (_v.startswith("<") and _v.endswith(">")) else "")
+                    _c_clean = (_c or "").split(":")[0].strip()
+                    # 主键列（表头首列）占位符 → 删除字段走自增（勿清空成 ''，
+                    # 否则 _run_add 对 '' 做 int coerce 报「无法转整数」）
+                    if _pk_header and _c_clean == _pk_header:
+                        _fields_pre.pop(_c, None)
+                        res.add_thinking("执行",
+                            f"列[{_c}] 为主键列，占位 {_v} 删除走自增分配")
+                        continue
+                    # 自引用（label 精确匹配 produces）→ 删除字段走自增
+                    if _lbl and _self_prod and _lbl == _self_prod:
+                        _fields_pre.pop(_c, None)
+                        res.add_thinking("执行",
+                            f"列[{_c}] 自引用占位 {_v}（本步 produces），已删除走自增分配")
+                        continue
+                    _filtered.append(_c)
+                _required_cols = _filtered
             if _required_cols:
                 logger.warning("Step5 执行前发现未替换占位符字段 %s (table=%s sheet=%s)",
                                _required_cols, path.stem, sheet)
@@ -7158,6 +7700,17 @@ class TableAgent:
                 self._rollback_write(path, backup_file, res)
             raise
 
+        # §确认暂停短路：needs_confirm（行未命中跨表搜索 / 行歧义删除 / 级联删除预览 /
+        # 低置信度 / 列删除 / 反模式）是「待用户确认」语义（ok 默认 None），非失败。
+        # V2 execute_no_llm 下，下方把 ok=None 当失败回滚 + 改写为 execute_failed_no_llm
+        # + 覆盖 message，会污染 needs_confirm 信号（activity 春节活动歧义删除用例即被
+        # 判成 execute_failed_no_llm + direct_dispatch 而无法选择删除）。此处直接返回
+        # out，保留 needs_confirm/confirm_token/pending_search/row_evidence 原样供上层聚合。
+        # _phase_summarize 仍会跑（else 分支保留原 message），与 legacy 级联删除预览
+        # needs_confirm 的 ok=False + needs_confirm=True 口径一致。
+        if out is not None and getattr(out, "needs_confirm", False):
+            return out
+
         # §3 ExecuteAgent 去 LLM（CODEMAKER_EXECUTE_NO_LLM=1）：失败直接结构化进
         # res.failures（#40），跳过 verify-repair loop + D3 retry-loop 的 LLM 诊断/重试，
         # 诊断 + 反模式归纳交 §5 ConcludeAgent。默认关（保持现状含 LLM 诊断+重试+修复）。
@@ -7183,12 +7736,14 @@ class TableAgent:
                     f"跳过无写入内容的子任务 {path.stem}/{sheet}"
                     f"（{_fail_msg[:32]}），不计入失败清单")
                 return res
-            # §V2 软 ask 救援：首次写失败时，不直接 execute_failed_no_llm，而是经
-            # _ask_callback ask 用户（mode=field，给失败列+根因+修正建议/手动填值/跳过），
-            # 用户回复后改写 intent.extras["fields"] 重试一次 _dispatch。零 LLM（复用
-            # _ask_callback，不调 ai_analyze_failure），让"接受错误修改建议"对执行时
-            # 暴露的失败（非 Step2 可预见）也生效。重试仍失败才真正 execute_failed_no_llm。
-            _ask_cb = getattr(self, "_ask_callback", None)
+            # §C Step3 软 ask 收窄（workflow 纯化）：原 if 块"类型不符/字段缺失写失败软 ask
+            # 救援循环（_ask_callback + fix_payload 重试）"已禁用——这类属 Step2 校验范畴
+            #（B 升 TYPE_MISMATCH/COL_NOT_FOUND 硬阻断，Step2 漏过的属非交互放行带病 intent，
+            # 不该 Step3 越界补校验）。Step3 职责=执行非校验，写失败恒走下方 else"如实记
+            # failed 进 res.failures（Step4 汇总呈现，用户看汇总重跑）"。
+            # 保留：占位符悬空 rescue（_phase_execute 前置 gate 7054，直接 self._ask_callback
+            # + suggested_id）——"跨表引用未对上"属数据冲突=Step3 职责，非校验越界。
+            _ask_cb = None  # 收窄：禁用软 ask rescue（行为退到 else 记 failed）。死代码待后续清理。
             if _ask_cb is not None:
                 # 拉 headers/type_row 供提交值预检（按列查 col_type）
                 _hdrs = []
@@ -7209,12 +7764,12 @@ class TableAgent:
                 def _ct_label(_t: str) -> str:
                     _tl = (_t or "").lower()
                     if "int" in _tl or "long" in _tl:
-                        return "整数(int)"
+                        return "数字"
                     if "float" in _tl or "double" in _tl or "number" in _tl:
-                        return "数字(float)"
+                        return "数字"
                     if "bool" in _tl:
-                        return "布尔(0/1/true/false)"
-                    return _t or "未知"
+                        return "0 或 1"
+                    return "正确的值"
 
                 def _first_failure(_src_out, _src_res):
                     _f = None
@@ -7243,35 +7798,91 @@ class TableAgent:
                     _m_fv = _re_fv.search(r"[「『]([^」』]+)[」』]", _ff_rc)
                     if _m_fv:
                         _fail_val = _m_fv.group(1)
-                    _disp_col = _cur_fail_col or "（未指明列）"
-                    _ask_rc = (f"写入 {path.stem}/{sheet} 时列「{_disp_col}」的值失败：{_cur_err}"
+                    _disp_col = _cur_fail_col or ""
+                    # 取该列当前值（优先 intent.fields 真实值，回退根因里裁出的值）
+                    _cur_fields_ref = (getattr(intent, "extras", None) or {})
+                    _cur_fields_ref = (_cur_fields_ref.get("fields")
+                                        if isinstance(_cur_fields_ref, dict) else None) or {}
+                    _cur_val_disp = _cur_fields_ref.get(_cur_fail_col)
+                    if _cur_val_disp in (None, "") and _fail_val:
+                        _cur_val_disp = _fail_val
+                    _cur_val_disp_s = ("" if _cur_val_disp in (None, "")
+                                       else str(_cur_val_disp))
+                    _ask_rc = (f"「{_disp_col}」列的值「{_cur_val_disp_s}」"
+                               f"格式不正确：{_cur_err}"
                                if _cur_fail_col
-                               else f"写入 {path.stem}/{sheet} 失败：{_cur_err}")
-                    _hint = ""
+                               else f"{path.stem}/{sheet} 存在格式不正确的字段值：{_cur_err}")
+                    # 列类型 + 形态标签（数字 / 0 或 1 / 正确的值）+ 类型适用建议值
+                    _exp_label = ""
+                    _sugg_id = None
                     if _cur_fail_col:
                         _ct = _col_type(_cur_fail_col)
                         if _ct:
-                            _hint = f"该列类型为 {_ct_label(_ct)}，请填可转成该类型的值"
+                            _exp_label = _ct_label(_ct)
+                            _ctl = str(_ct).lower()
+                            if "int" in _ctl or "long" in _ctl:
+                                _sugg_id = 1
+                            elif "float" in _ctl or "double" in _ctl or "number" in _ctl:
+                                _sugg_id = 1
+                            elif "bool" in _ctl:
+                                _sugg_id = 0
+                    _intent_snip = (getattr(intent, "raw", "") or "")[:60]
+                    # 文案：点明"哪条意图 → 哪列 → 当前值X → 该列要形态Y → 建议 Z"
+                    # 比"存在格式不正确的字段值"具体可懂，用户一眼知道改哪。
+                    if _cur_fail_col:
+                        _reason = (f"列「{_disp_col}」值「{_cur_val_disp_s}」"
+                                   f"格式有误，需{_exp_label or '正确格式'}")
+                        _uf_reason = (f"意图「{_intent_snip}」中，列「{_disp_col}」"
+                                      f"填的「{_cur_val_disp_s}」无法转成"
+                                      f"{_exp_label or '该列要求的类型'}：{_cur_err}")
+                    else:
+                        _reason = "数据写入失败，请修正后重试"
+                        _uf_reason = "存在格式不正确的字段值，系统未能完整写入。"
+                    _uf_action_parts = []
+                    if _sugg_id is not None:
+                        _uf_action_parts.append(
+                            f"建议填「{_sugg_id}」可直接点「接受」"
+                            f"（该列要 {_exp_label or '该类型'}）")
+                    _uf_action_parts.append("或在输入框填写你自己的值后点「提交修正」")
+                    _uf_action_parts.append("不需要就点「跳过」")
+                    _uf_action = "；".join(_uf_action_parts)
                     _ask_pr = _ask_cb({
-                        "reason": f"写入失败，需修正「{_disp_col}」后重试",
+                        "reason": _reason,
                         "table": path.stem, "sheet": sheet,
-                        "failed_col": _cur_fail_col, "failed_val": _fail_val,
+                        "failed_col": _cur_fail_col, "failed_val": _cur_val_disp or _fail_val,
+                        "current_val": _cur_val_disp_s,
                         "root_cause": _ask_rc,
-                        "attempted_strategies": (f"已试 {_round} 轮 ask+校验" if _round else "首次直接写入失败"),
-                        "suggestion": ("请在下方表格按列填入修正值"
-                                       "（数字/枚举列填数字或编号，不能填中文名或整段叙述）"
-                                       + (f"；{_hint}" if _hint else "")
-                                       + "；或点「跳过」放弃此项继续后续任务（会记入失败清单）。"),
-                        "snip": (getattr(intent, "raw", "") or "")[:120],
+                        "expected_type": _exp_label,
+                        "attempted_strategies": (f"{_round + 1} 次，均未成功"
+                                                 if _round else "1 次，未成功"),
+                        "suggestion": _uf_action,
+                        "snip": _intent_snip,
+                        "mode_hint": "value_input" if _sugg_id is not None else None,
+                        "suggested_id": _sugg_id,
                         "user_friendly": {
-                            "reason": (f"写「{_disp_col}」这列时失败了"
-                                       + (f"（{_hint}）" if _hint else "，系统没能直接写进去。")),
-                            "action": ("你可以在下方表格里把这一列改成正确的值"
-                                       "（数字/编号），然后让系统重试；"
-                                       "或点「跳过」放弃此项继续后面的任务。"),
+                            "reason": _uf_reason,
+                            "action": _uf_action,
                         },
                     }) or {}
                     _final_user_reply = _ask_pr.get("mode")
+                    # 统一解析回复为 fix_payload.fields（修复原 bug：_ask_callback 回
+                    # {mode,accept_suggest,value,custom_id} 无 fix_payload.fields，
+                    # 致 7377 _fill 恒空→ break → execute_failed_no_llm，用户点接受/
+                    # 输入值均无效）。现按 failed_col 单列组装 fields，让 7377 取得值。
+                    if _ask_pr.get("mode") == "field" and _cur_fail_col:
+                        _uv = None
+                        if _ask_pr.get("accept_suggest"):
+                            _uv = (_ask_pr.get("custom_id")
+                                   or _ask_pr.get("value")
+                                   or _ask_pr.get("text")
+                                   or _sugg_id)
+                        else:
+                            _uv = (_ask_pr.get("custom_id")
+                                   or _ask_pr.get("value")
+                                   or _ask_pr.get("text"))
+                        if _uv is not None and str(_uv).strip() != "":
+                            _fp = _ask_pr.setdefault("fix_payload", {})
+                            _fp.setdefault("fields", {})[_cur_fail_col] = _uv
                     if _ask_pr.get("mode") != "field":
                         break  # 用户跳过/无回复 → 退出循环走 fail
                     _fill = ((_ask_pr.get("fix_payload") or {}).get("fields")
@@ -8806,7 +9417,7 @@ class TableAgent:
             res.add_thinking("汇总",
                 f"操作完成——{intent.action} {path.stem}/{sheet} 已应用")
             res.message = out.message or f"{intent.action} {path.stem}/{sheet} 已应用"
-            res.add("Step6汇总", True, "操作完成")
+            res.add("写入汇总", True, "操作完成")
         else:
             # 失败/未完成：汇总全量 failures（#40 结构）+ success_list（§5.1 整合）。
             # 原仅取 failures[-1] 单条,4-Step Loop 多失败子任务需全量聚合供前端失败块。
@@ -8837,7 +9448,7 @@ class TableAgent:
             else:
                 res.message = res.message or f"操作未完成：{path.stem}/{sheet}"
                 res.add_thinking("汇总", f"未完成：{path.stem}/{sheet}")
-            res.add("Step6汇总", False, res.message)
+            res.add("写入汇总", False, res.message)
 
     # ── 反模式归纳共享 helper（V2 Step4 + legacy _phase_conclude 共用，消除双份漂移）──
     @staticmethod

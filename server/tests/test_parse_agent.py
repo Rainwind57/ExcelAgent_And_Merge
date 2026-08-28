@@ -50,9 +50,13 @@ class _FakeDecomposer:
         self._intents = list(intents)
         self.called: list[tuple] = []
 
-    def decompose(self, text, locator_result):
+    def decompose(self, text, locator_result, force_single=False):
         self.called.append((text, locator_result))
         return list(self._intents)
+
+    def _col_type_for(self, stem, sheet, col_name):
+        # 桩：默认 str 列（中文值合法保留，不触发灌值守卫清空）
+        return "string"
 
 
 def _no_infer(intents):
@@ -149,7 +153,7 @@ class TestParseAgentEmptyPaths:
         monkeypatch.setattr(pa_mod, "infer_produces_consumes", _no_infer)
 
         class _Boom:
-            def decompose(self, text, lr):
+            def decompose(self, text, lr, force_single=False):
                 raise RuntimeError("decompose boom")
 
         lr = LocatorResult(candidates=[CandidateTable(stem="quest")])

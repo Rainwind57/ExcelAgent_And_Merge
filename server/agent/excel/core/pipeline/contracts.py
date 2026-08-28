@@ -166,6 +166,9 @@ class StepContext:
     thinking_sink: Any = None
     cancel_event: Any = None
     checkpoint_id: Optional[str] = None
+    # 二次确认令牌（V2 透传）：run_v2 入口接收，Step3 用于 run_single 短路
+    # __delete_confirmed__/__anti_pattern_confirmed__ 等标记，恢复 V2 下确认链路。
+    confirm_token: Optional[str] = None
 
     def set_result(self, step_id: str, result: StepResult) -> None:
         self.results[step_id] = result

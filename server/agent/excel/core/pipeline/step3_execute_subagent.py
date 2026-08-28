@@ -13,7 +13,7 @@
   - 输入分析（属 Step1）
 
 复用现有 _run_single（已含 dispatch），通过 no_llm=True 参数透传零 LLM 不变量：
-  - _run_single 内部临时设 self.execute_no_llm=True（try/finally 还原）
+  - _run_single 内部临时设 agent.execute_no_llm=True（thread-local，try/finally 还原）
   - 短路 _phase_execute:6420 的越界 LLM 路径（ai_plan/validate/diagnose/repair/reparse）
   - 替代原 os.environ["CODEMAKER_EXECUTE_NO_LLM"] 进程级突变（污染并发 + 触发 P19）
 错误归属固定 step3_execute。
@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -28,20 +29,54 @@ from .contracts import STEP3_EXECUTE, StepContext, StepError, StepResult
 
 logger = logging.getLogger(__name__)
 
+# 与 operation_orchestrator._PLACEHOLDER_RE 同构（本地复制，避免依赖其内部私有符号
+# 跨模块耦合）：匹配 <label> 形式占位符，label 允许中英文/下划线。
+_PLACEHOLDER_RE = re.compile(r"<\s*([\w\u4e00-\u9fff]+)\s*>")
+
+
+def _find_unresolved_placeholders(it: Any) -> list[str]:
+    """扫描 intent 可代换字段，收集 resolve 后仍悬空的上游引用标签（排除 <auto>）。
+
+    §P0 缓解（无跨表回滚场景下的孤儿行）：<auto> 是"待补"哨兵，_coerce_value
+    已优雅处理为跳过该列，非上游依赖引用，不算悬空依赖。其余 <label> 若
+    _resolve_placeholders 后仍原样保留，说明其 producer 未产出（拓扑序内未执行到，
+    或已执行但 res.ok is False 未被 _capture_produced 收录）——继续跑 run_single
+    会让 _coerce_value 把该 FK 列静默置空写入（只留 needs_user_fill 提示，行本身
+    仍落盘），产出缺外键的孤儿行。改为执行前显式拦截 + 清晰上报，不产生残缺行。
+    """
+    found: list[str] = []
+
+    def _scan(v: Any) -> None:
+        if isinstance(v, str) and "<" in v:
+            for m in _PLACEHOLDER_RE.finditer(v):
+                label = m.group(1)
+                if label.lower() != "auto":
+                    found.append(label)
+
+    _scan(getattr(it, "locator_value", None))
+    _scan(getattr(it, "value", None))
+    for v in (getattr(it, "locator_values", None) or []):
+        _scan(v)
+    fields = (getattr(it, "extras", None) or {}).get("fields")
+    if isinstance(fields, dict):
+        for v in fields.values():
+            _scan(v)
+    return found
+
 
 class Step3ExecuteSubAgent:
     """Step3：指令的高效拓扑应用。零 LLM。"""
 
     def __init__(self, services: Any = None):
         # 注入 ExcelAgentServices（替代原 agent=self 散播私态）。
-        # services 收口 run_single 接口 + execute_no_llm 通道。
+        # services 收口 run_single 接口 + no_llm 透传通道（状态落地走 agent thread-local）。
         self._services = services
 
     def execute(self, ctx: StepContext) -> StepResult:
         """Step3 执行：validated intents → 拓扑派发 → results + failures。
 
         D4 硬约束：本步零 LLM。通过 no_llm=True 透传到 _run_single，
-        内部临时设 self.execute_no_llm=True 短路越界 LLM 路径。
+        内部临时设 agent.execute_no_llm=True（thread-local）短路越界 LLM 路径。
         """
         t0 = time.time()
         errors: list[StepError] = []
@@ -87,11 +122,10 @@ class Step3ExecuteSubAgent:
         produced: dict[str, str] = {}
         _seq_counter: dict[str, int] = {}
 
-        # D4 硬约束：执行阶段零 LLM。通过 no_llm=True 透传到 services.run_single，
-        # services 内部临时设 execute_no_llm=True 短路越界 LLM 路径（_phase_execute:6420）。
-        # 替代原 os.environ["CODEMAKER_EXECUTE_NO_LLM"] 进程级突变：
-        #   - 不污染并发请求（services 属性 try/finally 还原，作用域 = 本次调用）
-        #   - 不误触发 P19 互斥检查（P19 仅 __init__ 调一次，运行时不重检）
+        # D4 硬约束：执行阶段零 LLM。通过 no_llm=True 透传到 services.run_single
+        # → _run_single，_run_single 内部设 agent.execute_no_llm（thread-local）
+        # 短路越界 LLM 路径（_phase_execute 各 gate 读 thread-local 属性）。
+        # services 侧不再冗余写 agent 实例属性，状态唯一来源 = agent thread-local。
 
         try:
             for i, it in enumerate(ordered):
@@ -100,9 +134,42 @@ class Step3ExecuteSubAgent:
                     _OO._resolve_placeholders(it, produced)
                 except Exception:
                     logger.debug("Step3 _resolve_placeholders 失败", exc_info=True)
+                # §P0 孤儿行防护：resolve 后仍悬空的非 <auto> 占位符 = 上游 producer
+                # 未产出（拓扑序内还没跑到，或已跑但失败未被 _capture_produced 收录）。
+                # 不拦截会走到 run_single → _coerce_value 静默把该 FK 列置空写入
+                # （只留 needs_user_fill 提示，行仍落盘）→ 产出缺外键的孤儿行。
+                # 本步无跨表事务回滚能力（Excel 写入非事务性，回滚需整文件快照，
+                # 超出本次改动范围），但至少不该在明知依赖悬空时继续新写残缺行。
+                _unresolved = _find_unresolved_placeholders(it)
+                if _unresolved:
+                    _rc = (f"上游依赖 {', '.join(sorted(set(_unresolved)))} 未产出"
+                           f"（producer 未执行到或已失败），已跳过本条写入，"
+                           f"避免生成缺失外键的残缺行")
+                    _fail = {
+                        "type": "upstream_placeholder_unresolved",
+                        "table": getattr(it, "table_hint", "") or "",
+                        "sheet": getattr(it, "sheet_hint", "") or "",
+                        "col": "", "root_cause": _rc,
+                        "attempted_strategies": "", "suggestion": "检查上游新增操作是否成功",
+                        "status": "failed", "user_reply": None,
+                    }
+                    all_failures.append(_fail)
+                    sub_tasks.append({
+                        "index": i + 1, "intent_action": it.action, "ok": False,
+                        "needs_confirm": False, "message": _rc,
+                        "steps": [], "result_rows": [],
+                        "table_stem": getattr(it, "table_hint", "") or "",
+                        "table_sheet": getattr(it, "sheet_hint", "") or "",
+                        "needs_user_fill": [], "partial": False,
+                    })
+                    errors.append(StepError(
+                        step_id=STEP3_EXECUTE, error_type="upstream_placeholder_unresolved",
+                        message=_rc, table=getattr(it, "table_hint", None),
+                        sheet=getattr(it, "sheet_hint", None), is_hard=False))
+                    continue
                 try:
                     sub_res = self._services.run_single(
-                        it, None, ctx.session_id,
+                        it, getattr(ctx, "confirm_token", None), ctx.session_id,
                         suppress_phase_thinking=False, no_llm=True)
                     # §P0-2 捕获 produced：add 成功后新 PK ID 写入 produced 供下游 consumes
                     try:
@@ -111,6 +178,17 @@ class Step3ExecuteSubAgent:
                         logger.debug("Step3 _capture_produced 失败", exc_info=True)
                     if sub_res is None:
                         continue
+                    # §中危 8 修复：把 Step2 校验遗留的 intent.failures（soft tips）
+                    # transfer 到 sub_res.failures，让 all_failures 聚合 + Step4 汇总
+                    # 上报（对齐 legacy 6 步 partition 的 intent.failures transfer，
+                    # agent.py:_run_single 不做此 transfer，否则 V2 下 Step2 校验
+                    # 产出的 validation_tip 软失败全丢失，Step4 汇总看不到校验问题）。
+                    _intent_fails = getattr(it, "failures", None)
+                    if _intent_fails:
+                        try:
+                            sub_res.failures.extend(_intent_fails)
+                        except Exception:
+                            logger.debug("Step3 intent.failures transfer 失败", exc_info=True)
                     all_steps.extend(sub_res.steps or [])
                     if sub_res.result_rows:
                         all_result_rows.extend(sub_res.result_rows)
@@ -132,35 +210,63 @@ class Step3ExecuteSubAgent:
                     # §低危修复：needs_confirm（行未命中跨表搜索暂停）是"待确认"语义，
                     # 非"失败"。原 `if not sub_res.ok` 把 ok=None（needs_confirm 默认态）
                     # 当 False 走失败分支 → metrics subtasks_fail 误计 + failures 重复
-                    # 收集。改为：needs_confirm 单独透传 pending_search 为软失败（供前端
-                    # 渲染选择按钮，不阻断），仅 ok is False 才进真失败分支。
+                    # 收集。改为：needs_confirm 单独透传为软失败（供前端渲染选择按钮，
+                    # 不阻断），仅 ok is False 才进真失败分支。
+                    # §确认链路修复：原仅 pending_search 非空时才记录 failure → 级联删除/
+                    # 列删除/反模式 confirm（confirm_token 有但 pending_search 空）的
+                    # needs_confirm 信号被丢弃，run_v2 从 s3.failures 找不到 confirm_token
+                    # → _stream_res.needs_confirm 不回填 → 确认链路断裂。现统一记录所有
+                    # needs_confirm 类型，run_v2 聚合时按 confirm_token 回填顶层字段。
                     if getattr(sub_res, "needs_confirm", False):
                         _ps = getattr(sub_res, "pending_search", None) or {}
+                        _ctk = getattr(sub_res, "confirm_token", "") or ""
+                        _ckind = getattr(sub_res, "confirm_kind", "") or ""
                         if _ps:
+                            _rtype = "row_not_found_needs_confirm"
+                            _rc = (f"在 {_ps.get('table_stem','')}/{_ps.get('sheet','')} "
+                                   f"未找到「{_ps.get('value','')}」"
+                                   f"（定位列={_ps.get('col_name','')}）")
+                            _strat = "跨表搜索暂停待用户确认"
+                            _sug = "点选下方相近项或手动输入正确值"
+                            _tbl = _ps.get("table_stem", "")
+                            _sht = _ps.get("sheet", "")
+                            _col = _ps.get("col_name", "")
+                        else:
+                            _rtype = _ckind or "needs_confirm"
+                            _rc = (getattr(sub_res, "message", "") or
+                                   "操作需用户确认后执行")
+                            _strat = "危险操作预览暂停待用户确认"
+                            _sug = "确认后执行已预览的操作"
+                            _tbl = getattr(sub_res, "table_stem", "") or ""
+                            _sht = getattr(sub_res, "table_sheet", "") or ""
+                            _col = ""
+                        if _ctk:
                             _cf = {
-                                "type": "row_not_found_needs_confirm",
-                                "table": _ps.get("table_stem", ""),
-                                "sheet": _ps.get("sheet", ""),
-                                "col": _ps.get("col_name", ""),
-                                "root_cause": (f"在 {_ps.get('table_stem','')}/{_ps.get('sheet','')} "
-                                               f"未找到「{_ps.get('value','')}」"
-                                               f"（定位列={_ps.get('col_name','')}）"),
-                                "attempted_strategies": "跨表搜索暂停待用户确认",
-                                "suggestion": "点选下方相近项或手动输入正确值",
-                                "pending_search": _ps,
-                                "confirm_token": getattr(sub_res, "confirm_token", ""),
-                                "confirm_kind": getattr(sub_res, "confirm_kind", ""),
+                                "type": _rtype,
+                                "table": _tbl, "sheet": _sht, "col": _col,
+                                "root_cause": _rc,
+                                "attempted_strategies": _strat,
+                                "suggestion": _sug,
+                                "pending_search": _ps or None,
+                                "confirm_token": _ctk,
+                                "confirm_kind": _ckind,
+                                # 行歧义删除候选行（含 summary，供前端渲染候选卡片）：
+                                # _fill_row_evidence 已填 sub_res.row_evidence.alternatives。
+                                # 透传到 failure dict 让 run_v2 回填 _stream_res.row_evidence，
+                                # _finalize_crud 再映射为 row_alternatives 给前端。
+                                "row_evidence": getattr(sub_res, "row_evidence", None),
+                                "status": "pending",
                             }
                             all_failures.append(_cf)
                             # 软失败（is_hard=False）：不阻断本步但供前端展示选择按钮
                             errors.append(StepError(
                                 step_id=STEP3_EXECUTE,
-                                error_type="row_not_found_needs_confirm",
-                                message=_cf["root_cause"],
-                                table=_ps.get("table_stem"),
-                                sheet=_ps.get("sheet"),
-                                column=_ps.get("col_name"),
-                                suggestion=_cf["suggestion"],
+                                error_type=_rtype,
+                                message=_rc,
+                                table=_tbl or None,
+                                sheet=_sht or None,
+                                column=_col or None,
+                                suggestion=_sug,
                                 is_hard=False))
                     elif sub_res.ok is False:
                         for f in (getattr(sub_res, "failures", None) or []):

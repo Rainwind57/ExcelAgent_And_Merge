@@ -53,6 +53,8 @@ def _type_row_name_prefix(type_raw: Any) -> str:
     """从类型行单元格提取列名前缀。ability_id:int → ability_id；非法返回 ''。
 
     仅接受 name:type 形式（含冒号），避免把无类型行的数据行误当类型行。
+    name 允许中英文标识符（如 灵兽id:int、ability_id:int）——原 _IDENT_RE
+    仅 ASCII，把 perf 表/中文前缀类型行误判为数据行，导致 data_start_row 错标。
     """
     if type_raw is None:
         return ""
@@ -60,9 +62,13 @@ def _type_row_name_prefix(type_raw: Any) -> str:
     if not s or ":" not in s:
         return ""
     name = s.rsplit(":", 1)[0].strip()
-    if not name or not _IDENT_RE.fullmatch(name):
+    if not name:
         return ""
-    return name
+    if _IDENT_RE.fullmatch(name):
+        return name
+    if re.fullmatch(r"[\u4e00-\u9fffA-Za-z_][\u4e00-\u9fffA-Za-z0-9_]*", name):
+        return name
+    return ""
 
 
 def _translate(prefix_name: str) -> str:

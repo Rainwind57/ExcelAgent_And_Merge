@@ -50,7 +50,8 @@ def _make_validator():
     v._cli = None
     v._parser = None
     v._ask_callback = None  # __init__ 设的属性,绕过 __init__ 需手动补
-    v._required_fields = None  # §4.1 ③ 必填性懒加载缓存
+    v._required_fields = {}  # §P26 设空 dict 避免懒加载 required_fields.yaml（测试不校验必填）
+    v._pk_cols_cache = {}  # §P26 设空 dict 避免 table_relations 懒加载
     return v
 
 
@@ -505,24 +506,21 @@ class TestValidateTwoLayer:
         assert it.validation.skipped is False
 
     def test_issues_collected_non_blocking_display(self, monkeypatch):
-        """要求 A：COL_NOT_FOUND 属硬 issue → Step2 真阻断 ok=False 标 skipped，
-        不再 O3 非阻断继续写盘（致命字段问题不应落 Step3 半成品）。"""
+        """COL_NOT_FOUND 走批量 ask 卡；用户 skip → intent 标 skipped（放弃写盘），
+        但 Step2 整体 ok=True（用户已决策，不硬阻断整批）。"""
         self._patch_topo(monkeypatch, [0])
         v = _make_validator()
         v.set_ask_callback(lambda q: {"mode": "skip"})
         it = _intent(fields={"bad_col": 1})  # COL_NOT_FOUND
         sg = _schema_getter(["pet_id"], ["int"])
         out = v.validate_two_layer([it], schema_getter=sg)
-        assert out["ok"] is False  # 要求 A：硬 issue 阻断
-        assert out["user_reply"] is None  # 不 ask
-        assert len(out["tips"]) == 1
-        assert out["tips"][0]["issue_type"] == IssueType.COL_NOT_FOUND.value
+        assert out["ok"] is True  # 用户 skip 后不硬阻断整批
         assert it.validation is not None
-        assert it.validation.skipped is True  # 硬 issue → 标 skipped
+        assert it.validation.skipped is True  # 用户 skip → mark skipped 跳写盘
 
     def test_multi_intent_issues_displayed_all_proceed(self, monkeypatch):
-        """要求 A：多 intent（it1 COL_NOT_FOUND 硬 issue / it2 clean）→
-        it1 标 skipped 阻断，it2 正常 ok；整体 ok=False（含硬 issue）。"""
+        """无 cb：it1 COL_NOT_FOUND 自动解决（幻觉列删），不 skip；it2 clean。
+        整体 ok=True（无失败收尾）。"""
         self._patch_topo(monkeypatch, [0, 1])
         v = _make_validator()
         it1 = _intent(fields={"bad_col": 1})  # COL_NOT_FOUND
@@ -531,38 +529,35 @@ class TestValidateTwoLayer:
                    id(it2): (["quest_id"], ["int"])}
         sg = lambda intent: schemas[id(intent)]
         out = v.validate_two_layer([it1, it2], schema_getter=sg)
-        assert out["ok"] is False  # 含 COL_NOT_FOUND 硬 issue
-        assert len(out["tips"]) == 1  # 仅 it1 有 issue
-        assert it1.validation.skipped is True  # 硬 issue → skipped
+        assert out["ok"] is True
+        assert "bad_col" not in it1.extras["fields"]  # 幻觉列自动删
+        assert it1.validation.skipped is False  # 自动解决不 skip
         assert it2.validation.skipped is False  # clean 不 skip
         assert it2.validation.ok is True
 
-    def test_issues_collected_fields_unchanged_non_blocking(self, monkeypatch):
-        """O3：有 issue + callback 返 field fix → 仍不应用 fix（非阻断展示），
-        ok=True，fields 原样保留，交写后 C 修复。"""
+    def test_type_mismatch_hard_issue_fix_applied(self, monkeypatch):
+        """TYPE_MISMATCH 硬 issue → ask field fix（value）→ 应用 fix → ok=True。"""
         self._patch_topo(monkeypatch, [0])
         v = _make_validator()
-        v.set_ask_callback(lambda q: {"mode": "field",
-                                      "fix_payload": {"fields": {"pet_id": 1}}})
+        v.set_ask_callback(lambda q: {"mode": "field", "value": 1})
         it = _intent(fields={"pet_id": "非数"})  # TYPE_MISMATCH
         sg = _schema_getter(["pet_id"], ["int"])
         out = v.validate_two_layer([it], schema_getter=sg)
-        assert out["ok"] is True  # 非阻断
-        assert it.extras["fields"]["pet_id"] == "非数"  # fix 不应用，原样
-        assert it.validation.ok is True
-        assert len(out["tips"]) == 1  # TYPE_MISMATCH 展示
+        assert out["ok"] is True  # fix 应用后硬 issue 消除
+        assert it.extras["fields"]["pet_id"] == 1  # fix 已应用
+        assert len(out["tips"]) == 0  # 已解决，从 tips 移除
 
     def test_no_callback_non_blocking(self, monkeypatch):
-        """要求 A：无 _ask_callback + COL_NOT_FOUND → 硬 issue 阻断 ok=False。"""
+        """无 cb：COL_NOT_FOUND 自动解决（幻觉列删），不 skip，ok=True。"""
         self._patch_topo(monkeypatch, [0])
         v = _make_validator()  # _ask_callback=None
         it = _intent(fields={"bad_col": 1})
         sg = _schema_getter(["pet_id"], ["int"])
         out = v.validate_two_layer([it], schema_getter=sg)
-        assert out["ok"] is False  # 硬 issue 阻断
-        assert out["user_reply"] is None  # 不 ask
+        assert out["ok"] is True  # 自动解决，无失败收尾
+        assert "bad_col" not in it.extras["fields"]  # 幻觉列自动删
         assert it.validation is not None
-        assert it.validation.skipped is True  # 硬 issue → 标 skipped
+        assert it.validation.skipped is False  # 不 skip
 
     def test_validation_marked_on_all_intents(self, monkeypatch):
         """无 issue 时所有 intent 标 validation.ok=True（下游 ExecuteAgent 据此写盘）。"""
@@ -778,17 +773,17 @@ class TestFieldLayerEnumUniqueRange:
         assert out[id(it)] == []
 
     def test_unique_violation(self, monkeypatch):
-        """④ data_getter.existing_values + 值重复 → UNIQUE_VIOLATION。"""
+        """④ data_getter.existing_values + PK 值重复 → UNIQUE_VIOLATION。"""
         self._patch_topo(monkeypatch, [0])
         v = _make_validator()
         it = _intent(fields={"pet_id": 1, "名称": "朱雀"})
         sg = _schema_getter(["pet_id", "名称"], ["int", "string"])
-        data = {"existing_values": {"名称": {"朱雀", "白虎"}}}
+        data = {"existing_values": {"pet_id": {1, 2}, "名称": {"朱雀", "白虎"}}}
         out = v.validate_field_layer([it], schema_getter=sg,
                                      data_getter=lambda i: data)
         issues = out[id(it)]
         assert any(i.issue_type == IssueType.UNIQUE_VIOLATION.value for i in issues)
-        assert any(i.col == "名称" for i in issues)
+        assert any(i.col == "pet_id" for i in issues)
 
     def test_unique_value_not_in_existing_no_issue(self, monkeypatch):
         """④ 值不在 existing_values → 无 UNIQUE_VIOLATION。"""
@@ -923,20 +918,93 @@ class TestValidateTwoLayerNonBlocking:
     """
 
     def test_issues_collected_but_ok_true(self):
-        """要求 A：COL_NOT_FOUND 属硬 issue → Step2 阻断 ok=False 标 skipped，
-        不再 O3 非阻断继续写盘。RANGE_OUTLIER 等软 issue 仍不阻断。"""
+        """无 cb：COL_NOT_FOUND 自动解决（幻觉列删），不 skip，ok=True。"""
         v = _make_validator()
         v._ask_callback = None  # 无 callback，确保不进 ask 路径
         it = _intent(table="pet", sheet="Pet",
                      fields={"pet_id": 1, "魔法值": 999})
         sg = _schema_getter(["pet_id", "成长率"], ["int", "float"])
         out = v.validate_two_layer([it], schema_getter=sg)
-        # 要求 A：COL_NOT_FOUND 硬 issue → ok=False 阻断（非 ok=True 恒）
-        assert out["ok"] is False
-        # tips 收集到 COL_NOT_FOUND issue（展示用）
-        assert len(out["tips"]) >= 1
-        assert any(t["issue_type"] == IssueType.COL_NOT_FOUND.value
-                   for t in out["tips"])
-        # intent 被标 skipped（硬 issue 不写盘半成品）
+        assert out["ok"] is True  # 自动解决，无失败收尾
+        assert "魔法值" not in it.extras["fields"]  # 幻觉列自动删
         assert getattr(it, "validation", None) is not None
+        assert getattr(it.validation, "skipped", False) is False  # 不 skip
+
+
+class TestBusinessRequiredPack3:
+    """Pack 3：业务必填列 heuristic 写前移到 Step2。
+
+    bench 实证 #4 写 ItemBase 行872 内容={1: 29012, 2: '冰魄碎片'}（仅 2 列），
+    agent.py:4561 _check_missing_required_after_add 写后才发现缺"道具描述"列 →
+    step4 retro 之后 标失败 + 行已落盘半成品。改前移 Step2 validate_field_layer
+    检测 + 直接标 intent.validation.skipped=True 让 Step3 跳写盘。
+    """
+
+    def test_business_required_missing_marks_skipped(self):
+        """指令含引号 + headers 含 名称/描述 kw 列 + LLM 漏产 → MISSING_REQUIRED issue + skipped=True。"""
+        v = _make_validator()
+        v._pk_cols_cache = {}
+        it = _intent(table="item", sheet="ItemBase",
+                     fields={"物品编号": 29012, "名称": "冰魄之戒"})
+        it.raw = "「这个戒指在 item.xlsx」"
+        sg = _schema_getter(
+            ["物品编号", "名称", "道具描述", "道具备注"],
+            ["int", "string", "string", "string"])
+        out = v.validate_field_layer([it], schema_getter=sg, data_getter=lambda x: {})
+        issues = out.get(id(it)) or []
+        assert any(getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
+                   and "描述" in getattr(i, "col", "")
+                   for i in issues)
         assert getattr(it.validation, "skipped", False) is True
+
+    def test_business_required_not_quoted_no_check(self):
+        """指令无引号（用户未显式给名称/描述值）→ 不触发 heuristic check（豁免）。"""
+        v = _make_validator()
+        v._pk_cols_cache = {}
+        it = _intent(table="item", sheet="ItemBase",
+                     fields={"物品编号": 29012, "名称": "冰魄之戒"})
+        it.raw = "冰封王座首通挑战"  # 无引号/中文写法
+        sg = _schema_getter(
+            ["物品编号", "名称", "道具描述", "道具备注"],
+            ["int", "string", "string", "string"])
+        out = v.validate_field_layer([it], schema_getter=sg, data_getter=lambda x: {})
+        issues = out.get(id(it)) or []
+        assert not any(
+            getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
+            and "描述" in getattr(i, "col", "")
+            for i in issues)
+        # skipped 不变（None / False）
+        _sk = getattr(getattr(it, "validation", None), "skipped", False)
+        assert _sk is False
+
+    def test_business_required_all_provided_no_issue(self):
+        """指令含引号 + LLM 给了所有 名称/描述 类列 → 无 issue。"""
+        v = _make_validator()
+        v._pk_cols_cache = {}
+        it = _intent(table="item", sheet="ItemBase",
+                     fields={"物品编号": 29012, "名称": "冰魄之戒", "道具描述": "冰封王座掉落"})
+        it.raw = "「这个戒指在 item.xlsx」"
+        sg = _schema_getter(
+            ["物品编号", "名称", "道具描述", "道具备注"],
+            ["int", "string", "string", "string"])
+        out = v.validate_field_layer([it], schema_getter=sg, data_getter=lambda x: {})
+        issues = out.get(id(it)) or []
+        assert not any(
+            getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
+            for i in issues)
+        assert getattr(it.validation, "skipped", False) is False
+
+    def test_modify_action_not_checked(self):
+        """action=modify 不触发 heuristic check（只有 add 才补必填列场景）。"""
+        v = _make_validator()
+        v._pk_cols_cache = {}
+        it = NLIntent(action="modify", table_hint="item", sheet_hint="ItemBase",
+                      raw="「改戒指描述」", extras={"fields": {"物品编号": 29012}})
+        sg = _schema_getter(
+            ["物品编号", "名称", "道具描述"],
+            ["int", "string", "string"])
+        out = v.validate_field_layer([it], schema_getter=sg, data_getter=lambda x: {})
+        issues = out.get(id(it)) or []
+        assert not any(
+            getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
+            for i in issues)

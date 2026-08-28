@@ -89,8 +89,20 @@ class LocatorResult:
 
     @property
     def is_cross_table(self) -> bool:
-        """是否触发跨表链路径:≥2 候选表 或 含 FK 边。"""
-        return len(self.candidates) >= 2 or bool(self.fk_edges)
+        """是否触发跨表链路径:≥2 规则候选表 或 规则候选间含 FK 边。
+
+        column_extract 补的候选（confidence=0.70，仅作 LLM 参考池扩容，非规则
+        决策）不计入——否则单表查询（如「查询灵兽饕餮」）被列名反查命中的
+        pet_evolve 等参考表撑到 ≥2 候选或抽到 FK 边，误判跨表走 DecomposeAgent
+        而非单表路径。
+        """
+        _rule_cands = [c for c in self.candidates
+                       if getattr(c, "level", "") not in ("column_extract", "substring")]
+        _rule_stems = {c.stem for c in _rule_cands}
+        _rule_fk = [e for e in (self.fk_edges or [])
+                    if getattr(e, "from_stem", "") in _rule_stems
+                    and getattr(e, "to_stem", "") in _rule_stems]
+        return len(_rule_cands) >= 2 or bool(_rule_fk)
 
 
 def _stem_of_path(p: str) -> str:
@@ -99,6 +111,41 @@ def _stem_of_path(p: str) -> str:
     if s.endswith(".xlsx"):
         s = s[:-5]
     return s.rsplit("/", 1)[-1]
+
+
+_IDX_SUFFIX_RE = re.compile(r"\[\d+\]$")
+
+
+def _base_col(col: str) -> str:
+    """列名规范化：'school_ability_id[0]:int' → 'school_ability_id'；
+    '神通id' → '神通id'。剥类型冒号、数组下标、括号注释、换行。"""
+    s = str(col or "").split(":", 1)[0].strip()
+    s = _IDX_SUFFIX_RE.sub("", s)
+    s = s.split("（", 1)[0].split("(", 1)[0].strip()
+    return s
+
+
+def _ref_base(base: str) -> str:
+    """列名 → 被引表名：'school_id'→'school'，'spirit_id'→'spirit'，
+    '物品编号'→'物品'，'talent_id'→'talent'。非引用列返空。"""
+    b = base
+    if not b:
+        return ""
+    if b.endswith("_id") and len(b) > 3:
+        return b[:-3]
+    if b.endswith("编号") and len(b) > 2:
+        return b[:-2]
+    if b.endswith("id") and len(b) > 2:
+        return b[:-2]
+    if b.endswith("ID") and len(b) > 2:
+        return b[:-2]
+    return ""
+
+
+def _is_id_col(base: str) -> bool:
+    """列名是否 id 类（主键候选）：含 id/ID/编号。"""
+    b = base or ""
+    return ("id" in b.lower()) or ("编号" in b)
 
 
 class LocatorAgent(LLMSubAgent):
@@ -193,6 +240,36 @@ class LocatorAgent(LLMSubAgent):
                 _col_stem_freq.setdefault(h.column, set()).add(h.stem)
             _AMBIG_K = 3
             _ambig_cols = {c for c, ss in _col_stem_freq.items() if len(ss) >= _AMBIG_K}
+            # 新增：substring 确定性命中表（判别列直接子串命中）优先补，高置信必留。
+            # 这是"文本原样出现列名"的强证据，不参与 topK=4 截断，防 pve_combat_npc
+            # 等靠判别列命中但被其他 column_extract 表挤出的漏表。
+            # 专有列判据：substring 补候选要求该 stem 至少 1 个命中列是专有列
+            # （该列名在 hits 里只映射 1 个 stem）。跨表共享列（"技能列表"命中
+            # pve_combat_npc+spell_group、"属性修改"命中 item+spell）不作单独证据，
+            # 防 spell/spell_group 等同名列表被误补进候选。
+            _sub_hits = [h for h in column_signal.hits
+                         if getattr(h, "source", "") == "substring"]
+            if _sub_hits:
+                _sub_agg: dict[str, list] = {}
+                _sub_col_freq: dict[str, set] = {}
+                for h in _sub_hits:
+                    _sub_agg.setdefault(h.stem, []).append(h)
+                    _sub_col_freq.setdefault(h.column, set()).add(h.stem)
+                for _s_stem, _s_hs in _sub_agg.items():
+                    if _s_stem in existing:
+                        continue
+                    _disc = [h for h in _s_hs
+                             if h.column not in _GENERIC_COLS
+                             and len(_sub_col_freq.get(h.column, set())) == 1]
+                    if not _disc:
+                        continue
+                    _best_h = max(_disc, key=lambda h: h.score)
+                    candidates.append(CandidateTable(
+                        stem=_s_stem, sheet=_best_h.sheet,
+                        confidence=0.85, level="substring",
+                        matched_term=_best_h.column,
+                    ))
+                    existing.add(_s_stem)
             # 打分:专有列命中数为主,得分次之
             scored: list[tuple[int, float, str]] = []  # (专有列命中数, 最高分, stem)
             for stem, hs in stem_agg.items():
@@ -237,11 +314,35 @@ class LocatorAgent(LLMSubAgent):
                              if self._is_fk_reference_column(c.stem, c.sheet, col))
                 if fk_cnt * 2 >= len(spec_cols):  # FK 占多数 → 附加上下文
                     c.confidence = 0.50
-        # 1b. 复杂输入:FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
+        # 1b-2. §P0 spawn/entity 语义探测（须在 _expand_by_fk 之前：FK 扩表会先把
+        # spawn_quest_entity/entity_prefab 以 0.5/0.4 低置信度加进候选，导致本探测器
+        # 的"已存在"检查跳过、0.8 高置信度写不进去，cap 裁剪时被当弱命中挤出）。
+        # 任务链里"刷XX""放在space_id 坐标""新建一位点击后展开对话"等 spawn/实体语义，
+        # alias 层没有对应词（"实体/NPC"别名不覆盖"长老/叛徒"，spawn 表无别名），
+        # 且 FK 扩表只从"已在候选内"的表出发——entity_prefab 不在候选 → spawn 表
+        # 永远补不进来（school_quest_chain case0 因此漏 3 张链核心表）。通用语义词
+        # 补候选，confidence=0.8 稳过强命中档（≥0.80 必留）。纯召回，LLM 仍据
+        # schema 决定是否产 intent。
+        def _add_if_missing(stem: str, conf: float, level: str, matched: str) -> None:
+            if not any(c.stem == stem for c in candidates):
+                candidates.append(CandidateTable(
+                    stem=stem, confidence=conf, level=level, matched_term=matched))
+        if re.search(r'刷|刷新', text) and re.search(r'坐标|放在|space_id', text):
+            _add_if_missing("spawn_world_entity", 0.8, "spawn_semantic", "刷新+坐标")
+        if '任务' in text and re.search(r'刷|刷新|prefab', text):
+            _add_if_missing("spawn_quest_entity", 0.8, "spawn_semantic", "任务刷新")
+        if re.search(r'新建一位|点击后展开|点击后弹出', text):
+            _add_if_missing("entity_prefab", 0.8, "entity_semantic", "新建实体")
+        # 1b. FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
         #     把 alias 未直接命中但语义相关的表(如 interaction/spawn_world_entity)
         #     纳入候选,而不用 locate_all 全量列名匹配(会引入 40+ 噪声表膨胀 DecomposeAgent 上下文)。
-        if complex_input:
-            for c in self._expand_by_fk(candidates):
+        #     触发条件：complex_input，或规则级候选 ≥2（与 is_cross_table 同口径，
+        #     排除 column_extract/substring 噪声——否则「查询灵兽饕餮」单表查询会被
+        #     pet_refine/pet_evolve 等列名噪声表撑到 ≥2 误触扩表变跨表）。
+        _rule_cands = [c for c in candidates
+                       if getattr(c, "level", "") not in ("column_extract", "substring")]
+        if complex_input or len(_rule_cands) >= 2:
+            for c in self._expand_by_fk(candidates, complex_input):
                 if not any(x.stem == c.stem for x in candidates):
                     candidates.append(c)
         # §P0-3 候选池总量上限：复杂多指令 + 规则ambiguous全收 + 列名补 + FK扩表
@@ -269,7 +370,26 @@ class LocatorAgent(LLMSubAgent):
                 f"候选池超上限({len(candidates)+len(weak[:0])}→{_cand_cap})，"
                 f"按置信度裁剪保留 {len(candidates)} 个")
         # 2. LLM 裁决:歧义或无命中时(复杂输入保留多候选交 DecomposeAgent,不走收敛)
-        if (not complex_input) and (ambiguous or not candidates) and self.parser:
+        # §Step1 定位歧义修复：原逻辑复杂输入一律跳过 LLM 收敛——但 _is_complex_input
+        # 的判定只靠对话/选项/支线/采集/多id 等"内容形态"关键词，覆盖不了"表名相似/
+        # 别名冲突"这类纯定位歧义（如 input 提到「怪物 spawn 表」时 spawn_world_entity
+        # 与 spawn_* 多表 alias 强命中，同档多候选 ambiguous=True，但无对话/选项关键词
+        # → 误判为非复杂输入 → 走 LLM 收敛分支，但 _llm_resolve 只返回单 stem 把候选
+        # 收敛到单表 → 跨表链 is_cross_table=False → 漏触发 DecomposeAgent → 跨表拆分
+        # 变单表退化）。现补判据：ambiguous 歧义若伴有 FK 边（候选间有跨表引用关系，
+        # 说明是跨表链而非纯噪声歧义），不收敛，保留多候选走 DecomposeAgent 让 LLM 在
+        # 拆分阶段（schema+列名信号更全）而非定位阶段做表选择，更不易选错。
+        _ambiguous_with_fk = False
+        if ambiguous:
+            pre_fk_edges = self._collect_fk_edges(candidates)
+            _ambiguous_with_fk = len(pre_fk_edges) > 0
+            if _ambiguous_with_fk:
+                self.add_thinking("定位",
+                    f"歧义候选含 {len(pre_fk_edges)} 条 FK 边，判定为跨表链非纯噪声"
+                    f"歧义，保留 {len(candidates)} 候选交 DecomposeAgent 拆分阶段做表"
+                    f"选择，不在定位层 LLM 收敛单表（防跨表链被短路成单表）")
+        if (not complex_input and not _ambiguous_with_fk
+                and (ambiguous or not candidates) and self.parser):
             llm_stem = self._llm_resolve(text,
                 [c.stem for c in candidates] if candidates else None)
             if llm_stem:
@@ -286,6 +406,13 @@ class LocatorAgent(LLMSubAgent):
                               if c.stem == llm_stem or c.confidence >= 0.90
                               or c.level == "column_extract"]
                 ambiguous = False
+        elif _ambiguous_with_fk:
+            # 歧义 + FK 边：保留多候选交 DecomposeAgent，但降低 ambiguous 标记
+            # （保留只是不再触发 LLM 收敛，is_cross_table 判定仍正确）
+            self.add_thinking("定位",
+                f"歧义候选含 {len(pre_fk_edges)} 条 FK 边，判定为跨表链非纯噪声歧义，"
+                f"保留 {len(candidates)} 候选交 DecomposeAgent 拆分阶段做表选择，"
+                f"不在定位层 LLM 收敛单表（防跨表链被短路成单表）")
         # 3. FK 边:候选表之间的 relation graph 边
         fk_edges = self._collect_fk_edges(candidates)
         self.add_thinking("定位",
@@ -394,40 +521,57 @@ class LocatorAgent(LLMSubAgent):
             return True
         return False
 
-    def _expand_by_fk(self, candidates: list[CandidateTable]) -> list[CandidateTable]:
-        """FK 关系驱动扩表:relation graph 中任一端 stem 在候选内则补对端 stem。
+    def _expand_by_fk(self, candidates: list[CandidateTable],
+                      complex_input: bool = False) -> list[CandidateTable]:
+        """FK 关系驱动扩表:relation graph 任一端 stem 在候选内则补对端 stem。
 
-        多跳传递闭包(O20d):复杂输入经 alias 命中 entity_prefab/quest/reward 后,
-        不仅补直接 FK 对端(interaction/spawn_world_entity),还沿 FK 链继续扩
-        到 2 跳外的关联表(如 reward↔item 经 reward_item→item),使 DecomposeAgent
-        看到完整跨表链。新补表置信度按跳数衰减:0.50/0.40(level=fk_expanded),
-        2 跳上限避免无限膨胀(防 DecomposeAgent 上下文噪声)。
+        非复杂输入：只补「候选表引用列明确指向」的表（fk_inferred，运行时推导）。
+        复杂输入：额外走 BFS 传递闭包多跳扩表（O20d：entity_prefab/quest/reward
+        链的 2 跳外关联表）。
+
+        置信度分档：
+          - fk_inferred（缺口5 运行时推导：候选表引用列明确指向的表）
+            → 0.60，低于 column_extract 0.70（旁证不挤目标表）
+          - fk_expanded（复杂输入 BFS 泛化）→ 0.50/0.40 按跳衰减
 
         缺口4：隐式 FK 发现。case2 school_spirit.spirit_id→pet 未在 table_relations
         声明，关系图无此边。补：扫候选表 header 找 _id/xxxid 后缀列（如 spirit_id），
         用反向列名索引反查含该 id 列的表（pet 含 灵根id），补进 adj 邻接表走 BFS。
         """
         rg = self._get_relation_graph()
-        if rg is None or not candidates:
+        if not candidates:
             return []
         # FK 邻接表:双向(任一端命中候选即扩对端)
         adj: dict[str, set[str]] = {}
-        for r in rg.relations:
-            fs = _stem_of_path(r.from_path)
-            ts = _stem_of_path(r.to_path)
-            if fs == ts or not fs or not ts:
-                continue
-            adj.setdefault(fs, set()).add(ts)
-            adj.setdefault(ts, set()).add(fs)
+        if rg is not None:
+            for r in rg.relations:
+                fs = _stem_of_path(r.from_path)
+                ts = _stem_of_path(r.to_path)
+                if fs == ts or not fs or not ts:
+                    continue
+                adj.setdefault(fs, set()).add(ts)
+                adj.setdefault(ts, set()).add(fs)
         # 缺口4：隐式 FK 扩展。扫候选表 header 的 _id/xxxid 后缀列，
         # 反查含该列（中英文经 alias 对齐）的表加入 adj。
         self._expand_by_implicit_fk(candidates, adj)
-        if not adj:
-            return []
+        # 缺口5：运行时 FK 边推导驱动的扩表（候选表引用列明确指向池外表）。
+        # 这些是强证据表，直接以高置信度返回，不在 BFS 衰减里混。
+        inferred_targets: set[str] = self._expand_by_inferred_fk(candidates, adj)
+        # 非复杂输入：只补引用列直接指向的表（fk_inferred），不走 BFS 多跳——
+        # 多跳会把 guild(16 sheet)/item(11 sheet) 的二级关联（quest/reward/spell）
+        # 全拉进来，噪声压过真正的目标表。复杂输入才需要 BFS 传递闭包。
+        out: list[CandidateTable] = []
+        for stem in sorted(inferred_targets):
+            out.append(CandidateTable(
+                stem=stem, confidence=0.60, level="fk_inferred",
+                matched_term="fk_inferred",
+            ))
+        if not complex_input:
+            return out
         # BFS 多跳,跳数衰减置信度,2 跳上限
         import os as _os
         max_hops = max(1, int(_os.environ.get("CODEMAKER_LOCATOR_FK_HOPS", "2")))
-        seen = {c.stem for c in candidates}
+        seen = {c.stem for c in candidates} | inferred_targets
         new_entries: list[tuple[str, int]] = []  # (stem, hop)
         frontier = list(seen)
         for hop in range(1, max_hops + 1):
@@ -444,7 +588,6 @@ class LocatorAgent(LLMSubAgent):
                 break
         # 置信度衰减:hop1=0.50, hop2=0.40(每跳 -0.10)
         conf_by_hop = {1: 0.50, 2: 0.40}
-        out: list[CandidateTable] = []
         for stem, hop in new_entries:
             out.append(CandidateTable(
                 stem=stem, confidence=conf_by_hop.get(hop, 0.30),
@@ -515,6 +658,61 @@ class LocatorAgent(LLMSubAgent):
                             adj.setdefault(hit_stem, set()).add(cand.stem)
                         break  # 命中一次即够，避免重复扫
 
+    def _expand_by_inferred_fk(self, candidates: list[CandidateTable],
+                               adj: dict[str, set[str]]) -> set[str]:
+        """缺口5：运行时 FK 边推导驱动的扩表（零手工、实时跟随表结构）。
+
+        扫候选表真实表头里的引用列（xxx_id/xxxid/xxx编号 → ref），在全表池
+        反查 ref 命中的真实表，补进 adj 并返回强证据目标 stem 集合。
+        与 _expand_by_implicit_fk 不同：本方法按「列名 → 被引表名」精确推导
+        （school_ability_id → school_ability），而 implicit 依赖反向列名索引
+        （跨表共享列名时不准）。
+        典型场景：school.School.school_ability_id[0] → school_ability 未进候选
+        （「神通」别名把候选引到泛化 ability.xlsx），此方法把它拉回来。
+        """
+        _cli = getattr(self, "_cli", None)
+        if not _cli or not candidates:
+            return set()
+        try:
+            all_tables = {p.stem: p for p in _cli.list_tables()}
+        except Exception:  # noqa: BLE001
+            return set()
+        all_stems = set(all_tables.keys())
+        if not all_tables:
+            return set()
+        inferred: set[str] = set()
+        for cand in candidates:
+            p = all_tables.get(cand.stem)
+            if p is None:
+                continue
+            try:
+                sheets = [s for s in _cli.get_sheets(p)
+                          if s and "说明" not in s and "CONFIG" not in s.upper()]
+            except Exception:  # noqa: BLE001
+                continue
+            for sh in sheets:
+                try:
+                    hdrs = _cli.read_header(p, sh) or []
+                    trow = _cli.read_type_row(p, sh) or []
+                except Exception:  # noqa: BLE001
+                    continue
+                for h, t in zip(hdrs, trow):
+                    col = _base_col(str(t or "").strip() or str(h or "").strip())
+                    if not col:
+                        continue
+                    ref = _ref_base(col)
+                    if not ref or ref == cand.stem:
+                        continue
+                    targets = [s for s in all_stems if s == ref]
+                    if not targets and ref.endswith("_id"):
+                        body = ref[:-3]
+                        targets = [s for s in all_stems if s == body]
+                    for to_stem in targets:
+                        inferred.add(to_stem)
+                        adj.setdefault(cand.stem, set()).add(to_stem)
+                        adj.setdefault(to_stem, set()).add(cand.stem)
+        return inferred
+
     def _collect_all_level_hits(self, text: str) -> list:
         """复杂输入:返回 TableLocator.locate_all 全部级别命中(含 0.60 列名命中)。
 
@@ -530,7 +728,13 @@ class LocatorAgent(LLMSubAgent):
             return []
 
     def _llm_resolve(self, text: str, candidates: list[str] = None) -> Optional[str]:
-        """歧义/未命中时 LLM 选表 stem。复用 StepAIEnhancer.ai_resolve_table prompt 风格。"""
+        """歧义/未命中时 LLM 选表 stem。复用 StepAIEnhancer.ai_resolve_table prompt 风格。
+
+        §Step1 定位歧义修复：纯噪声歧义（无 FK 边，候选间无关联）才走单 stem 收敛。
+        有 FK 边的歧义已在上层 locate() 直接判定保留多候选，不会进到本方法。
+        本方法仅服务于"真歧义但非跨表链"的场景（如 spawn_world_entity 与
+        spawn_region 同档命中但无 FK 关系），LLM 选最贴近动作主语的单表收敛。
+        """
         all_tables = []
         try:
             if self._cli and hasattr(self._cli, "list_tables"):
@@ -574,23 +778,152 @@ class LocatorAgent(LLMSubAgent):
         return stem
 
     def _collect_fk_edges(self, candidates: list[CandidateTable]) -> list[FKEdge]:
-        """从 RelationGraph 抽候选表之间的 FK 边。
+        """抽候选表之间的 FK 边：运行时自动推导为主，静态 json 为覆盖层。
 
-        仅保留两端 stem 均在 candidates 内的边(聚焦跨表链)。
+        运行时推导（体现 Agent 自主能力，零手工维护）：
+          扫候选表每个业务 sheet 的真实表头（row1 显示名 + row2 规范名），
+          按列名模式识别引用列（xxx_id/xxxid/xxx编号 → xxx），再在候选池内
+          反查被引表的主键列（首列 / 与 stem 同名列 / 任意 id 列），自动建边。
+          这样学校链 school→school_ability→school_spirit 等无需在
+          table_relations.json 里人工登记，新增表/新增列自动生效。
+
+        静态 json（table_relations.json）作为人工补充的覆盖层：优先采纳
+        静态边（含人工指定 from_column/to_column 的精确语义），运行时推导
+        只补静态边没有覆盖到的表对。
         """
-        rg = self._get_relation_graph()
-        if rg is None or not candidates:
+        if not candidates:
             return []
         cand_stems = {c.stem for c in candidates}
         edges: list[FKEdge] = []
-        for r in rg.relations:
-            fs = _stem_of_path(r.from_path)
-            ts = _stem_of_path(r.to_path)
-            if fs in cand_stems and ts in cand_stems and fs != ts:
-                edges.append(FKEdge(
-                    from_stem=fs, from_sheet=r.from_sheet, from_column=r.from_column,
-                    to_stem=ts, to_sheet=r.to_sheet, to_column=r.to_column,
-                ))
+        seen: set[tuple] = set()
+
+        def _add(e: FKEdge) -> None:
+            key = (e.from_stem, e.from_sheet, _base_col(e.from_column),
+                   e.to_stem, e.to_sheet, _base_col(e.to_column))
+            if key in seen:
+                return
+            seen.add(key)
+            edges.append(e)
+
+        # 1) 静态 json（人工覆盖层，优先）
+        rg = self._get_relation_graph()
+        if rg is not None:
+            for r in rg.relations:
+                fs = _stem_of_path(r.from_path)
+                ts = _stem_of_path(r.to_path)
+                if fs in cand_stems and ts in cand_stems and fs != ts:
+                    _add(FKEdge(
+                        from_stem=fs, from_sheet=r.from_sheet,
+                        from_column=r.from_column,
+                        to_stem=ts, to_sheet=r.to_sheet, to_column=r.to_column,
+                    ))
+        # 2) 运行时自动推导（主路径，体现 Agent 能力）
+        for e in self._infer_fk_edges(candidates):
+            _add(e)
+        return edges
+
+    def _infer_fk_edges(self, candidates: list[CandidateTable]) -> list[FKEdge]:
+        """运行时 FK 边自动推导：候选表真实表头 → 列名模式 → 边。
+
+        仅依赖 cli（真实读 xlsx 表头）+ 候选池内反查，不依赖任何手工关系表。
+        每表每个业务 sheet 提取「本表主键列集合」与「引用列集合」：
+          - 主键列：首列 / 列名以本表 stem 开头或同名的 id 列
+            （如 school.School 首列 'school:int'；spirit.Spirit 'spirit_id:int'）
+          - 引用列：xxx_id / xxxid / xxx编号 模式的列，ref=xxx
+        对每条引用列，在候选池内找 ref 命中的表，向该表每个主键列建一条 FKEdge。
+        """
+        cli = getattr(self, "_cli", None)
+        if not cli or not candidates:
+            return []
+        try:
+            all_tables = {p.stem: p for p in cli.list_tables()}
+        except Exception:  # noqa: BLE001
+            all_tables = {}
+        if not all_tables:
+            return []
+
+        cand_stems = {c.stem for c in candidates}
+        # 候选表 → 主键列 {stem: [(sheet, col)]}
+        pk_cols: dict[str, list[tuple[str, str]]] = {}
+        # 候选表 → 引用列 {stem: [(sheet, col, ref)]}
+        ref_cols: dict[str, list[tuple[str, str, str]]] = {}
+
+        for stem in cand_stems:
+            p = all_tables.get(stem)
+            if p is None:
+                continue
+            try:
+                sheets = [s for s in cli.get_sheets(p)
+                          if s and "说明" not in s and "CONFIG" not in s.upper()]
+            except Exception:  # noqa: BLE001
+                continue
+            for sh in sheets:
+                try:
+                    hdrs = cli.read_header(p, sh) or []
+                    trow = cli.read_type_row(p, sh) or []
+                except Exception:  # noqa: BLE001
+                    continue
+                pk_for_sheet: list[str] = []
+                ref_for_sheet: list[tuple[str, str]] = []
+                for i, (h, t) in enumerate(zip(hdrs, trow)):
+                    # 规范名优先（row2，如 school_ability_id[0]:int）；空则显示名
+                    col_raw = str(t or "").strip() or str(h or "").strip()
+                    col = _base_col(col_raw)
+                    if not col:
+                        continue
+                    # 主键判定（严格，防多 sheet 表每 sheet 首列都当 PK 的噪声）：
+                    #   ① 首列 且 列名是 id 类 → 主键
+                    #   ② 列名 == 本表 stem（如 school / spirit_id==spirit）
+                    if (i == 0 and _is_id_col(col)) or col.lower() == stem.lower():
+                        if col not in pk_for_sheet:
+                            pk_for_sheet.append(col)
+                    # 引用列判定：xxx_id / xxxid / xxx编号
+                    ref = _ref_base(col)
+                    if ref and ref != stem:
+                        ref_for_sheet.append((col, ref))
+                if pk_for_sheet:
+                    pk_cols.setdefault(stem, []).extend(
+                        (sh, c) for c in pk_for_sheet)
+                if ref_for_sheet:
+                    ref_cols.setdefault(stem, []).extend(
+                        (sh, c, r) for c, r in ref_for_sheet)
+
+        # 同表多 sheet 引用：ref 精确命中候选 stem → 直接建边
+        edges: list[FKEdge] = []
+        # ref → 命中的候选 stem（精确 stem 相等优先；否则首段匹配）
+        for from_stem, refs in ref_cols.items():
+            for from_sheet, col, ref in refs:
+                targets = [t for t in cand_stems if t == ref]
+                # 复合引用列（school_ability_id）的 ref=school_ability 未命中时，
+                # 去掉末尾 _id 段后的主体（school_ability）才是真正的被引表。
+                # 不做"截到 stem"这类宽匹配——防 school_ability_id 错指 school。
+                if not targets and ref.endswith("_id"):
+                    body = ref[:-3]
+                    targets = [t for t in cand_stems if t == body]
+                if not targets:
+                    continue
+                for to_stem in targets:
+                    if to_stem == from_stem:
+                        continue
+                    to_pk = pk_cols.get(to_stem)
+                    if not to_pk:
+                        continue
+                    # 每条引用列对每张被引表只取 1 条最佳主键边（防 item 11 sheet
+                    # 每个 sheet 首列都建边的噪声）。优先级：列名==to_stem（主键名
+                    # 与表名同）→ 首列 → 其余。
+                    best = None
+                    for to_sheet, to_col in to_pk:
+                        score = (2 if to_col.lower() == to_stem.lower() else 0) \
+                            + (1 if to_col == to_pk[0][1] else 0)
+                        if best is None or score > best[0]:
+                            best = (score, to_sheet, to_col)
+                    if best:
+                        edges.append(FKEdge(
+                            from_stem=from_stem, from_sheet=from_sheet,
+                            from_column=col,
+                            to_stem=to_stem, to_sheet=best[1],
+                            to_column=best[2],
+                        ))
         return edges
 
     def _get_locator(self):

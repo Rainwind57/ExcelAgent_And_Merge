@@ -1,0 +1,545 @@
+"""Agent 相关数据模型。"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+# ── Agent Chat ──
+
+class AgentChatRequest(BaseModel):
+    """Agent 聊天请求。"""
+    message: str = Field(..., description="自然语言指令")
+    session_id: str = Field(default="default", description="会话 ID")
+    dry_run: bool = Field(default=False, description="仅预览不实际修改")
+    confirm_token: Optional[str] = Field(
+        default=None,
+        description="二次确认令牌：上一次响应 needs_confirm=True 时回传，跳过 dry-run 直接执行危险操作",
+    )
+    confirm_cascade: bool = Field(
+        default=True,
+        description="确认时是否级联删除关联数据：True=级联；False=仅删当前行。仅确认回传时有效",
+    )
+
+
+class AgentStepInfo(BaseModel):
+    """单步执行信息。"""
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+class CellChange(BaseModel):
+    """单个单元格变更。"""
+    col: int
+    col_name: str = ""
+    old_value: Any = None
+    new_value: Any = None
+
+
+class DiffPreview(BaseModel):
+    """差异预览。"""
+    file: str
+    sheet: str
+    row: Optional[int] = None
+    changes: List[CellChange] = []
+
+
+class ResultColumn(BaseModel):
+    """表体结构单列（增删改查统一形态）。
+
+    语义随操作而异：
+      set   → old_value=修改前, new_value=修改后（仅变更列）
+      add   → new_value=新增值
+      delete→ old_value=被删值
+      get   → new_value=查询到的值
+    """
+    col: int
+    col_name: str = ""
+    old_value: Any = None
+    new_value: Any = None
+
+
+class ResultTable(BaseModel):
+    """操作结果表体（列名+行值），供前端直观渲染。"""
+    kind: str = ""  # add | delete | set | get | clear
+    file: str = ""
+    sheet: str = ""
+    row: Optional[int] = None
+    columns: List[ResultColumn] = []
+
+
+class SubTaskInfo(BaseModel):
+    """复合操作（多指令）的单个子任务分组。
+
+    一个自然语言输入可能被解析为多条指令（如"新增X并修改Y"），每条指令
+    是一个子任务，含自己的步骤、结果行和定位表信息，供前端分段渲染，
+    而非把所有步骤平铺在一起。
+    """
+    index: int = 1
+    intent_action: str = ""
+    ok: bool = True
+    message: str = ""
+    steps: List[AgentStepInfo] = []
+    result_table: Optional[ResultTable] = None
+    table_stem: str = ""
+    table_sheet: str = ""
+    # C 方案：部分成功时缺值列清单，前端据此渲染"需补值"提示
+    needs_user_fill: List[Dict[str, Any]] = []
+    partial: bool = False
+
+
+class AgentChatResponse(BaseModel):
+    """Agent 聊天响应。"""
+    ok: bool
+    session_id: str = "default"
+    intent: str = ""
+    message: str = ""
+    reply_type: str = ""  # "qa" 或 "crud"，区分问答与表格操作
+    steps: List[AgentStepInfo] = []
+    data: Optional[Dict[str, Any]] = None
+    diff_preview: Optional[DiffPreview] = None
+    result_table: Optional[ResultTable] = None
+    sub_tasks: List[SubTaskInfo] = []
+    error: Optional[str] = None
+    needs_manual_fix: bool = False  # 公式缓存修复失败时为 True
+    cache_message: str = ""  # 公式缓存校验信息
+    checkpoint_id: Optional[str] = None  # 本次写动作成功后拍的 checkpoint id（QA/失败为 None）
+    needs_confirm: bool = False  # 危险操作（级联删除/列删除）需二次确认
+    confirm_token: Optional[str] = None  # 确认令牌，前端点确认后回传本值
+    confirm_message: Optional[str] = None  # 确认提示文案（级联影响预览）
+    confirm_kind: str = ""  # 确认类型：cascade（选是否级联）/ confidence（低置信度确认删除）
+    # T2: 行定位命中歧义时的候选行列表（含当前行 + alternatives），供前端渲染候选行按钮，
+    # 用户点击即发"用行N"覆盖。空列表表示无歧义或未定位。
+    # 每项 {"row": int, "value": str, "current": bool}
+    row_alternatives: List[Dict[str, Any]] = []
+
+    # R9: 思考过程步骤列表，供前端折叠展示（路由解析/列匹配/行定位等阶段思考）。
+    # 每项 {"phase": str, "detail": str}，phase 为阶段名（如"路由""定位""执行"）。
+    thinking_steps: List[Dict[str, str]] = []
+
+    # R9: 查询多行命中时，所有命中的结果表列表（get 操作 && 多行命中）。
+    # 每项为 ResultTable，前端据此渲染多行表格。
+    multi_results: List[ResultTable] = []
+
+    # #40 结构化失败清单：阻断错误经中断反问仍未解/用户跳过时落此，
+    # 供前端渲染失败块（表/列/根因/已试策略/原指令）。每项见 AgentResult.failures。
+    failures: List[Dict[str, Any]] = []
+
+    # ── 配表模式增强：跨表搜索续传 ──
+    # 跨表搜索候选结果（用户确认跨表搜索后填充）：
+    # 每项 {"table_stem", "sheet", "match_type": "exact"|"similar",
+    #       "matches": [{"row", "value", "score"}]}
+    cross_table_candidates: List[Dict[str, Any]] = []
+    # 暂态搜索上下文（行未命中暂停时填，前端据此渲染"是否跨表搜索"按钮）：
+    # {"table_stem", "sheet", "col_name", "col_idx", "value", "top5": [{row, value, score}]}
+    pending_search: Optional[Dict[str, Any]] = None
+
+    # C 方案：部分成功（行已写入但缺值列待补）。
+    # LLM 标 <auto> 的非主键 int 列 → 行照常写入（缺该列），不中断事务，
+    # 此清单列出缺值列供前端渲染"需补值"提示卡片。
+    # 每项 {"col", "table", "sheet", "reason"}
+    needs_user_fill: List[Dict[str, Any]] = []
+    partial: bool = False
+
+
+# ── Table Browser ──
+
+class SheetSummary(BaseModel):
+    """Sheet 摘要信息。"""
+    name: str
+    row_count: int = 0
+    headers: List[str] = []
+
+
+class TableInfo(BaseModel):
+    """表格信息。"""
+    stem: str
+    path: str
+    sheets: List[SheetSummary] = []
+
+
+class ColumnMeta(BaseModel):
+    """R20: 列元信息（列名+列号），供同名列消歧。"""
+    col_index: int = Field(..., description="列号 1-based")
+    name: str = Field(..., description="列名（清理后）")
+
+
+class SheetDataPage(BaseModel):
+    """Sheet 分页数据。"""
+    sheet: str
+    headers: List[str]
+    rows: List[List[Any]]
+    total_rows: int
+    page: int
+    page_size: int
+    data_start: int = 1  # 数据起始 Excel 行号（1-based），供前端原地编辑算绝对行号
+    columns_meta: List[ColumnMeta] = []      # R20: 列名+列号，同名列消歧（始终填充）
+    columns: List[FormColumn] = []           # R21: 列约束，仅 include_columns=True 时填充
+
+
+class SearchResult(BaseModel):
+    """搜索结果。
+
+    row: 绝对 Excel 行号（1-based，供写操作定位）。
+    data_row: 浏览页相对行号（1-based，对齐前端 browse 表格 "#" 列，供跳转高亮）。
+    """
+    table_stem: str
+    table_path: str
+    sheet: str
+    row: int
+    col: int
+    col_name: str
+    cell_value: Any
+    row_data: List[Any]
+    data_row: int = 0
+
+
+class SearchResponse(BaseModel):
+    """搜索响应。"""
+    keyword: str
+    results: List[SearchResult] = []
+    total: int = 0
+
+
+# ── Preview ──
+
+class PreviewRequest(BaseModel):
+    """预览请求。"""
+    message: str = Field(..., description="自然语言指令")
+    table_hint: Optional[str] = None
+
+
+class PreviewResponse(BaseModel):
+    """预览响应。"""
+    action: str = ""
+    table_stem: str = ""
+    sheet: str = ""
+    message: str = ""
+    changes: List[CellChange] = []
+
+
+# ── Validate ──
+
+class ValidateRequest(BaseModel):
+    """验证请求。"""
+    tables: Optional[List[str]] = None
+    check_types: List[str] = Field(
+        default=["referential", "uniqueness", "range"],
+        description="检查类型：referential, uniqueness, range, type"
+    )
+
+
+class ValidationIssue(BaseModel):
+    """单个验证问题。"""
+    severity: str = "warning"  # error, warning, info
+    table: str = ""
+    sheet: str = ""
+    row: Optional[int] = None
+    col: Optional[int] = None
+    col_name: str = ""
+    message: str = ""
+    suggestion: str = ""
+
+
+class ValidateResponse(BaseModel):
+    """验证响应。"""
+    ok: bool = True
+    issues: List[ValidationIssue] = []
+    summary: str = ""
+
+
+# ── Batch ──
+
+class BatchRequest(BaseModel):
+    """批量操作请求。"""
+    messages: List[str] = Field(..., description="多条自然语言指令")
+    session_id: str = "default"
+    stop_on_error: bool = True
+
+
+class BatchItemResult(BaseModel):
+    """单条指令结果。"""
+    index: int
+    message: str
+    ok: bool
+    result_message: str = ""
+    error: Optional[str] = None
+
+
+class BatchResponse(BaseModel):
+    """批量操作响应。"""
+    ok: bool = True
+    results: List[BatchItemResult] = []
+    success_count: int = 0
+    fail_count: int = 0
+
+
+# ── Snapshot ──
+
+class SnapshotInfo(BaseModel):
+    """快照信息。"""
+    id: str
+    name: str
+    created_at: str
+    file_count: int = 0
+
+
+class SnapshotListResponse(BaseModel):
+    """快照列表。"""
+    snapshots: List[SnapshotInfo] = []
+
+
+class SnapshotCreateRequest(BaseModel):
+    """创建快照请求。"""
+    name: str = Field(default="", description="快照名称")
+
+
+# ── Suggest Merge ──
+
+class SuggestMergeRequest(BaseModel):
+    """AI 辅助冲突解决请求。"""
+    table_stem: str = Field(..., description="表格名称")
+    sheet: str = Field(..., description="Sheet 名称")
+    col_name: str = Field(..., description="列名")
+    row_key: str = Field(default="", description="行主键")
+    base_value: Any = None
+    base_file: str = Field(default="", description="基准文件名（仅参考，AI 不建议采纳基准）")
+    versions: Dict[str, Any] = Field(default_factory=dict, description="各版本的值 {版本名: 值}")
+    version_meta: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="各文件 SVN 版本元信息 {文件名: {rev, author, date}}，供 LLM 按修订时间先后给建议；缺失则回退规则",
+    )
+
+
+class SuggestMergeResponse(BaseModel):
+    """AI 辅助冲突解决响应。"""
+    suggested_version: str = ""
+    suggestion: str = ""
+    reasoning: str = ""
+    confidence: float = 0.0
+
+
+class SuggestMergeBatchItem(BaseModel):
+    """批量建议中的单个单元格请求。"""
+    ri: int
+    ci: int
+    col_name: str = ""
+    row_key: str = ""
+    base_value: Any = None
+    versions: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SuggestMergeBatchRequest(BaseModel):
+    """批量 AI 建议请求：并行调用 LLM 为多个冲突单元格生成建议。"""
+    table_stem: str
+    sheet: str
+    base_file: str = Field(default="", description="基准文件名（仅参考，AI 不建议采纳基准）")
+    version_meta: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    items: List[SuggestMergeBatchItem]
+
+
+class SuggestMergeBatchResponse(BaseModel):
+    """批量 AI 建议响应：{ri-ci: SuggestMergeResponse}。"""
+    results: Dict[str, SuggestMergeResponse] = Field(default_factory=dict)
+
+
+# ── Add Form（表单式新增）──
+
+class FormColumn(BaseModel):
+    """表单单列元信息（表头 + 约束）。"""
+    col: int                          # 1-based 列号
+    col_name: str = ""                # 清理后的列名
+    col_type: str = ""                # int / float / string / bool
+    required: bool = False            # 必填
+    unique: bool = False              # 唯一
+    default: Any = None               # 默认值
+    ref_table: str = ""               # 外键引用表
+    is_id: bool = False               # ID/编号类列
+    is_name: bool = False             # 名称类列
+    description: str = ""             # 约束的可读描述（供前端展示）
+
+
+class AddFormBuildRequest(BaseModel):
+    """表单构建请求：自然语言描述匹配目标表。"""
+    text: str = Field(..., description="自然语言描述，如 '增加灵兽'、'新增建筑'")
+
+
+class AddFormResponse(BaseModel):
+    """表单构建响应：表头 + 约束 + 空行。"""
+    ok: bool
+    table_stem: str = ""
+    sheet: str = ""
+    table_path: str = ""
+    columns: List[FormColumn] = []
+    empty_row: Dict[str, Any] = {}    # {列号字符串: 默认值或空串}
+    message: str = ""
+
+
+class FormValidateRequest(BaseModel):
+    """表单校验请求。"""
+    table_stem: str
+    sheet: str
+    values: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="{列号或列名: 值}，列号可为整数或字符串数字",
+    )
+
+
+class FieldIssue(BaseModel):
+    """单列校验问题（前端据此标红）。"""
+    col: int
+    col_name: str = ""
+    severity: str = "error"           # error | warning
+    message: str = ""
+
+
+class AddFormValidateResponse(BaseModel):
+    """表单校验响应：无 error 即 ok=True（warning 不阻断）。"""
+    ok: bool
+    errors: List[FieldIssue] = []
+    warnings: List[FieldIssue] = []
+    coerced_values: Dict[str, Any] = {}   # {列号字符串: 类型转换后的值}
+    message: str = ""
+
+
+class FormCommitRequest(BaseModel):
+    """表单提交请求。"""
+    table_stem: str
+    sheet: str
+    values: Dict[str, Any]
+    confirm: bool = False             # True 时跳过校验直接提交
+    dry_run: bool = False             # R23: True 时只校验+返回预览，不写盘（二段提交第一阶段）
+
+
+# ── Cell Update（R8 原地编辑）──
+
+class CellUpdateRequest(BaseModel):
+    """单元格原地更新请求（跳过 NL 解析直接写值）。"""
+    table_stem: str
+    sheet: str
+    row: int = Field(..., description="Excel 绝对行号 1-based")
+    col: int = Field(..., description="列号 1-based")
+    value: str = Field(..., description="新值（字符串，后端按列类型转换）")
+
+
+class CellUpdateResponse(BaseModel):
+    """单元格更新响应。"""
+    ok: bool
+    table_stem: str = ""
+    sheet: str = ""
+    row: Optional[int] = None
+    col: Optional[int] = None
+    col_name: str = ""
+    old_value: Any = None
+    new_value: Any = None
+    message: str = ""
+    error: Optional[str] = None
+
+
+class BatchCellUpdateItem(BaseModel):
+    """R22 批量改值单项。"""
+    col: int = Field(..., description="列号 1-based")
+    value: str = Field(..., description="新值（字符串，后端按列类型转换）")
+
+
+class BatchCellUpdateRequest(BaseModel):
+    """R22 批量改值请求：同行多列事务性更新（全成或全失败）。"""
+    table_stem: str
+    sheet: str
+    row: int = Field(..., description="Excel 绝对行号 1-based")
+    updates: List[BatchCellUpdateItem] = Field(..., description="待更新列清单")
+    atomic: bool = Field(default=True, description="原子模式：任一列校验失败则全部不写")
+
+
+class BatchCellUpdateResult(BaseModel):
+    """R22 批量改值单列结果。"""
+    col: int
+    col_name: str = ""
+    old_value: Any = None
+    new_value: Any = None
+    ok: bool = True
+    error: Optional[str] = None
+
+
+class BatchCellUpdateResponse(BaseModel):
+    """R22 批量改值响应。"""
+    ok: bool
+    table_stem: str = ""
+    sheet: str = ""
+    row: Optional[int] = None
+    results: List[BatchCellUpdateResult] = []
+    message: str = ""
+
+
+# ── R24 行/列增删 ──
+
+class RowDeleteRequest(BaseModel):
+    """R24 删行请求。"""
+    table_stem: str
+    sheet: str
+    row: int = Field(..., description="Excel 绝对行号 1-based")
+
+
+class RowInsertRequest(BaseModel):
+    """R24 插行请求。"""
+    table_stem: str
+    sheet: str
+    row: int = Field(..., description="在此行上方插入（1-based，应 >= 数据起始行）")
+    values: Dict[str, Any] = Field(default_factory=dict, description="{列号字符串: 值}，可空")
+
+
+class ColumnOpRequest(BaseModel):
+    """R24 列增删请求（高风险，需 confirm）。"""
+    table_stem: str
+    sheet: str
+    col: int = Field(..., description="列号 1-based（删列/在此列左侧插入）")
+    col_name: str = Field("", description="新增列名")
+    col_type: str = Field("", description="新增列类型如 int/string")
+    confirm: bool = Field(False, description="列操作高风险，必须 confirm=True 才执行")
+
+
+class RowOpResponse(BaseModel):
+    """R24 行/列操作响应。"""
+    ok: bool
+    table_stem: str = ""
+    sheet: str = ""
+    row: Optional[int] = None
+    col: Optional[int] = None
+    message: str = ""
+    warnings: List[str] = []     # 公式位移等风险提示
+
+
+class SuggestRow(BaseModel):
+    """R19 相近项建议单条。"""
+    row: int = Field(..., description="Excel 绝对行号 1-based")
+    value: str = Field(..., description="定位列值")
+    score: float = Field(..., description="相似度 [0,1]")
+    confidence: str = Field("", description="high/medium/low")
+    summary: Dict[str, Any] = Field({}, description="行内关键字段摘要（列名→值，前3个非空）")
+
+
+class SuggestResponse(BaseModel):
+    """R19 相近项建议响应：名称定位失败时返回 top-N 相近行。"""
+    table_stem: str = ""
+    sheet: str = ""
+    col: str = Field("", description="实际使用的定位列名")
+    col_index: int = Field(0, description="定位列号 1-based")
+    value: str = Field("", description="查询值")
+    suggestions: List[SuggestRow] = []
+    total: int = 0
+    message: str = ""
+
+
+class AddFormCommitResponse(BaseModel):
+    """表单提交响应。"""
+    ok: bool
+    table_stem: str = ""
+    sheet: str = ""
+    new_row: Optional[int] = None
+    inserted_values: Dict[str, Any] = {}
+    sorted: bool = False              # 是否已按主键排序
+    dry_run: bool = False             # R23: True 表示仅预览未写盘
+    message: str = ""
+    errors: List[FieldIssue] = []

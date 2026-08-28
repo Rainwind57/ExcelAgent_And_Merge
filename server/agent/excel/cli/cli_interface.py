@@ -210,6 +210,10 @@ class StubCodeMakerCLI(CodeMakerCLI):
         self._cache: dict[tuple[str, str], Any] = {}
         # 5.6：read_sheet 全量结果缓存，键 (path, sheet)，写操作经 _invalidate 清除。
         self._row_cache: dict[tuple[str, str], list[list]] = {}
+        # 公式检测缓存：键 (path, mtime)，避免每次 read_sheet 都读 zip 扫描 <f> 标签
+        self._formula_check_cache: dict[tuple[str, float], bool] = {}
+        # xlsx 特性缓存：键 (path, mtime) -> (has_formula, has_comment, has_merge)
+        self._xlsx_features_cache: dict[tuple[str, float], tuple[bool, bool, bool]] = {}
         self._index: dict[str, dict[str, int]] = {}
         self._load_data_start_from_index()
         # T1: 搜索预检用的表索引缓存（含 search_blob），懒加载
@@ -263,7 +267,9 @@ class StubCodeMakerCLI(CodeMakerCLI):
         before = self._formula_validator.snapshot_before(path)
         # 批注快照（环境开关控制，off 则跳过）
         comment_guard = os.environ.get("CODEMAKER_COMMENT_GUARD", "on").lower() != "off"
-        before_comments = self._comment_snapshot(wb) if comment_guard else {}
+        # 无批注表跳过 _comment_snapshot 全量遍历（大表 10w 格遍历秒级开销省掉）
+        _has_comment = self._xlsx_features(path)[1]
+        before_comments = self._comment_snapshot(wb) if (comment_guard and _has_comment) else {}
         # 执行 save
         wb.save(path)
         # 批注守门：reload 做差 → 丢失则原 wb 回写 Comment → 二次 save → 二次做差记数
@@ -474,6 +480,78 @@ class StubCodeMakerCLI(CodeMakerCLI):
             if sheet is None or key[1] == sheet:
                 del self._row_cache[key]
 
+    def _xlsx_features(self, path: Path) -> tuple[bool, bool, bool]:
+        """读 zip 一次检测 (has_formula, has_comment, has_merge)，按 (path, mtime) 缓存。
+
+        读取失败保守返回 (True, True, True)（全走慢路径，不破坏语义）。
+        用于 read_sheet 快读分流 与 写路径快路径 eligibility 判定。
+        """
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return (True, True, True)
+        key = (str(path), mtime)
+        cached = self._xlsx_features_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            import zipfile
+            has_f = has_c = has_m = False
+            with zipfile.ZipFile(path) as zf:
+                for n in zf.namelist():
+                    if n.startswith("xl/worksheets/") and n.endswith(".xml"):
+                        data = zf.read(n)
+                        if not has_f and (b"<f>" in data or b"<f " in data or b"<f/>" in data):
+                            has_f = True
+                        if not has_m and b"<mergeCells" in data:
+                            has_m = True
+                    elif not has_c and n.startswith("xl/") and n.endswith(".xml") and "comments" in n:
+                        has_c = True
+            result = (has_f, has_c, has_m)
+            self._xlsx_features_cache[key] = result
+            return result
+        except Exception:
+            return (True, True, True)
+
+    def _sheet_has_formula(self, path: Path) -> bool:
+        """快速检测文件是否含公式（读 zip 的 worksheet xml 是否含 <f> 标签）。
+
+        结果按 (path, mtime) 缓存。读取失败保守返回 True（走慢路径，不破坏公式语义）。
+        """
+        return self._xlsx_features(path)[0]
+
+    @staticmethod
+    def _normalize_calamine(v):
+        """calamine 读出的值归一对齐 openpyxl 语义。
+
+        - 整数统一为 float（如 100001.0）→ 归一回 int（100001）
+        - 空单元格 calamine 返回 ""（openpyxl 返回 None）→ 归一回 None
+        - 非整数值（如 1.49）保留 float；bool/str 原样返回
+        """
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        if v == "":
+            return None
+        return v
+
+    def _read_sheet_calamine(self, path: Path, sheet: str) -> list[list]:
+        """calamine 快读整表：绕过 openpyxl load_workbook（10w 行约 22s），
+        从 1.4s 级降到亚秒级。读后按 _normalize_calamine 归一，语义对齐 openpyxl。
+
+        dsr 从索引取（1-based），切片 rows[dsr-1:] 后过滤全 None 空行。
+        calamine 读取失败时抛异常，由调用方回退 openpyxl 路径。
+        """
+        from python_calamine import CalamineWorkbook
+        cw = CalamineWorkbook.from_path(str(path))
+        raw_rows = cw.get_sheet_by_name(sheet).to_python()
+        dsr = self._resolve_data_start(path, sheet)
+        result: list[list] = []
+        for row in raw_rows[dsr - 1:]:
+            nrow = [self._normalize_calamine(v) for v in row]
+            if any(v is not None for v in nrow):
+                result.append(nrow)
+        return result
+
     def _detect_formula(self, path: Path, sheet: str, row: int, col: int) -> str | None:
         """检测单元格是否为公式。
 
@@ -543,8 +621,13 @@ class StubCodeMakerCLI(CodeMakerCLI):
             最后一个有数据的行号；若 data_start_row 起完全无数据，返回 data_start_row - 1。
         """
         last = data_start_row - 1
-        for r in range(data_start_row, ws.max_row + 1):
-            if any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1)):
+        # 缓存 max_row/max_column：openpyxl 的 max_row/max_column 是动态 property，
+        # 每次求值都 O(n_cells) 遍历 _cells 字典；循环内反复求值会退化为 O(N^2)，
+        # 10w 行大表在此直接卡死（实测 >60s）。提到循环外一次求值即可。
+        max_row = ws.max_row
+        max_col = ws.max_column
+        for r in range(data_start_row, max_row + 1):
+            if any(ws.cell(r, c).value is not None for c in range(1, max_col + 1)):
                 last = r
         return last
 
@@ -574,6 +657,37 @@ class StubCodeMakerCLI(CodeMakerCLI):
         Returns:
             表头行各列的字符串值列表（由 _header_of 提取）。
         """
+        # 无公式表：calamine 读真实表头（第1行 + 第2行类型行回退翻译），
+        # 摆脱索引缓存过期脏读（watchdog 未安装/外部改表时索引可能滞后），
+        # 同时免 openpyxl 大表 load（~22s）。表头是元数据，读前2行毫秒级。
+        if not self._sheet_has_formula(path):
+            try:
+                from python_calamine import CalamineWorkbook
+                from ..locator.column_name_resolver import resolve_header_cell
+                cw = CalamineWorkbook.from_path(str(path))
+                sh = cw.get_sheet_by_name(sheet)
+                it = sh.iter_rows()
+                first = next(it, None)
+                second = next(it, None)
+                if first is None:
+                    return []
+                header_vals = [self._normalize_calamine(v) for v in first]
+                type_vals = ([self._normalize_calamine(v) for v in second]
+                             if second is not None else [])
+                result = []
+                n = max(len(header_vals), len(type_vals))
+                for c in range(n):
+                    hv = header_vals[c] if c < len(header_vals) else None
+                    tv = type_vals[c] if c < len(type_vals) else None
+                    resolved = resolve_header_cell(hv, tv)
+                    result.append(str(resolved) if resolved is not None else "")
+                # 去尾部全空列（与 read_browse 一致）
+                while result and result[-1] == "":
+                    result.pop()
+                return result
+            except Exception:
+                pass
+        # 含公式表或 calamine 失败：openpyxl 实读（不读索引缓存，避免过期脏读）
         ws = self._load(path)[sheet]
         return self._header_of(ws)
 
@@ -585,6 +699,21 @@ class StubCodeMakerCLI(CodeMakerCLI):
         否则末段"conv_id"对中文表头"1:新对话ID"匹配失败（原则9）。
         返回行与 read_header 列对齐；无类型行返回空列表。
         """
+        # 无公式表：calamine 读前 2 行取类型行，绕过 openpyxl load（大表 ~22s → ~1.4s）
+        if not self._sheet_has_formula(path):
+            try:
+                from python_calamine import CalamineWorkbook
+                cw = CalamineWorkbook.from_path(str(path))
+                sh = cw.get_sheet_by_name(sheet)
+                it = sh.iter_rows()
+                first = next(it, None)
+                second = next(it, None)
+                if first is None:
+                    return []
+                type_row = second if second is not None else []
+                return [self._normalize_calamine(v) for v in type_row]
+            except Exception:
+                pass
         ws = self._load(path)[sheet]
         type_row_idx = self.header_row + 1 if (ws.max_row or 0) >= self.header_row + 1 else None
         if type_row_idx is None:
@@ -605,14 +734,25 @@ class StubCodeMakerCLI(CodeMakerCLI):
         key = (str(path), sheet)
         rows = self._row_cache.get(key)
         if rows is None:
-            ws = self._load(path)[sheet]
-            dsr = self._resolve_data_start(path, sheet)
-            last_row = self._last_data_row(ws, dsr)
-            rows = []
-            for r in range(dsr, last_row + 1):
-                row = [self._read_cell_value(path, sheet, r, c) for c in range(1, ws.max_column + 1)]
-                if any(v is not None for v in row):
-                    rows.append(row)
+            if not self._sheet_has_formula(path):
+                # 无公式表：calamine 快读，绕过 openpyxl load_workbook
+                # （10w 行 load 约 22s，calamine 全表 ~1.4s）。失败回退 openpyxl。
+                try:
+                    rows = self._read_sheet_calamine(path, sheet)
+                except Exception:
+                    rows = None
+            if rows is None:
+                # 含公式表 或 calamine 失败：openpyxl 路径（公式格需 data_only=True 缓存值回退）
+                ws = self._load(path)[sheet]
+                dsr = self._resolve_data_start(path, sheet)
+                last_row = self._last_data_row(ws, dsr)
+                # 缓存 max_column：动态 property 每次求值 O(n_cells)，循环内反复求值退化 O(N^2)
+                max_col = ws.max_column
+                rows = []
+                for r in range(dsr, last_row + 1):
+                    row = [self._read_cell_value(path, sheet, r, c) for c in range(1, max_col + 1)]
+                    if any(v is not None for v in row):
+                        rows.append(row)
             self._row_cache[key] = rows
         if offset or limit is not None:
             end = None if limit is None else offset + limit
@@ -626,9 +766,10 @@ class StubCodeMakerCLI(CodeMakerCLI):
         扫描范围默认30行，覆盖常见说明区。浏览专用，不影响 CRUD。
         """
         upper = min(max_scan, ws.max_row)
+        max_col = ws.max_column
         for r in range(1, upper + 1):
             non_empty = sum(
-                1 for c in range(1, ws.max_column + 1)
+                1 for c in range(1, max_col + 1)
                 if ws.cell(r, c).value is not None
             )
             if non_empty >= 2:
@@ -667,6 +808,40 @@ class StubCodeMakerCLI(CodeMakerCLI):
         与 read_sheet 不同，不依赖索引的 data_start_row，从探测到的表头行下一行起
         读全部非空行，避免索引 data_start 错位导致浏览页空数据。
         """
+        # 无公式表：calamine 快读，绕过 openpyxl load + 逐格读取（大表 ~22s+ → ~1.4s）
+        if not self._sheet_has_formula(path):
+            try:
+                from python_calamine import CalamineWorkbook
+                cw = CalamineWorkbook.from_path(str(path))
+                sh = cw.get_sheet_by_name(sheet)
+                raw = sh.to_python()
+                # 表头探测：与 _detect_header_row 同规则（首个 ≥2 非空单元格行）
+                header_row = 1
+                for i, row in enumerate(raw[:30], start=1):
+                    if sum(1 for v in row if v is not None) >= 2:
+                        header_row = i
+                        break
+                headers = [self._normalize_calamine(v) for v in raw[header_row - 1]]
+                while headers and headers[-1] is None:
+                    headers.pop()
+                if not headers:
+                    return [], [], 0
+                data_start = header_row + 1
+                idx_key = f"{path.stem}|{sheet}"
+                if idx_key in self._index and self._index[idx_key] > header_row + 1:
+                    data_start = self._index[idx_key]
+                # 过滤全 None 空行
+                all_rows = []
+                for i in range(data_start - 1, len(raw)):
+                    nrow = [self._normalize_calamine(v) for v in raw[i]]
+                    if any(v is not None for v in nrow):
+                        all_rows.append(nrow)
+                total = len(all_rows)
+                start = (page - 1) * page_size
+                end = start + page_size
+                return headers, all_rows[start:end], total
+            except Exception:
+                pass
         ws = self._load(path)[sheet]
         header_row = self._detect_header_row(ws)
         headers = [ws.cell(header_row, c).value
@@ -716,6 +891,267 @@ class StubCodeMakerCLI(CodeMakerCLI):
         page_rows = all_rows[start:end]
         return headers, page_rows, total
 
+    def _can_fast_write(self, path: Path) -> bool:
+        """纯数据大表（无公式/批注/合并单元格 且 >512KB）可走 zip+XML 直改快路径。"""
+        try:
+            if path.stat().st_size < 512 * 1024:
+                return False
+        except OSError:
+            return False
+        has_f, has_c, has_m = self._xlsx_features(path)
+        return not (has_f or has_c or has_m)
+
+    def _fast_write_cell(self, path: Path, sheet: str, row: int, col: int,
+                         value: Any) -> dict | None:
+        """纯数据大表 zip+XML 直改单单元格（绕过 openpyxl load+save，大表各 ~10s+）。
+
+        复用 engine.fast_apply 的 XML 辅助函数。仅支持 None/bool/int/float/str 基本值，
+        datetime/date 等需 number_format 的类型回退 openpyxl（返回 None）。
+        成功返回 cache_info dict（与 _save_with_cache_check 同构），失败返回 None。
+        """
+        from datetime import datetime, date
+        if isinstance(value, (datetime, date)):
+            return None
+        try:
+            import engine.fast_apply as _fa
+        except Exception:
+            return None
+        import zipfile
+        import tempfile
+        import os
+        _xet = _fa._xet
+        path = Path(path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                sheet_map = _fa._sheet_map(zf)
+                xml_path = sheet_map.get(sheet)
+                if not xml_path:
+                    return None
+                shared = _fa._load_shared_strings(zf)
+                xml_bytes = zf.read(xml_path)
+            root = _xet.fromstring(xml_bytes)
+            sheet_data = root.find(f"{{{_fa._NS}}}sheetData")
+            if sheet_data is None:
+                return None
+            rows = list(sheet_data)
+            if row < 1 or row > len(rows):
+                return None
+            target_row = rows[row - 1]
+            col0 = col - 1
+            cell = _fa._find_cell(target_row, col0)
+            if cell is not None:
+                _fa._replace_cell(target_row, cell, col0, value)
+            else:
+                _fa._insert_cell_sorted(target_row, col0, value, style=None)
+            new_xml = _xet.tostring(root, encoding="utf-8", xml_declaration=True)
+            fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
+            os.close(fd)
+            try:
+                with zipfile.ZipFile(path) as zf, \
+                        zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+                    for item in zf.infolist():
+                        data = new_xml if item.filename == xml_path else zf.read(item.filename)
+                        out.writestr(item, data)
+                os.replace(tmp, str(path))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            return {
+                "needs_manual_fix": False,
+                "cache_message": "",
+                "comment_replay": {"replayed": False, "still_lost": 0},
+                "hold_events": [],
+            }
+        except Exception:
+            return None
+
+    def _fast_append_row(self, path: Path, sheet: str,
+                         values: dict[int, Any]) -> dict | None:
+        """纯数据大表 zip+XML 尾部追加整行，绕过 openpyxl load+save。
+
+        values 为 {col_idx(1-based): value}。样式继承自最后一数据行同列（与慢路径
+        copy_row_style 对齐：无样式格则不设 s 属性）。失败返回 None 回退 openpyxl。
+        """
+        try:
+            import engine.fast_apply as _fa
+        except Exception:
+            return None
+        import zipfile
+        import tempfile
+        import os
+        _xet = _fa._xet
+        path = Path(path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                sheet_map = _fa._sheet_map(zf)
+                xml_path = sheet_map.get(sheet)
+                if not xml_path:
+                    return None
+                xml_bytes = zf.read(xml_path)
+            root = _xet.fromstring(xml_bytes)
+            sheet_data = root.find(f"{{{_fa._NS}}}sheetData")
+            if sheet_data is None:
+                return None
+            rows = list(sheet_data)
+            new_row_num = len(rows) + 1
+            ref_row = rows[-1] if rows else None
+            new_row = _xet.Element(f"{{{_fa._NS}}}row", {"r": str(new_row_num)})
+            for col_idx in sorted(values):
+                col0 = col_idx - 1
+                style = _fa._cell_style(ref_row, col0) if ref_row is not None else None
+                new_row.append(_fa._make_cell(_fa._col_letter(col0) + str(new_row_num),
+                                              values[col_idx], style=style))
+            sheet_data.append(new_row)
+            # dimension 只扩展末行（列数不变，取原 dimension 列字母）
+            import re
+            dim = root.find(f"{{{_fa._NS}}}dimension")
+            if dim is not None:
+                m = re.match(r"^[^:]*:?([A-Z]+)", dim.get("ref") or "")
+                col = m.group(1) if m else "A"
+                dim.set("ref", f"A1:{col}{new_row_num}")
+            new_xml = _xet.tostring(root, encoding="utf-8", xml_declaration=True)
+            fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
+            os.close(fd)
+            try:
+                with zipfile.ZipFile(path) as zf, \
+                        zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+                    for item in zf.infolist():
+                        data = new_xml if item.filename == xml_path else zf.read(item.filename)
+                        out.writestr(item, data)
+                os.replace(tmp, str(path))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            return {
+                "needs_manual_fix": False,
+                "cache_message": "",
+                "comment_replay": {"replayed": False, "still_lost": 0},
+                "hold_events": [],
+                "data": {"row": new_row_num, "values": values},
+            }
+        except Exception:
+            return None
+
+    def _fast_delete_row(self, path: Path, sheet: str, row: int) -> dict | None:
+        """纯数据大表 zip+XML 删除整行并重排行号，绕过 openpyxl load+save。
+
+        纯数据表无公式/批注/合并单元格，无需 shift_workbook_formulas（公式引用位移
+        只对含公式表有意义）。行号经 _renumber_rows 重排（1-based 连续）。
+        失败返回 None 回退 openpyxl 路径。
+        """
+        try:
+            import engine.fast_apply as _fa
+        except Exception:
+            return None
+        import zipfile
+        import tempfile
+        import os
+        _xet = _fa._xet
+        path = Path(path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                sheet_map = _fa._sheet_map(zf)
+                xml_path = sheet_map.get(sheet)
+                if not xml_path:
+                    return None
+                xml_bytes = zf.read(xml_path)
+            root = _xet.fromstring(xml_bytes)
+            sheet_data = root.find(f"{{{_fa._NS}}}sheetData")
+            if sheet_data is None:
+                return None
+            rows = list(sheet_data)
+            idx = row - 1
+            if idx < 0 or idx >= len(rows):
+                return None
+            del rows[idx]
+            _fa._renumber_rows(rows, root)
+            sheet_data[:] = rows
+            new_xml = _xet.tostring(root, encoding="utf-8", xml_declaration=True)
+            fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
+            os.close(fd)
+            try:
+                with zipfile.ZipFile(path) as zf, \
+                        zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+                    for item in zf.infolist():
+                        data = new_xml if item.filename == xml_path else zf.read(item.filename)
+                        out.writestr(item, data)
+                os.replace(tmp, str(path))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            return {
+                "needs_manual_fix": False,
+                "cache_message": "",
+                "comment_replay": {"replayed": False, "still_lost": 0},
+                "hold_events": [],
+            }
+        except Exception:
+            return None
+
+    def _fast_insert_row(self, path: Path, sheet: str, row: int,
+                         values: dict[int, Any] | None = None) -> dict | None:
+        """纯数据大表 zip+XML 在指定行上方插入整行，绕过 openpyxl load+save。
+
+        新行样式继承自上一行同列（与慢路径 copy_row_style 对齐，无样式格不设 s）。
+        行号经 _renumber_rows 重排。失败返回 None 回退 openpyxl 路径。
+        """
+        try:
+            import engine.fast_apply as _fa
+        except Exception:
+            return None
+        import zipfile
+        import tempfile
+        import os
+        _xet = _fa._xet
+        path = Path(path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                sheet_map = _fa._sheet_map(zf)
+                xml_path = sheet_map.get(sheet)
+                if not xml_path:
+                    return None
+                xml_bytes = zf.read(xml_path)
+            root = _xet.fromstring(xml_bytes)
+            sheet_data = root.find(f"{{{_fa._NS}}}sheetData")
+            if sheet_data is None:
+                return None
+            rows = list(sheet_data)
+            idx = row - 1
+            if idx < 0 or idx > len(rows):
+                return None
+            ref_row = rows[idx - 1] if idx > 0 else None
+            new_row = _xet.Element(f"{{{_fa._NS}}}row", {"r": str(row)})
+            if values:
+                for col_idx in sorted(values):
+                    col0 = col_idx - 1
+                    style = _fa._cell_style(ref_row, col0) if ref_row is not None else None
+                    new_row.append(_fa._make_cell(_fa._col_letter(col0) + str(row),
+                                                  values[col_idx], style=style))
+            rows.insert(idx, new_row)
+            _fa._renumber_rows(rows, root)
+            sheet_data[:] = rows
+            new_xml = _xet.tostring(root, encoding="utf-8", xml_declaration=True)
+            fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
+            os.close(fd)
+            try:
+                with zipfile.ZipFile(path) as zf, \
+                        zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+                    for item in zf.infolist():
+                        data = new_xml if item.filename == xml_path else zf.read(item.filename)
+                        out.writestr(item, data)
+                os.replace(tmp, str(path))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            return {
+                "needs_manual_fix": False,
+                "cache_message": "",
+                "comment_replay": {"replayed": False, "still_lost": 0},
+                "hold_events": [],
+            }
+        except Exception:
+            return None
+
     def write_cell(self, path: Path, sheet: str, row: int, col: int, value: Any,
                    number_format: str | None = None) -> CLICallResult:
         """写入单个单元格并保留样式。
@@ -739,6 +1175,18 @@ class StubCodeMakerCLI(CodeMakerCLI):
         from copy import copy
         from ..core.style_utils import inherit_column_style, get_column_number_format_majority
         try:
+            # 纯数据大表 zip+XML 快路径（绕过 openpyxl load+save）；number_format 需走慢路径处理格式
+            if number_format is None and self._can_fast_write(path):
+                fast_info = self._fast_write_cell(path, sheet, row, col, _serialize_cell_value(value))
+                if fast_info is not None:
+                    self._invalidate(path, sheet)
+                    return CLICallResult(
+                        ok=True, data={"row": row, "col": col, "value": value},
+                        needs_manual_fix=fast_info["needs_manual_fix"],
+                        cache_message=fast_info["cache_message"],
+                        comment_replay=fast_info.get("comment_replay", {}),
+                        hold_events=fast_info.get("hold_events", []),
+                    )
             wb = self._load(path)
             ws = wb[sheet]
             src_cell = ws.cell(row, col)
@@ -782,6 +1230,17 @@ class StubCodeMakerCLI(CodeMakerCLI):
             CLICallResult，ok=True 时 data 为单元格值（公式单元格返回计算结果）。
         """
         try:
+            # 无公式表：calamine 单行读，免 openpyxl load（大表 load ~22s）
+            if not self._sheet_has_formula(path):
+                try:
+                    from python_calamine import CalamineWorkbook
+                    cw = CalamineWorkbook.from_path(str(path))
+                    raw = cw.get_sheet_by_name(sheet).to_python()
+                    if 1 <= row <= len(raw) and 1 <= col <= len(raw[row - 1]):
+                        return CLICallResult(ok=True,
+                                             data=self._normalize_calamine(raw[row - 1][col - 1]))
+                except Exception:
+                    pass
             return CLICallResult(ok=True, data=self._read_cell_value(path, sheet, row, col))
         except Exception as e:
             return CLICallResult(ok=False, error=str(e), stderr=str(e))
@@ -795,6 +1254,18 @@ class StubCodeMakerCLI(CodeMakerCLI):
         """
         from ..core.style_utils import copy_row_style
         try:
+            # 纯数据大表 zip+XML 快路径：尾部追加整行，绕过 openpyxl load+save（各 ~10s+）
+            if self._can_fast_write(path):
+                fast_info = self._fast_append_row(path, sheet, values)
+                if fast_info is not None:
+                    self._invalidate(path, sheet)
+                    return CLICallResult(
+                        ok=True, data=fast_info["data"],
+                        needs_manual_fix=fast_info["needs_manual_fix"],
+                        cache_message=fast_info["cache_message"],
+                        comment_replay=fast_info.get("comment_replay", {}),
+                        hold_events=fast_info.get("hold_events", []),
+                    )
             wb = self._load(path)
             ws = wb[sheet]
             dsr = self._resolve_data_start(path, sheet)
@@ -937,15 +1408,84 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 tokens.extend(chunk)
         return tokens
 
+    def _search_via_calamine(self, path: Path, keyword: str, sheet: str = "",
+                             col: str = "") -> Optional[list[SearchResult]]:
+        """无公式表 calamine 内存扫描搜索，替代 openpyxl 逐格 O(N²) 全表扫描。
+
+        返回 None 表示不可用（含公式表/读失败），调用方回退原 openpyxl 路径。
+        行号对齐 openpyxl（1-based 绝对行号 + data_row 相对行号）。
+        """
+        if self._sheet_has_formula(path):
+            return None
+        try:
+            from python_calamine import CalamineWorkbook
+            cw = CalamineWorkbook.from_path(str(path))
+        except Exception:
+            return None
+        kw_lower = (keyword or "").lower()
+        # 索引中取该表各 sheet 的表头（col 名匹配用）
+        headers_by_sheet: dict[str, list[str]] = {}
+        for t in self._get_table_index():
+            if t.stem == path.stem:
+                for s in t.sheets:
+                    headers_by_sheet[s.name] = s.headers or s.header_names or []
+                break
+        results: list[SearchResult] = []
+        targets = [sheet] if sheet else list(cw.sheet_names)
+        for sn in targets:
+            if sn not in cw.sheet_names:
+                continue
+            dsr = self._resolve_data_start(path, sn)
+            headers = headers_by_sheet.get(sn, [])
+            col_idx = None
+            if col:
+                if str(col).isdigit():
+                    col_idx = int(col)
+                else:
+                    for ci, h in enumerate(headers, start=1):
+                        if h and str(col) in str(h):
+                            col_idx = ci
+                            break
+            raw = cw.get_sheet_by_name(sn).to_python()
+            for i in range(max(dsr - 1, 0), len(raw)):
+                r = i + 1
+                data_row = r - dsr + 1 if r >= dsr else 0
+                nrow = [self._normalize_calamine(v) for v in raw[i]]
+                if col_idx is not None:
+                    if col_idx <= len(nrow):
+                        cv = nrow[col_idx - 1]
+                        if cv is not None and kw_lower in str(cv).lower():
+                            hname = headers[col_idx - 1] if col_idx <= len(headers) else ""
+                            results.append(SearchResult(
+                                sheet=sn, row=r, col=col_idx, col_name=str(hname or ""),
+                                cell_value=cv, row_data=nrow, data_row=data_row))
+                else:
+                    for c in range(len(nrow)):
+                        cv = nrow[c]
+                        if cv is not None and kw_lower in str(cv).lower():
+                            hname = headers[c] if c < len(headers) else ""
+                            results.append(SearchResult(
+                                sheet=sn, row=r, col=c + 1, col_name=str(hname or ""),
+                                cell_value=cv, row_data=nrow, data_row=data_row))
+                            break
+        return results
+
     def _search_single(self, path: Path, keyword: str, sheet: str = "",
                        col: str = "") -> list[SearchResult]:
         """单关键词搜索：逐 sheet、逐行做子串匹配（大小写不敏感）。
 
         优化：先查 _table_index.json 的 row_index（名称/id 列倒排索引），
-        命中直接返回对应行，避免全表扫描；未命中才回退逐行扫描。
+        命中直接返回对应行；未命中走 calamine 内存扫（无公式表）；
+        含公式表回退 openpyxl 逐格扫描。
         """
         results: list[SearchResult] = []
-        # 索引命中优先：查 row_index 倒排
+        # 无公式表：calamine 内存快扫（10w 行 ~1.4s），优先于 row_index/openpyxl。
+        # row_index 命中的行仍需逐格读整行（openpyxl 慢），大表命中多行时更慢。
+        if not self._sheet_has_formula(path):
+            fast = self._search_via_calamine(path, keyword, sheet, col)
+            if fast is not None:
+                return fast
+        # 含公式表：row_index 倒排优先，未命中回退逐格扫描
         if not col and sheet == "":
             idx_hits = self._search_via_index(path, keyword)
             if idx_hits:
@@ -959,10 +1499,11 @@ class StubCodeMakerCLI(CodeMakerCLI):
             dsr = self._browse_data_start(ws, path, sn)
             last_row = self._last_data_row(ws, dsr)
             header = self._header_of(ws)
+            max_col = ws.max_column
             kw_lower = keyword.lower()
             for r in range(dsr, last_row + 1):
                 row_data = [self._read_cell_value(path, sn, r, c)
-                            for c in range(1, ws.max_column + 1)]
+                            for c in range(1, max_col + 1)]
                 data_row = r - dsr + 1
                 if col:
                     col_idx = None
@@ -982,7 +1523,7 @@ class StubCodeMakerCLI(CodeMakerCLI):
                                                         cell_value=cell_val, row_data=row_data,
                                                         data_row=data_row))
                 else:
-                    for c in range(1, ws.max_column + 1):
+                    for c in range(1, max_col + 1):
                         cell_val = row_data[c - 1] if c <= len(row_data) else None
                         if cell_val and kw_lower in str(cell_val).lower():
                             hname = header[c - 1] if c <= len(header) else ""
@@ -1129,7 +1670,39 @@ class StubCodeMakerCLI(CodeMakerCLI):
 
     def locate_row(self, path: Path, sheet: str, col: int, value: str,
                    mode: str = "contains") -> int | None:
-        """按列值定位第一个匹配行号。"""
+        """按列值定位第一个匹配行号。
+
+        无公式表走 calamine 内存扫（10w 行 ~1.4s），替代 openpyxl 逐格读取
+        （每格 _read_cell_value 两次字典查找，10w 行秒级~分钟级）。
+        含公式表保留原 openpyxl 路径（公式格需 data_only 回退）。
+        """
+        if not self._sheet_has_formula(path):
+            try:
+                from python_calamine import CalamineWorkbook
+                cw = CalamineWorkbook.from_path(str(path))
+                raw = cw.get_sheet_by_name(sheet).to_python()
+                dsr = self._resolve_data_start(path, sheet)
+                v_lower = str(value).lower()
+                for i in range(max(dsr - 1, 0), len(raw)):
+                    row = raw[i]
+                    if col > len(row):
+                        continue
+                    cell_val = row[col - 1]
+                    if cell_val is None:
+                        continue
+                    cs = str(cell_val).strip().lower()
+                    if mode == "exact":
+                        if cs == v_lower:
+                            return i + 1
+                    elif mode == "startswith":
+                        if cs.startswith(v_lower):
+                            return i + 1
+                    else:
+                        if v_lower in cs:
+                            return i + 1
+                return None
+            except Exception:
+                pass
         ws = self._load(path)[sheet]
         dsr = self._resolve_data_start(path, sheet)
         last_row = self._last_data_row(ws, dsr)
@@ -1161,6 +1734,18 @@ class StubCodeMakerCLI(CodeMakerCLI):
             CLICallResult，ok=True 时 data 包含 {row}。
         """
         try:
+            # 纯数据大表 zip+XML 快路径（无公式/批注/合并单元格，无需公式引用位移）
+            if self._can_fast_write(path):
+                fast_info = self._fast_delete_row(path, sheet, row)
+                if fast_info is not None:
+                    self._invalidate(path, sheet)
+                    return CLICallResult(
+                        ok=True, data={"row": row},
+                        needs_manual_fix=fast_info["needs_manual_fix"],
+                        cache_message=fast_info["cache_message"],
+                        comment_replay=fast_info.get("comment_replay", {}),
+                        hold_events=fast_info.get("hold_events", []),
+                    )
             wb = self._load(path)
             ws = wb[sheet]
             ws.delete_rows(row)
@@ -1194,6 +1779,18 @@ class StubCodeMakerCLI(CodeMakerCLI):
         """
         from ..core.style_utils import copy_row_style
         try:
+            # 纯数据大表 zip+XML 快路径（无公式/批注/合并单元格，无需公式引用位移）
+            if self._can_fast_write(path):
+                fast_info = self._fast_insert_row(path, sheet, row, values)
+                if fast_info is not None:
+                    self._invalidate(path, sheet)
+                    return CLICallResult(
+                        ok=True, data={"row": row, "values": values or {}},
+                        needs_manual_fix=fast_info["needs_manual_fix"],
+                        cache_message=fast_info["cache_message"],
+                        comment_replay=fast_info.get("comment_replay", {}),
+                        hold_events=fast_info.get("hold_events", []),
+                    )
             wb = self._load(path)
             ws = wb[sheet]
             max_col = ws.max_column

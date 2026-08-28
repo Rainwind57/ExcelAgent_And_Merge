@@ -1,0 +1,527 @@
+[
+ {
+  "row": 1,
+  "vals": [
+   "活动id",
+   "活动类型",
+   "活动名称",
+   "活动描述",
+   "活动图标",
+   "活动开始时间",
+   "活动结束时间",
+   "活动展示开始时间",
+   "活动展示结束时间",
+   "开启条件"
+  ]
+ },
+ {
+  "row": 2,
+  "vals": [
+   "id:int",
+   "activity_type:int",
+   "name:string",
+   "desc:string",
+   "icon:string",
+   "start_time:str",
+   "end_time:str",
+   "open_time:str",
+   "close_time:str",
+   "open_condition:str"
+  ]
+ },
+ {
+  "row": 3,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 4,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 5,
+  "vals": [
+   "10001",
+   "1",
+   "开服活动",
+   "开服活动1",
+   null,
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   null
+  ]
+ },
+ {
+  "row": 6,
+  "vals": [
+   "10002",
+   "1",
+   "开服活动",
+   "开服活动2",
+   null,
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   null
+  ]
+ },
+ {
+  "row": 7,
+  "vals": [
+   "10003",
+   "2",
+   "七日签到",
+   "七日签到",
+   null,
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   "2025-08-20 10:00:00",
+   "2025-08-25 10:00:00",
+   null
+  ]
+ },
+ {
+  "row": 8,
+  "vals": [
+   "10004",
+   "TEST",
+   "TEST",
+   "TEST",
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 9,
+  "vals": [
+   "10005",
+   null,
+   "周年庆",
+   null,
+   null,
+   "2026-06-20 00:00:00",
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 10,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 11,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 12,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 13,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 14,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 15,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 16,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 17,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 18,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 19,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 20,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 21,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 22,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 23,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 24,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 25,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 26,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 27,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 28,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 29,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 30,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 31,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 32,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 33,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 34,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ {
+  "row": 35,
+  "vals": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ]
+ }
+]

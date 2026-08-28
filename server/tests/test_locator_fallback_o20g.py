@@ -32,7 +32,7 @@ class TestToSplitIntentsLocator:
             "table": "activity", "sheet": "Activity", "action": "delete",
             "fields": {}, "locator_field": "活动名称", "locator_value": "春节活动",
         }]
-        intents = da._to_split_intents(arr, "删除春节活动")
+        intents, _dropped = da._to_split_intents(arr, "删除春节活动")
         assert len(intents) == 1
         assert intents[0].locator_field == "活动名称"
         assert intents[0].locator_value == "春节活动"
@@ -44,7 +44,7 @@ class TestToSplitIntentsLocator:
             "table": "activity", "sheet": "Activity", "action": "add",
             "fields": {"id": 1},
         }]
-        intents = da._to_split_intents(arr, "加活动")
+        intents, _dropped = da._to_split_intents(arr, "加活动")
         assert len(intents) == 1
         assert intents[0].locator_field is None
         assert intents[0].locator_value is None
@@ -57,7 +57,7 @@ class TestToSplitIntentsLocator:
             "fields": {"id": 1},
             "locator_field": "", "locator_value": "  ",
         }]
-        intents = da._to_split_intents(arr, "加活动")
+        intents, _dropped = da._to_split_intents(arr, "加活动")
         assert len(intents) == 1
         assert intents[0].locator_field is None
         assert intents[0].locator_value is None

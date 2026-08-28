@@ -65,7 +65,7 @@ router = APIRouter(prefix="/api/merge/subdir", tags=["merge-subdir"])
 #    嵌套 subdev_* 不是合法目录合并源；也排除遗留 branches/subdev_1）
 #  - 其余为与目录合并语义无关的中间产物/legacy 目录
 _SKIP_PARTS = {"history", "mergebase", ".snapshots", "src", "repo", "samples",
-               "legacy", "scripts", "_seed_data", "demo", "branches"}
+               "legacy", "scripts", "_seed_data", "demo", "branches", ".base_export_cache"}
 
 # /dirs 结果缓存：全量 MERGE_DIR.rglob 扫描在文件多时是进页面最慢的一步，TTL 内复用；
 # apply 产出新文件后由 merge_branch.invalidate_dirs_cache() 顺带失效本缓存。

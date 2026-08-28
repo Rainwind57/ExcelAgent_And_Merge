@@ -1,0 +1,814 @@
+[
+  {
+    "_meta": {
+      "name": "副本·冰封王座首通链路（跨6表 add + 占位符闭环 + 碎片合成链）",
+      "complexity": "高（副本战斗→首通/里程碑双奖励→碎片道具→合成配方→传说戒指，produce 向后多跳传递）",
+      "note": "activity→reward×2→item.ItemBase×2(碎片+戒指)→item.Chest(戒指宝箱引reward)→combat+PveCombatNpc→item_recipe(RecipeMaterial+ItemRecipe 合成链)",
+      "expect_subtasks": 8,
+      "design_target": "exercises produces_inference 对 item_recipe(材料×N→目标) 多输入合成图的拓扑序 + ValidateAgent 对 reward→item_recipe FK 反向可达校验"
+    },
+    "input": "新增一个限时副本活动叫'冰封王座首通挑战'，activity_id 3010，活动描述'每周限挑战一次，首通可得冰魄碎片，集齐50个可合成传说戒指'，开始 2025-01-10 00:00:00，结束 2025-01-30 23:59:59。副本战斗配上：在战场 space_id 10070 的坐标 (500,0,-200) 刷'冰封君主'，model_id 1300，技能 9001/9002/9003，AI 用 boss_ai，等级公式 90，气血斜率 70、气血基础 800000，物攻斜率 50、物攻基础 40000，打赢给首通奖励包，输了和平局都不给。首通奖励包 reward_id 占位叫'冰封首通'，每日限领 1 次，必给道具 10070 共 3 个（这就是冰魄碎片，需新建道具），100% 给经验、100% 给金币、金币公式 800。再建里程碑奖励包 reward_id 占位叫'冰封里程碑'，每日限领 5 次，必给道具 10070 共 1 个，100% 给经验。冰魄碎片道具建一下：叫'冰魄碎片' item_id 占位，品质 2，道具类型 1，图标'Icon_ice_piece'，最大堆叠 999，可丢弃。用 50 个冰魄碎片可合成传说戒指'冰魄之戒'：戒指道具新建 item_id 占位，品质 4，道具类型 2，图标'Icon_ice_ring'，最大堆叠 1，不可丢弃；这个戒指在 item.xlsx 的 Chest sheet 作宝箱绑定到首通奖励包。合成配方表也要建：RecipeMaterial 一组含 50 个冰魄碎片，权重全部 100；ItemRecipe 配方主表指向新建材料组，routine_recipe_type 炼器=1，stage 4，目标 quality_rewards.1 指向新建戒指 item_id。",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 3010,
+          "activity_type": 2,
+          "name": "冰封王座首通挑战",
+          "desc": "每周限挑战一次，首通可得冰魄碎片，集齐50个可合成传说戒指",
+          "start_time": "2025-01-10 00:00:00",
+          "end_time": "2025-01-30 23:59:59"
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_fragment_item_id",
+        "row_content": {
+          "item_id": "<new_fragment_item_id>",
+          "name": "冰魄碎片",
+          "quality": 2,
+          "item_type": 1,
+          "icon": "Icon_ice_piece",
+          "max_stack": 999,
+          "droppable": 1
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "ItemBase",
+        "operation": "add",
+        "produces": "new_ring_item_id",
+        "row_content": {
+          "item_id": "<new_ring_item_id>",
+          "name": "冰魄之戒",
+          "quality": 4,
+          "item_type": 2,
+          "icon": "Icon_ice_ring",
+          "max_stack": 1,
+          "droppable": 0
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_first_reward_id",
+        "row_content": {
+          "id": "<new_first_reward_id>",
+          "name": "冰封首通",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10070,
+          "must_items[1].num": 3,
+          "exp_prob": 100,
+          "exp_formula": "经验",
+          "gold_prob": 100,
+          "gold_formula": "800"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_milestone_reward_id",
+        "row_content": {
+          "id": "<new_milestone_reward_id>",
+          "name": "冰封里程碑",
+          "day_limit": 5,
+          "must_items[1].item_ids": 10070,
+          "must_items[1].num": 1,
+          "exp_prob": 100,
+          "exp_formula": "经验"
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Chest",
+        "operation": "add",
+        "row_content": {
+          "item_id": "<new_ring_item_id>",
+          "chest_reward_id": "<new_first_reward_id>"
+        }
+      },
+      {
+        "table": "combat\\combat.xlsx",
+        "sheet": "combat_data",
+        "operation": "add",
+        "produces": "new_combat_id",
+        "row_content": {
+          "combat_id": "<new_combat_id>",
+          "name": "冰封君主副本战",
+          "combat_type": "PVE",
+          "combat_mode": 0,
+          "space_id": 10070,
+          "win_reward": "<new_first_reward_id>",
+          "lose_reward": 0,
+          "draw_reward": 0,
+          "npc_ids[0]": "<new_npc_id>"
+        }
+      },
+      {
+        "table": "combat\\pve_combat_npc.xlsx",
+        "sheet": "PveCombatNpc",
+        "operation": "add",
+        "produces": "new_npc_id",
+        "row_content": {
+          "npc_id": "<new_npc_id>",
+          "name": "冰封君主",
+          "model_id": 1300,
+          "spell_ids": [9001, 9002, 9003],
+          "combat_ai_name": "boss_ai",
+          "level_formula": 90,
+          "attribute_base_slopes.HPMaxCon[1]": 70,
+          "attribute_base_slopes.HPMaxCon[0]": 800000,
+          "attribute_base_slopes.WorldAttackCon[1]": 50,
+          "attribute_base_slopes.WorldAttackCon[0]": 40000,
+          "combat_host_common.is_npc_die_remove": 1
+        }
+      },
+      {
+        "table": "item\\item_recipe.xlsx",
+        "sheet": "RecipeMaterial",
+        "operation": "add",
+        "produces": "new_material_id",
+        "row_content": {
+          "material_id": "<new_material_id>",
+          "name": "冰魄碎片合成材料组",
+          "material_items[1][1]": "<new_fragment_item_id>",
+          "material_items[1][2].1": 100,
+          "material_items[1][2].2": 100,
+          "material_items[1][2].3": 100,
+          "material_items[1][2].4": 100,
+          "material_items[1][2].5": 100,
+          "material_items[1][3]": 50
+        }
+      },
+      {
+        "table": "item\\item_recipe.xlsx",
+        "sheet": "ItemRecipe",
+        "operation": "add",
+        "produces": "new_recipe_id",
+        "row_content": {
+          "recipe_id": "<new_recipe_id>",
+          "name": "冰魄之戒合成",
+          "recipe_type": 1,
+          "stage": 4,
+          "material[1]": "<new_material_id>",
+          "quality_rewards.1": "<new_ring_item_id>",
+          "exp": 100
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "助手系统·幻灵小翠全套餐（assistant 目录5表 add，同目录多 file fan-out）",
+      "complexity": "高（同主 PK assistant_id 向 4 张子表 fan-out + 等级多行展开 + 法器/武器/能力跨目录联动）",
+      "note": "assistant.Assistant→assistant_ability.AssistantAbility(ability)→assistant_level.AssistantLevel×3(1/2/3级)→assistant_mystic.AssistantMystic→assistant_weapon.AssistantWeapon",
+      "expect_subtasks": 7,
+      "design_target": "exercises LocatorAgent 对'assistant/ 目录多 file'命中 + ExecuteAgent 同主 PK fan-out 至 4 子表并行写盘；列名全部对齐真实 row2（assistant_id/type/ability_ids[0]/buff_id 等）"
+    },
+    "input": "配一个新助手角色'幻灵小翠'，assistant_id 占位，model_id 1050，type 填 1（支援型），template_id 留空，icon 'Icon_xiaocui'，big_img 'Img_xiaocui_big'。她的核心能力新建'灵水护盾' ability_id 占位，name '灵水护盾'，desc '为最低血量队友施加5000护盾并恢复3000真元'，icon 'Icon_lingshui'，关联 spell_id 占位（暂借用 800030 作为占位）、spell_level 1。她的成长等级配三档 1/2/3 级，每级 stage=1、phase=1、tier=0，exp 分别 0/200/500，upgrade_type 1。再给她配一个专属秘法器'翠灵珠' mystic_id 占位，name '翠灵珠'，desc '水灵法器，提升水系技能效果20%'，icon 'Icon_cuizhu'，quality 2，buff_id 占位 700020。最后给她配一把专属武器'碧水绫' weapon_id 占位，name '碧水绫'，desc '流光织就的水袖，攻击附加水系伤害'，icon 'Icon_bishui'，buff_id 占位 700021。",
+    "expected_answer": [
+      {
+        "table": "assistant\\assistant.xlsx",
+        "sheet": "Assistant",
+        "operation": "add",
+        "produces": "new_assistant_id",
+        "row_content": {
+          "assistant_id": "<new_assistant_id>",
+          "name": "幻灵小翠",
+          "model_id": 1050,
+          "icon": "Icon_xiaocui",
+          "big_img": "Img_xiaocui_big",
+          "type": 1,
+          "template_id": 0,
+          "ability_ids[0]": "<new_ability_id>"
+        }
+      },
+      {
+        "table": "assistant\\assistant_ability.xlsx",
+        "sheet": "AssistantAbility",
+        "operation": "add",
+        "produces": "new_ability_id",
+        "row_content": {
+          "ability_id": "<new_ability_id>",
+          "name": "灵水护盾",
+          "desc": "为最低血量队友施加5000护盾并恢复3000真元",
+          "icon": "Icon_lingshui",
+          "spell_id": 800030,
+          "spell_level": 1
+        }
+      },
+      {
+        "table": "assistant\\assistant_level.xlsx",
+        "sheet": "AssistantLevel",
+        "operation": "add",
+        "row_content": {
+          "level": 1,
+          "stage": 1,
+          "phase": 1,
+          "tier": 0,
+          "exp": 0,
+          "upgrade_type": 1
+        }
+      },
+      {
+        "table": "assistant\\assistant_level.xlsx",
+        "sheet": "AssistantLevel",
+        "operation": "add",
+        "row_content": {
+          "level": 2,
+          "stage": 1,
+          "phase": 1,
+          "tier": 0,
+          "exp": 200,
+          "upgrade_type": 1
+        }
+      },
+      {
+        "table": "assistant\\assistant_level.xlsx",
+        "sheet": "AssistantLevel",
+        "operation": "add",
+        "row_content": {
+          "level": 3,
+          "stage": 1,
+          "phase": 1,
+          "tier": 0,
+          "exp": 500,
+          "upgrade_type": 1
+        }
+      },
+      {
+        "table": "assistant\\assistant_mystic.xlsx",
+        "sheet": "AssistantMystic",
+        "operation": "add",
+        "row_content": {
+          "mystic_id": "<new_mystic_id>",
+          "name": "翠灵珠",
+          "desc": "水灵法器，提升水系技能效果20%",
+          "icon": "Icon_cuizhu",
+          "quality": 2,
+          "buff_id": 700020
+        }
+      },
+      {
+        "table": "assistant\\assistant_weapon.xlsx",
+        "sheet": "AssistantWeapon",
+        "operation": "add",
+        "row_content": {
+          "weapon_id": "<new_weapon_id>",
+          "name": "碧水绫",
+          "desc": "流光织就的水袖，攻击附加水系伤害",
+          "icon": "Icon_bishui",
+          "buff_id": 700021
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "世界地图扩容·新跨服大陆极北冰原（跨5表 add+modify 混合 + 既有NPC坐标迁移）",
+      "complexity": "高（modify 既有 realm_info 不适用——该表只有 realm_id/_desc/name/open_server_time；改为纯 add space_data×2 + landmark + prefab+interaction + 既有 spwan 坐标迁移）",
+      "note": "space_data(add×2)→space_landmark.World02(add)→entity_prefab+interaction(传送)→spawn_world_entity(add传送阵)+modify商人迁址",
+      "expect_subtasks": 6,
+      "design_target": "exercises ValidateAgent 对 modify 既有行定位（row_key 唯一性）+ ExecuteAgent 同表 add+modify 混合；列名对齐真实 row2（space_type/enter_pos/continent_id/GlobalID/Location 等）"
+    },
+    "input": "给世界地图补一片新跨服大陆'极北冰原'。在 space.xlsx/space_data 表加一行：space_id 10090，name'极北冰原'，space_type'ice'，server_map_res_name'map_arctic'，client_map_res_name'map_arctic'，enter_pos[0,0,0]，enter_yaw 0，camera.yaw 0，camera.pitch -30，camera.arm_length 800，camera.fov 90，navmesh_from_physic 0，is_load_navmesh 1，continent_id 100，areatag_maps[]，client_gamemode_type'cgm_free'，client_gamemode_instance_id 10090，bgm_event_id 1001。新大陆内还开一个跨服战场副本区 space_id 10091，name'冰原王城'，space_type'siege'，server_map_res_name'map_ice_palace'，client_map_res_name'map_ice_palace'，enter_pos[50,50,50]，enter_yaw 0，continent_id 100，client_gamemode_type'cgm_siege'，client_gamemode_instance_id 10091，bgm_event_id 1002。再在 space_landmark.xlsx 的 World02 sheet 加一个地标：map_name'arctic'，city_name'极光祭坛'，GlobalID'arctic_altar'，LandmarkType'shrine'，Location[2000,500,2000]，Rotation[0,0,0]，bInvalid 0，city_id 100，targets[0]'arctic_entry'。新大陆入口配一座传送阵 NPC 叫'冰原守门人' model_id 1040，放在主城 space_id 10000 坐标 (100,0,100)，玩家点击后传送到 space_id 10090 的坐标 (0,0,0) 朝向 90 度。最后把 space_id 10000 里既有商人 prefab_id 8050 的刷新记录的候选坐标从 (50,0,50) 迁移到新大陆 space_id 10090 的坐标 (50,0,50)。",
+    "expected_answer": [
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "add",
+        "row_content": {
+          "space_id": 10090,
+          "name": "极北冰原",
+          "space_type": "ice",
+          "server_map_res_name": "map_arctic",
+          "client_map_res_name": "map_arctic",
+          "enter_pos": [0, 0, 0],
+          "enter_yaw": 0,
+          "camera.yaw": 0,
+          "camera.pitch": -30,
+          "camera.arm_length": 800,
+          "camera.fov": 90,
+          "navmesh_from_physic": 0,
+          "is_load_navmesh": 1,
+          "continent_id": 100,
+          "areatag_maps": [],
+          "client_gamemode_type": "cgm_free",
+          "client_gamemode_instance_id": 10090,
+          "bgm_event_id": 1001
+        }
+      },
+      {
+        "table": "space.xlsx",
+        "sheet": "space_data",
+        "operation": "add",
+        "row_content": {
+          "space_id": 10091,
+          "name": "冰原王城",
+          "space_type": "siege",
+          "server_map_res_name": "map_ice_palace",
+          "client_map_res_name": "map_ice_palace",
+          "enter_pos": [50, 50, 50],
+          "enter_yaw": 0,
+          "continent_id": 100,
+          "client_gamemode_type": "cgm_siege",
+          "client_gamemode_instance_id": 10091,
+          "bgm_event_id": 1002
+        }
+      },
+      {
+        "table": "space_landmark.xlsx",
+        "sheet": "World02",
+        "operation": "add",
+        "row_content": {
+          "map_name": "arctic",
+          "city_name": "极光祭坛",
+          "GlobalID": "arctic_altar",
+          "LandmarkType": "shrine",
+          "Location": [2000, 500, 2000],
+          "Rotation": [0, 0, 0],
+          "bInvalid": 0,
+          "city_id": 100,
+          "targets[0]": "arctic_entry"
+        }
+      },
+      {
+        "table": "entity_prefab.xlsx",
+        "sheet": "Base",
+        "operation": "add",
+        "produces": "new_gate_prefab_id",
+        "row_content": {
+          "prefab_id": "<new_gate_prefab_id>",
+          "entity_class": "WorldNonPlayer",
+          "model_id": 1040,
+          "entity_name": "冰原守门人",
+          "interaction_id": "<new_interaction_id>"
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "Interaction",
+        "operation": "add",
+        "produces": "new_interaction_id",
+        "row_content": {
+          "interaction_id": "<new_interaction_id>",
+          "effect.key": 3005,
+          "effect.data.3005.to_space_id": 10090,
+          "effect.data.3005.to_pos": [0, 0, 0],
+          "effect.data.3005.to_dir": 90
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "add",
+        "row_content": {
+          "spawn_id": "<new_gate_spawn_id>",
+          "space_id": 10000,
+          "entity_prefab_id": "<new_gate_prefab_id>",
+          "entity_name": "冰原守门人",
+          "spawn_timing_type": 1,
+          "entity_num_max": 1,
+          "pos_list": [[100, 0, 100]],
+          "dir_list": [90],
+          "auto_on_ground": 1
+        }
+      },
+      {
+        "table": "spawn_world_entity.xlsx",
+        "sheet": "SpawnWorldEntity",
+        "operation": "modify",
+        "row_key": {"entity_prefab_id": 8050},
+        "row_content": {
+          "space_id": 10090,
+          "pos_list": [[50, 0, 50]]
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "法宝·噬魂幡觉醒升阶（跨4表 add+modify 混合 + 三阶阶梯消耗 + 既有道具绑定）",
+      "complexity": "高（fabao 本体道具合并到 item.xlsx/Fabao sheet + 升阶走 fabao.xlsx/FabaoUpgradeCost + 法宝等级 spell 关联走 FabaoLevel + spell+spell_group）",
+      "note": "item.xlsx/Fabao(add 法宝本体主记录)→combat.spell_data+spell_group(觉醒技能+组)→fabao.FabaoUpgradeCost(add×3 阶梯消耗)→fabao.FabaoLevel(add×3 法宝绑技能)→item.xlsx/Fabao(modify 既有 item 28888 绑新技能)",
+      "expect_subtasks": 7,
+      "design_target": "exercises produces_inference 对('item.Fabao 产出 fabao_spell_id'被'item.Fabao modify'反向 consume) + ValidateAgent 跨表 FK 字面代换；列名全部对齐真实 row2"
+    },
+    "input": "新建一个法宝'噬魂幡'。它的本体道具作为新道具，在 item.xlsx 的 Fabao 子表加一行：item_id 占位，文案描述'噬魂幡本体'，法宝类型 3，法宝技能编号 fabao_spell_id 占位（关联新建的觉醒技能），附加属性池 attr_mod_id 200100，阴阳属性权重 yinyang_rate 0.65，阳属性描述'觉醒时召唤冥魂持续对周围敌人造成伤害'，阴属性描述'觉醒时把承受伤害的20%反弹给攻击者'。再建本体 const——给这个法宝配觉醒技能'冥魂噬魂'：spell_data 加一行，id 占位，spell_type 'attack'，spell_effect_type 'damage'，spell_element 'dark'，damage_base_rate 1.5，target_num_limit 3，settlement_method 0；并把这个法术归到新技能组 750，组名'噬魂觉醒组'。再配三段升阶阶段消耗在 fabao.xlsx 的 FabaoUpgradeCost 表：level 1 配 upgrade_costs[0] = 10070 数量 5；level 2 配 upgrade_costs[0] = 10070 数量 15、upgrade_costs[1] = 10071 数量 3；level 3 配 upgrade_costs[0] = 10070 数量 30、upgrade_costs[1] = 10071 数量 10；升阶效果逐阶递增：阴阳权重 +0.05、攻击力加成 +500/+1000/+1500（仅在描述层语义，schema 无对应列，待程序侧扩展）。同时建 fabao.xlsx/FabaoLevel 三行，把法宝与觉醒技能按 level 关联：level 1/2/3 spell_level 1/2/3，都指向同一 spell_id。最后把既有 item_id 28888 的法术字段绑定为新建的觉醒技能 spell_id（即把它的 fabao_spell_id 字段更新为新建 skill_id）。注意：阴阳权重升阶 + attack bonus 的字段在 FabaoUpgradeCost sheet 真实 schema 上不存在，建表只能配 level+消耗，效应值字段留空。",
+    "expected_answer": [
+      {
+        "table": "fabao.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "produces": "new_fabao_id",
+        "row_content": {
+          "id": "<new_fabao_id>",
+          "name": "噬魂幡",
+          "icon": "Icon_soul_banner",
+          "desc": "密咒神器，觉醒后绑定到本体道具",
+          "costs[0]": [10070, 5],
+          "costs[1]": [10071, 3]
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "produces": "new_item_id",
+        "row_content": {
+          "item_id": "<new_item_id>",
+          "dest": "噬魂幡本体",
+          "fabao_type": 3,
+          "fabao_spell_id": "<new_spell_id>",
+          "attr_mod_id": 200100,
+          "yinyang_rate": 0.65,
+          "yang_desc": "觉醒时召唤冥魂持续对周围敌人造成伤害",
+          "yin_desc": "觉醒时把承受伤害的20%反弹给攻击者"
+        }
+      },
+      {
+        "table": "combat\\spell.xlsx",
+        "sheet": "spell_data",
+        "operation": "add",
+        "produces": "new_spell_id",
+        "row_content": {
+          "id": "<new_spell_id>",
+          "spell_type": "attack",
+          "spell_effect_type": "damage",
+          "spell_element": "dark",
+          "damage_base_rate": 1.5,
+          "target_num_limit": 3,
+          "settlement_method": 0
+        }
+      },
+      {
+        "table": "combat\\spell_group.xlsx",
+        "sheet": "SpellGroup",
+        "operation": "add",
+        "row_content": {
+          "group_id": 750,
+          "name": "噬魂觉醒组",
+          "spell_ids": ["<new_spell_id>"]
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoUpgradeCost",
+        "operation": "add",
+        "row_content": {
+          "level": 1,
+          "upgrade_costs[0]": [10070, 5]
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoUpgradeCost",
+        "operation": "add",
+        "row_content": {
+          "level": 2,
+          "upgrade_costs[0]": [10070, 15],
+          "upgrade_costs[1]": [10071, 3]
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoUpgradeCost",
+        "operation": "add",
+        "row_content": {
+          "level": 3,
+          "upgrade_costs[0]": [10070, 30],
+          "upgrade_costs[1]": [10071, 10]
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoLevel",
+        "operation": "add",
+        "row_content": {
+          "fabao_id": "<new_fabao_id>",
+          "level": 1,
+          "spell_id": "<new_spell_id>",
+          "spell_level": 1
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoLevel",
+        "operation": "add",
+        "row_content": {
+          "fabao_id": "<new_fabao_id>",
+          "level": 2,
+          "spell_id": "<new_spell_id>",
+          "spell_level": 2
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoLevel",
+        "operation": "add",
+        "row_content": {
+          "fabao_id": "<new_fabao_id>",
+          "level": 3,
+          "spell_id": "<new_spell_id>",
+          "spell_level": 3
+        }
+      },
+      {
+        "table": "item\\item.xlsx",
+        "sheet": "Fabao",
+        "operation": "modify",
+        "row_key": {"item_id": 28888},
+        "row_content": {
+          "fabao_spell_id": "<new_spell_id>"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "七日初心登录活动·每日递增奖励链（跨4表 add + 同表批量多行）",
+      "complexity": "中高（7 条 reward 同模式批量 add + 7 条 tips 同表批量 add + activity + 邮件模板+全服邮件）",
+      "note": "activity→reward×7(批量同表)→tips×7(批量同表，col=value/key/type)→mail×2",
+      "expect_subtasks": 11,
+      "design_target": "exercises DecomposeAgent'同模式批量'识别(避免7次重复意图/应合并或最小拆) + ExecuteAgent 同表 append 批量原子 + auto_sort；reward 用真实 must_items[N].item_ids+num+exp/gold_prob"
+    },
+    "input": "上线一个七日登录活动叫'七日初心'，activity_id 3050，活动描述'新玩家连续登录7天每日领取递增奖励'，开始 2025-02-01 00:00:00，结束 2025-02-28 23:59:59。连配七个每日奖励包：Day1 reward_id 占位，name'初心奖励Day1'，day_limit 1，100% 给金币公式 500；Day2 name'初心奖励Day2'，100% 给经验公式 1000；Day3 name'初心奖励Day3'，必给道具 10001 共 5 个；Day4 name'初心奖励Day4'，必给道具 10005 共 2 个、100% 给金币公式 1000；Day5 name'初心奖励Day5'，必给道具 10001 共 10 个、100% 给经验公式 3000；Day6 name'初心奖励Day6'，必给道具 10005 共 5 个、道具 10060 共 3 个；Day7 name'初心奖励Day7'，必给传说道具 10080 共 1 个、100% 给经验。配订阅通知邮件：模板 template_id 占位，标题'欢迎来到初心江湖'，内容'少侠七日初心活动开启，连续登录7天领取递增奖励，首日金币已到账'，配全服邮件 global_id 9 邮件类型 1，发送人'系统'，发送时间 2025-02-01 00:00:00，附带奖励包 0。最后再配七条 tips 提示文案：tips 文案原文对应'Day1 今日可领金币500奖励'、'Day2 今日可领经验1000'、'Day3 今日可领精炼石×5'、'Day4 今日可领道具10005×2及金币1000'、'Day5 今日可领精炼石×10及经验3000'、'Day6 今日可领道具10005×5+10060×3'、'Day7 今日可领传说道具10080×1及大量经验'，每条 key 用 newbie_login_dayN，type 都填'tips'。",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 3050,
+          "activity_type": 1,
+          "name": "七日初心",
+          "desc": "新玩家连续登录7天每日领取递增奖励",
+          "start_time": "2025-02-01 00:00:00",
+          "end_time": "2025-02-28 23:59:59"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day1_id",
+        "row_content": {
+          "id": "<new_reward_day1_id>",
+          "name": "初心奖励Day1",
+          "day_limit": 1,
+          "gold_prob": 100,
+          "gold_formula": "500"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day2_id",
+        "row_content": {
+          "id": "<new_reward_day2_id>",
+          "name": "初心奖励Day2",
+          "day_limit": 1,
+          "exp_prob": 100,
+          "exp_formula": "1000"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day3_id",
+        "row_content": {
+          "id": "<new_reward_day3_id>",
+          "name": "初心奖励Day3",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10001,
+          "must_items[1].num": 5
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day4_id",
+        "row_content": {
+          "id": "<new_reward_day4_id>",
+          "name": "初心奖励Day4",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10005,
+          "must_items[1].num": 2,
+          "gold_prob": 100,
+          "gold_formula": "1000"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day5_id",
+        "row_content": {
+          "id": "<new_reward_day5_id>",
+          "name": "初心奖励Day5",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10001,
+          "must_items[1].num": 10,
+          "exp_prob": 100,
+          "exp_formula": "3000"
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day6_id",
+        "row_content": {
+          "id": "<new_reward_day6_id>",
+          "name": "初心奖励Day6",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10005,
+          "must_items[1].num": 5,
+          "must_items[2].item_ids": 10060,
+          "must_items[2].num": 3
+        }
+      },
+      {
+        "table": "reward.xlsx",
+        "sheet": "Reward",
+        "operation": "add",
+        "produces": "new_reward_day7_id",
+        "row_content": {
+          "id": "<new_reward_day7_id>",
+          "name": "初心奖励Day7",
+          "day_limit": 1,
+          "must_items[1].item_ids": 10080,
+          "must_items[1].num": 1,
+          "exp_prob": 100,
+          "exp_formula": "经验"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "欢迎来到初心江湖",
+          "content": "少侠七日初心活动开启，连续登录7天领取递增奖励，首日金币已到账"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 9,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "send_time": "2025-02-01 00:00:00",
+          "sender": "系统",
+          "reward_id": 0
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领金币500奖励",
+          "key": "newbie_login_day1",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领经验1000",
+          "key": "newbie_login_day2",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领精炼石×5",
+          "key": "newbie_login_day3",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领道具10005×2及金币1000",
+          "key": "newbie_login_day4",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领精炼石×10及经验3000",
+          "key": "newbie_login_day5",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领道具10005×5+10060×3",
+          "key": "newbie_login_day6",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日可领传说道具10080×1及大量经验，祝江湖顺利",
+          "key": "newbie_login_day7",
+          "type": "tips"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "批量属性调档·hero×hero_level（跨2表 modify 5次 + 嵌套点分键）",
+      "complexity": "中（纯 modify 多行多表 + 点分键 attributes.* + 复合定位 row_key hero_id 或 id）",
+      "note": "hero.xlsx/Hero modify×2 角色 + hero_level.HeroLevelGrow modify×3 行(等级成长配置)；属性全部用 attributes.* 真实 col",
+      "expect_subtasks": 5,
+      "design_target": "exercises LocatorAgent 复合 row_key(hero_id 或 id) 定位 + ExecuteAgent 批量 atomic update 不互踩 + attributes.* 点分键 modify"
+    },
+    "input": "做一批英雄平衡性调整。英雄 hero_id 8001（男角色）：面板气血上限从 12000 调到 14000、面板物理攻击从 5000 调到 5800、面板法术防御从 3000 调到 3500。英雄 hero_id 8002（女角色）：面板气血上限从 11500 调到 13500、面板法术攻击从 4800 调到 5500、面板物理防御从 3200 调到 3700。10级等级成长配置要联动：HeroLevelGrow 表里 id=8010 那条记录，气血加成从 18000 调到 21000、物理暴击倍率从 0 调到 1900；id=8020 那条记录，气血加成从 17000 调到 20000、攻击加成从 0 调到 1500。最后再做一处属性修正——HeroLevelGrow 表 id=8005 那条，把速度加成从原值调到 100。",
+    "expected_answer": [
+      {
+        "table": "hero\\hero.xlsx",
+        "sheet": "Hero",
+        "operation": "modify",
+        "row_key": {"hero_id": 8001},
+        "row_content": {
+          "attributes.HPMaxCon": 14000,
+          "attributes.WorldAttackCon": 5800,
+          "attributes.WorldMagicDefCon": 3500
+        }
+      },
+      {
+        "table": "hero\\hero.xlsx",
+        "sheet": "Hero",
+        "operation": "modify",
+        "row_key": {"hero_id": 8002},
+        "row_content": {
+          "attributes.HPMaxCon": 13500,
+          "attributes.WorldMagicCon": 5500,
+          "attributes.WorldAttackDefCon": 3700
+        }
+      },
+      {
+        "table": "hero\\hero_level.xlsx",
+        "sheet": "HeroLevelGrow",
+        "operation": "modify",
+        "row_key": {"id": 8010},
+        "row_content": {
+          "attributes.HPMaxCon": 21000,
+          "attributes.WorldPhyCritrateCon": 1900
+        }
+      },
+      {
+        "table": "hero\\hero_level.xlsx",
+        "sheet": "HeroLevelGrow",
+        "operation": "modify",
+        "row_key": {"id": 8020},
+        "row_content": {
+          "attributes.HPMaxCon": 20000,
+          "attributes.WorldAttackCon": 1500
+        }
+      },
+      {
+        "table": "hero\\hero_level.xlsx",
+        "sheet": "HeroLevelGrow",
+        "operation": "modify",
+        "row_key": {"id": 8005},
+        "row_content": {
+          "attributes.WorldSpeedCon": 100
+        }
+      }
+    ]
+  }
+]

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Optional
 
@@ -24,6 +25,78 @@ from .llm_agent import LLMSubAgent
 from .locator_agent import LocatorResult, CandidateTable, FKEdge
 
 logger = logging.getLogger(__name__)
+
+
+# §观测C：LLM IO 可观测 harness（env CODEMAKER_DECOMPOSE_TRACE=1 开）。
+# 不绑业务词/表/测例，纯结构化遥测，定位"为何只产N条/字段缺失"的真实归因。
+# 关闭时零开销（早判 env）。dump 截断防曝，仅 logger.info + 结构化 thinking 事件。
+_TRACE_ON = os.environ.get("CODEMAKER_DECOMPOSE_TRACE", "0") == "1"
+
+_DUMP_DIR = os.environ.get("CODEMAKER_DECOMPOSE_DUMP_DIR", "")
+_TRACE_SEQ = 0
+
+
+def _next_trace_seq() -> int:
+    global _TRACE_SEQ
+    _TRACE_SEQ += 1
+    return _TRACE_SEQ
+
+
+def _clip_s(s, n: int = 1800) -> str:
+    """截断长字符串供 log（防 prompt/schema 全文刷屏）。"""
+    s = str(s) if s is not None else ""
+    return s if len(s) <= n else s[:n] + f"…<+{len(s) - n}B>"
+
+
+def _dump_llm_io(site: str, prompt: str, raw: str, *, stems=None,
+                 extra: dict = None) -> None:
+    """LLM 调用 IO 落 log（env 开）。prompt/response 截断。
+
+    若 CODEMAKER_DECOMPOSE_DUMP_DIR 指向可写目录，另存完整原文 + .meta.json，
+    供离线复现（不经任何业务判据，纯 I/O 快照）。
+    """
+    if not _TRACE_ON:
+        return
+    seq = _next_trace_seq()
+    _stems = list(stems) if stems else []
+    logger.info(
+        "[trace:%s #%d] stems=%s prompt≈%dB raw≈%dB\n"
+        "--- PROMPT(snip) ---\n%s\n--- RAW(snip) ---\n%s",
+        site, seq, _stems, len(prompt or ""), len(raw or ""),
+        _clip_s(prompt, 1600), _clip_s(raw, 1600))
+    if _DUMP_DIR and os.path.isdir(_DUMP_DIR):
+        try:
+            import json as _j
+            tag = f"{site}_{seq:04d}"
+            with open(os.path.join(_DUMP_DIR, f"{tag}.prompt.txt"),
+                      "w", encoding="utf-8") as f:
+                f.write(prompt or "")
+            with open(os.path.join(_DUMP_DIR, f"{tag}.raw.txt"),
+                      "w", encoding="utf-8") as f:
+                f.write(raw or "")
+            with open(os.path.join(_DUMP_DIR, f"{tag}.meta.json"),
+                      "w", encoding="utf-8") as f:
+                _j.dump({"site": site, "stems": _stems,
+                         "prompt_bytes": len(prompt or ""),
+                         "raw_bytes": len(raw or ""),
+                         **(extra or {})}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.debug("dump_llm_io 落盘失败", exc_info=True)
+
+
+def _push_telemetry(sink_cb, phase: str, payload: dict) -> None:
+    """推结构化 thinking 事件（phase=__json:<kind>, detail=JSON 串）。
+
+    sink_cb = DecomposeAgent.add_thinking（已含 thinking_sink 透传到前端 SSE）。
+    前端/日志可据此渲染 decompose 产/留/丢清单，定位遗漏根因。
+    """
+    if not _TRACE_ON or sink_cb is None:
+        return
+    try:
+        import json as _j
+        sink_cb(f"__json:{phase}", _j.dumps(payload, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 # 复用 cross_table_splitter.SplitIntent 结构(不重新定义,保兼容)
@@ -53,12 +126,19 @@ class DecomposeAgent(LLMSubAgent):
         # 失效靠进程重启（配表 xlsx 结构静态，单进程内不变）。
         self._schema_cache: dict[tuple[str, str], tuple[list, list]] = {}
 
-    def decompose(self, text: str, locator_result: LocatorResult) -> list:
+    def decompose(self, text: str, locator_result: LocatorResult,
+                  force_single: bool = False) -> list:
         """主入口:text + LocatorResult → SplitIntent[]。
 
         O1 重构:反转主次——候选表数 ≤ 阈值时走单 prompt 主路径(N→1,token 砍 50-70%),
         失败/产 <2 降级并发每表;候选表数 > 阈值时保持并发主路径(防单 prompt schema
         过大致超时空返),并发产 <2 触发单 prompt 兜底。阈值由 env 控制,默认 3。
+
+        §P0 force_single：单任务链输入（split_multi_intent 判定的跨表任务链整段）
+        候选表常 >阈值（12+ 表），走并发每表路径会让 LLM 只看到单表 schema，
+        跨表 produces/consumes 链接全断（并发路径每表独立 prompt，无全链上下文）。
+        单任务链必须整段单 prompt 全候选 schema 一起看才能拆出正确跨表链。
+        force_single=True 时无视阈值，强制走单 prompt 主路径。
 
         §Step1 列名信号注入：locator_result.column_signal 透传给 _build_prompt +
         _build_schema_block，让 LLM 看着列名命中信号选表选 sheet 选列（LLM 主导，
@@ -68,6 +148,7 @@ class DecomposeAgent(LLMSubAgent):
         Args:
             text: 用户原始指令
             locator_result: LocatorAgent 产出(候选表 + FK 边 + column_signal)
+            force_single: 强制走单 prompt 全候选路径（任务链用）
 
         Returns:
             SplitIntent 列表(每表一 op)。失败返回空列表,
@@ -89,7 +170,24 @@ class DecomposeAgent(LLMSubAgent):
 
         single_threshold = int(_os.environ.get(
             "CODEMAKER_DECOMPOSE_SINGLE_PROMPT_THRESHOLD", "3"))
-        use_single = len(candidates) <= single_threshold
+        # §P0 force_single：任务链强制单 prompt（无视候选数阈值），
+        # 全候选 schema 一起看才能拆出正确跨表 produces/consumes 链。
+        use_single = force_single or len(candidates) <= single_threshold
+        # §P0 任务链超时放宽：force_single 单 prompt 要拆 12+ 表全链，40s 不够
+        # （case0 实测 40s 超时空返 → baseline 兜底产残缺 7 子任务）。90s 是
+        # 原 decompose 整句超时值，任务链单 prompt 场景复用。
+        if force_single and len(candidates) > single_threshold:
+            per_to = max(per_to, int(_os.environ.get(
+                "CODEMAKER_DECOMPOSE_CHAIN_TIMEOUT", "90")))
+        # §P0 链式分组拆分：任务链候选 12+ 表时，单 prompt 全 schema 超时/空返
+        # （case0 实测 12 表 120s 仍空响应）。但单表/小 schema 单 prompt 能正常
+        # 产出（entity_prefab 单表重拆产 5541 字符完整链）。折中：按 FK 链分组
+        # 后每组 ≤6 表跑单 prompt（全文本 + 该组 schema），组间 produces/consumes
+        # 标签由全文本上下文保证一致，跨组引用不受影响（LLM 两组都看到全文）。
+        # 阈值 CODEMAKER_DECOMPOSE_CHAIN_GROUP 默认 4（实测 4-5 表单 prompt 稳定产出，
+        # 6 表超时）。
+        _chain_group = int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP", "4"))
+        force_grouped = (force_single and len(candidates) > _chain_group)
         # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
         self._last_column_signal = column_signal
 
@@ -114,7 +212,32 @@ class DecomposeAgent(LLMSubAgent):
         # §P1-2.3 砍降级链：候选已被 P0-0 分段收到 ≤阈值，单 prompt 足够。原"单→并发→单"
         # 对同批表跑 3 遍 LLM，拖垮链路。现单 prompt 产空/产 <2 不再降级并发每表，
         # 直接走下方 _splitter_baseline 零 LLM 兜底（段级对账会重跑 decompose_segment）。
-        if use_single:
+        if force_grouped:
+            # §P0 链式分组：任务链 12+ 表单 prompt 超时，按组（≤6 表）跑单 prompt，
+            # 每组全文本 + 该组 schema，产出合并。组间表不重叠（每表只出现在一组），
+            # 无需去重；组内同 sheet 多行（对话树多句 conv/option）是合法多 intent，
+            # 不能按 (table,sheet) 去重（会把对话树多句坍缩成一句）。
+            # 注意 _decompose_single_prompt 返回类型不一致：失败返回 []（空列表），
+            # 成功返回 (filtered, dropped) 二元组——需按类型分派（与 _merge 同口径）。
+            for _gi in range(0, len(candidates), _chain_group):
+                _chunk = candidates[_gi:_gi + _chain_group]
+                _out = self._decompose_single_prompt(
+                    text, _chunk, fk_block, per_to, column_signal=column_signal)
+                if isinstance(_out, tuple) and len(_out) == 2:
+                    _res, _drp = _out
+                else:
+                    _res, _drp = _out or [], []
+                if _res:
+                    all_intents.extend(_res)
+                if _drp:
+                    for _s in _drp:
+                        if _s not in all_dropped:
+                            all_dropped.append(_s)
+            self.add_thinking("细分",
+                f"DecomposeAgent 链式分组 {len(candidates)} 表→"
+                f"{((len(candidates) + _chain_group - 1) // _chain_group)} 组"
+                f"单 prompt，产出 {len(all_intents)} 条意图")
+        elif use_single:
             _merge(self._decompose_single_prompt(
                 text, candidates, fk_block, per_to, column_signal=column_signal))
         else:
@@ -195,6 +318,36 @@ class DecomposeAgent(LLMSubAgent):
                         all_intents = seg_intents
             except Exception:  # noqa: BLE001
                 logger.debug("分段单 prompt 兜底失败", exc_info=True)
+        # §缺表覆盖对账 + 定向单表重拆补漏（Step1 兜底，纯增量，missing 空则零开销）
+        if all_intents:
+            all_intents = self._backfill_missing(
+                text, all_intents, candidates, locator_result.fk_edges,
+                fk_block, per_to, column_signal)
+        # §Step1 解析层健康自检 + 保守回填（dict 残留/consumes 标签悬空）：
+        # 把 LLM 产出质量问题在 Step1 就抓出/修正，不流到 Step3 才爆。零 LLM，
+        # 边界独立。返回修正/告警条数供观测。
+        if all_intents:
+            _lint_n = self._lint_split_intents(all_intents, locator_result.fk_edges)
+            if _lint_n:
+                self.add_thinking("细分",
+                    f"Step1 lint 修正/告警 {_lint_n} 项（dict 残留/标签悬空）")
+        # §观测C：decompose 全程汇总遥测——候选 vs 最终产出，定位遗漏在哪个环节。
+        # 不绑业务词/表/测例，纯集合差运算。force_single/分组模式/兜底路径均覆盖。
+        if _TRACE_ON:
+            _cand_stems = sorted({str(getattr(c, "stem", "") or "").lower()
+                                   for c in candidates})
+            _prod_stems = sorted({str(getattr(it, "table_hint", "") or "").lower()
+                                   for it in all_intents})
+            _missing = sorted(set(_cand_stems) - set(_prod_stems))
+            _extra = sorted(set(_prod_stems) - set(_cand_stems))
+            _push_telemetry(self.add_thinking, "decompose_summary", {
+                "path": "grouped" if force_grouped
+                        else ("single" if use_single else "parallel"),
+                "candidates": _cand_stems,
+                "produced": _prod_stems,
+                "still_missing": _missing,
+                "off_candidate": _extra,
+                "total": len(all_intents)})
         return all_intents
 
     def decompose_segment(self, seg: str, locator_result: LocatorResult) -> list:
@@ -272,6 +425,11 @@ class DecomposeAgent(LLMSubAgent):
                 self.add_thinking("细分",
                     f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
                 intents = fb
+        # §速度1：删段级 backfill —— 原每段产空后都跑"缺表对账+单表重拆"串行 LLM，
+        # 多段时累计 backfill × N × per_to 串行致墙钟爆（实测 N=10 段 backfill 占大半）。
+        # 段级 backfill 职责上移到 ParseAgent._assemble 全局一次对账+一次重拆：
+        # 各段产出汇合后用全局 candidates 做一次 expected/produced 对账，缺表一次性
+        # 重拆补漏（vs 段级每段对各自窄候选重拆，重复+串行）。零回归：缺表补充由全局兜。
         return intents
 
     def _prune_segment_candidates(self, seg: str, candidates: list,
@@ -443,6 +601,93 @@ class DecomposeAgent(LLMSubAgent):
                 ))
         return all_fb
 
+    def _backfill_missing(self, text: str, intents: list, candidates: list,
+                          fk_edges: list, fk_block: str, per_to: int,
+                          column_signal=None) -> list:
+        """缺表覆盖对账 + 定向单表重拆补漏（Step1 兜底，纯增量）。
+
+        LLM 单 prompt 面对大 schema 会退化漏拆（BOSS 战斗段只拆 combat_data，
+        漏 pve_combat_npc/entity_prefab/spawn；对话段只拆 Interaction，漏 conv/option）。
+        本方法在 LLM 产出后对账 expected vs produced，缺的表用单表小 schema 重拆一次。
+
+        expected 判据（通用，不绑业务词）：
+          1. 非弱级候选表 (stem, sheet)——level 非 column_extract/column_reverse
+             （alias/文件/sheet/llm/substring/fk_expanded 均算语义命中）
+          2. FK 边两端 (stem, sheet)——覆盖同 stem 多 sheet（interaction 的
+             InteractionConv/InteractionConvOption 经 Interaction 对话边进入）
+
+        正常链路 produced 覆盖 expected → missing 空 → 零额外 LLM 调用。
+        只在 LLM 漏拆时补跑小 schema（每 stem 重拆 1 次，限流防爆）。
+        """
+        if not intents or not candidates:
+            return intents
+        _WEAK = {"column_extract", "column_reverse"}
+        expected: set[tuple] = set()
+        cand_by_stem: dict[str, CandidateTable] = {}
+        for c in candidates:
+            stem = (getattr(c, "stem", "") or "").lower()
+            if not stem:
+                continue
+            cand_by_stem.setdefault(stem, c)
+            lvl = (getattr(c, "level", "") or "").lower()
+            if lvl in _WEAK:
+                continue
+            expected.add((stem, (getattr(c, "sheet", "") or "").strip()))
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").lower()
+            ts = (getattr(e, "to_stem", "") or "").lower()
+            if fs:
+                expected.add((fs, (getattr(e, "from_sheet", "") or "").strip()))
+            if ts:
+                expected.add((ts, (getattr(e, "to_sheet", "") or "").strip()))
+        produced = {((getattr(it, "table_hint", "") or "").lower(),
+                     (getattr(it, "sheet_hint", "") or "").strip())
+                    for it in intents}
+        missing = expected - produced
+        if not missing:
+            return intents
+        import os as _os
+        _max = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_MAX", "3")))
+        missing_stems = sorted({s for s, _ in missing})[:_max]
+        self.add_thinking("细分",
+            f"DecomposeAgent 缺表对账：expected {len(expected)} sheet，"
+            f"produced {len(produced)} sheet，缺 {missing_stems}")
+        for _ms in missing_stems:
+            # 重拆统一 sheet="" 读该表全部业务 sheet（覆盖同 stem 多 sheet：
+            # interaction 的 InteractionConv/InteractionConvOption 需一起注入 schema）
+            _base = cand_by_stem.get(_ms)
+            _rc = CandidateTable(
+                stem=_ms, sheet="",
+                confidence=getattr(_base, "confidence", 0.5) if _base is not None else 0.5,
+                level="retry_single",
+                matched_term=getattr(_base, "matched_term", "") if _base is not None else "",
+            )
+            try:
+                _res = self._decompose_single_prompt(
+                    text, [_rc], fk_block, per_to, column_signal=column_signal)
+                _rit = _res[0] if isinstance(_res, tuple) else _res
+            except Exception:  # noqa: BLE001
+                _rit = []
+            if _rit:
+                _existing = {((getattr(it, "table_hint", "") or "").lower(),
+                              (getattr(it, "sheet_hint", "") or "").strip())
+                             for it in intents}
+                _added = 0
+                for _ni in _rit:
+                    _nk = ((getattr(_ni, "table_hint", "") or "").lower(),
+                           (getattr(_ni, "sheet_hint", "") or "").strip())
+                    if _nk in _existing:
+                        continue
+                    intents.append(_ni)
+                    _existing.add(_nk)
+                    _added += 1
+                self.add_thinking("细分",
+                    f"缺表重拆 {_ms} 补 {_added} 条意图")
+            else:
+                self.add_thinking("细分",
+                    f"缺表重拆 {_ms} 仍产空（该表可能非动作主语，如 FK 引用目标）")
+        return intents
+
     def _decompose_single_prompt(self, text: str, candidates: list[CandidateTable],
                                   fk_block: str, per_to: int,
                                   column_signal=None) -> list:
@@ -472,37 +717,103 @@ class DecomposeAgent(LLMSubAgent):
                     _ce.set()
             _t.Thread(target=_mirror, daemon=True).start()
         from .base import _isolated_empty_dir
+        import time as _time_retry
+        # §抖动容错：empty_response 重试 1 次（短退避），仅对 serve 抖动返空生效；
+        # 顶满 timeout 返空不重试（重试仍顶满，浪费墙钟）。env CODEMAKER_DECOMPOSE_SINGLE_RETRY。
+        _RETRY_MAX = max(0, int(os.environ.get("CODEMAKER_DECOMPOSE_SINGLE_RETRY", "1")))
         raw = ""
-        try:
-            sr = client.create_session(
-                directory=_isolated_empty_dir(),
-                model=getattr(self.parser, "model", ""))
-            if getattr(sr, "ok", False):
-                from .llm_gate import llm_throttle
-                with llm_throttle():
-                    resp = client.prompt(sr.session_id, prompt, timeout=per_to,
-                                          model=getattr(self.parser, "model", ""),
-                                          cancel_event=_ce)
-                self._bump_llm("decompose")
-                raw = getattr(resp, "response_text", "") or ""
-        except Exception as e:  # noqa: BLE001
-            self.add_thinking("细分",
-                f"DecomposeAgent 单 prompt 调用失败({type(e).__name__}: {e})")
-            return []
+        _resp_err = ""
+        for _attempt in range(_RETRY_MAX + 1):
+            raw = ""
+            _resp_err = ""
+            try:
+                sr = client.create_session(
+                    directory=_isolated_empty_dir(),
+                    model=getattr(self.parser, "model", ""))
+                if getattr(sr, "ok", False):
+                    from .llm_gate import llm_throttle
+                    with llm_throttle():
+                        resp = client.prompt(sr.session_id, prompt, timeout=per_to,
+                                              model=getattr(self.parser, "model", ""),
+                                              cancel_event=_ce)
+                    self._bump_llm("decompose")
+                    raw = getattr(resp, "response_text", "") or ""
+                    _resp_err = str(getattr(resp, "error", "")
+                                    or getattr(resp, "error_type", "") or "")
+                else:
+                    _resp_err = "create_session failed"
+                if raw:
+                    break  # 成功 → 出循环
+            except Exception as e:  # noqa: BLE001
+                _resp_err = f"{type(e).__name__}: {e}"
+                if _attempt >= _RETRY_MAX:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 单 prompt 调用失败({_resp_err})")
+                    return []
+            # empty_response/失败：超时不重试（顶满返空重试浪费墙钟），抖动返空重试
+            if _attempt < _RETRY_MAX:
+                _is_timeout = any(_x in _resp_err.lower()
+                                  for _x in ("timed out", "timeout", "超时"))
+                if _is_timeout:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 单 prompt 超时空响应(stems={_stems}),"
+                        f"不重试节省墙钟（重试仍顶满 timeout）")
+                    break
+                self.add_thinking("细分",
+                    f"DecomposeAgent 单 prompt 空响应(stems={_stems}),"
+                    f"抖动重试 attempt={_attempt+1}/{_RETRY_MAX}")
+                _time_retry.sleep(1.5)  # 短退避 1.5s 待 serve 抖动恢复
+                continue
+        # §观测C：落 prompt/raw IO（env 开），定位 LLM 实际产出与退化。
+        _dump_llm_io("single_prompt", prompt, raw, stems=_stems,
+                      extra={"text_bytes": len(text or ""),
+                             "schema_chars": len(schema_all or ""),
+                             "retry_attempt": _attempt,
+                             "resp_err": _resp_err[:40]})
         if not raw:
             self.add_thinking("细分", "DecomposeAgent 单 prompt 空响应")
+            _push_telemetry(self.add_thinking, "decompose_io", {
+                "site": "single_prompt", "stems": _stems,
+                "raw_bytes": 0, "arr_len": 0, "kept": 0,
+                "dropped_narr": [], "filtered_out": [],
+                "verdict": _resp_err or "empty_response"})
             return []
         arr = self._parse_json_array(raw)
         if not arr:
             self.add_thinking("细分", "DecomposeAgent 单 prompt 非 JSON 数组")
+            _push_telemetry(self.add_thinking, "decompose_io", {
+                "site": "single_prompt", "stems": _stems,
+                "raw_bytes": len(raw), "arr_len": 0, "kept": 0,
+                "dropped_narr": [], "filtered_out": [],
+                "verdict": "non_json"})
             return [], []
+        # §观测C：记录 LLM 原始返回的每条 table/sheet/action，定位是否跨表多产
+        _llm_rows = [{"table": str(x.get("table","") if isinstance(x,dict) else ""),
+                      "sheet": str(x.get("sheet","") if isinstance(x,dict) else ""),
+                      "action": str(x.get("action","") if isinstance(x,dict) else "")}
+                     for x in arr if isinstance(x, dict)]
         intents, dropped = self._to_split_intents(arr, text)
-        valid_stems = {c.stem.lower() for c in candidates}
+        # §A2 valid_stems = 全表池 ∪ 本段候选：切段后每段 LLM 可跨段产合法表
+        #（combat 段产 entity_prefab/interaction），原"本段候选"窄白名单会丢跨段合法
+        # 产出（实测 arr_len=5 kept=[]）。全表池保跨段真实表，∪候选保候选内 alias
+        #（如 fake 测试 stem / locator 部分 alias）。cli None 时降为候选（原行为）。
+        valid_stems = self._all_table_stems() | {c.stem.lower() for c in candidates}
+        # §观测C：记录被 _filter_intents 丢弃的表（哪些 stem 跨组/非候选被丢）
+        _before = [str(getattr(it, "table_hint", "") or "") for it in intents]
         filtered = self._filter_intents(intents, candidates, valid_stems,
                                          path="单 prompt")
+        _filtered = [str(getattr(it, "table_hint", "") or "") for it in filtered]
         self.add_thinking("细分",
             f"DecomposeAgent 单 prompt 产出 {len(filtered)} 条意图"
             f"（丢弃 {len(dropped)} 叙述灌值 stem）")
+        _push_telemetry(self.add_thinking, "decompose_io", {
+            "site": "single_prompt", "stems": _stems,
+            "raw_bytes": len(raw), "arr_len": len(arr),
+            "llm_rows": _llm_rows,
+            "before_filter": _before,
+            "kept": _filtered,
+            "dropped_narr": list(dropped),
+            "verdict": "ok"})
         return filtered, dropped
 
     def _decompose_parallel(self, text: str, candidates: list[CandidateTable],
@@ -583,15 +894,39 @@ class DecomposeAgent(LLMSubAgent):
             if not raw:
                 self.add_thinking("细分",
                     f"DecomposeAgent {cand.stem} 调用失败({last_err}, retry={retries})")
+                _push_telemetry(self.add_thinking, "decompose_io", {
+                    "site": "parallel", "stems": [cand.stem],
+                    "raw_bytes": 0, "arr_len": 0, "kept": [],
+                    "dropped_narr": [], "verdict": last_err or "empty"})
                 return [], []
+            # §观测C：并发每表 LLM IO 落盘
+            _dump_llm_io("parallel", prompt, raw, stems=[cand.stem],
+                          extra={"text_bytes": len(text or "")})
             arr = self._parse_json_array(raw)
             if not arr:
                 self.add_thinking("细分", f"DecomposeAgent {cand.stem} 非 JSON 数组")
+                _push_telemetry(self.add_thinking, "decompose_io", {
+                    "site": "parallel", "stems": [cand.stem],
+                    "raw_bytes": len(raw), "arr_len": 0, "kept": [],
+                    "dropped_narr": [], "verdict": "non_json"})
                 return [], []
+            _llm_rows = [{"table": str(x.get("table","") if isinstance(x,dict) else ""),
+                           "sheet": str(x.get("sheet","") if isinstance(x,dict) else ""),
+                           "action": str(x.get("action","") if isinstance(x,dict) else "")}
+                          for x in arr if isinstance(x, dict)]
             intents, dropped = self._to_split_intents(arr, text)
-            valid_stems = {c.stem.lower() for c in candidates}
+            # §A2 同 single_prompt：valid_stems = 全表池 ∪ 本段候选（防跨段合法产出被丢）
+            valid_stems = self._all_table_stems() | {c.stem.lower() for c in candidates}
+            _before = [str(getattr(it, "table_hint", "") or "") for it in intents]
             filtered = self._filter_intents(intents, candidates, valid_stems,
                                              path=f"并发({cand.stem})")
+            _kept = [str(getattr(it, "table_hint", "") or "") for it in filtered]
+            _push_telemetry(self.add_thinking, "decompose_io", {
+                "site": "parallel", "stems": [cand.stem],
+                "raw_bytes": len(raw), "arr_len": len(arr),
+                "llm_rows": _llm_rows, "before_filter": _before,
+                "kept": _kept, "dropped_narr": list(dropped),
+                "verdict": "ok"})
             return filtered, dropped
 
         all_intents: list = []
@@ -644,6 +979,27 @@ class DecomposeAgent(LLMSubAgent):
         result = (list(hdrs), list(trow))
         self._schema_cache[key] = result
         return result
+
+    def _all_table_stems(self) -> set:
+        """§A2 全表 stems 池（复用 _table_index_cache，list_tables 一次后查内存）。
+
+        供 _filter_intents 的 valid_stems 用：切段后每段 LLM 可能跨段产合法表
+        （combat 段产 entity_prefab/interaction——"刷NPC/对话树"语义），原
+        valid_stems 用本段窄候选会把这类合法跨段产出当"幻觉表"丢弃（实测
+        arr_len=5 kept=[]）。改用全表 stems 池：Step1 filter 只防"产了不存在
+        的表 stem"真幻觉，不防"产错但存在的表 stem"（后者交 Step2 COL_NOT_FOUND）。
+        Step1 职责边界 = 解析产出（schema-grounded），不做列名/语义正确性判定。
+        cli 不可用时返空集（调用方回退本段候选）。
+        """
+        if not self._cli:
+            return set()
+        if not hasattr(self, "_table_index_cache") or not self._table_index_cache:
+            try:
+                self._table_index_cache = {p.stem: p
+                                           for p in self._cli.list_tables()}
+            except Exception:  # noqa: BLE001
+                self._table_index_cache = {}
+        return {str(k).lower() for k in (self._table_index_cache or {}).keys()}
 
     def _col_type_for(self, stem: str, sheet: str, col: str) -> str:
         """§P1-3.1 灌值按列类型判：查 stem/sheet 的 col 列类型（row2 规范名）。
@@ -718,6 +1074,150 @@ class DecomposeAgent(LLMSubAgent):
                         return _tv.split(":", 1)[1].strip()
                     return _tv
         return ""
+
+    def _flatten_dict_fields(self, fields: dict, stem: str, sheet) -> list:
+        """§#2 dict 嵌套值治理（边界独立，不依赖写盘/_coerce 旧路径）。
+
+        LLM 偶把子属性合并成对象塞进单列（如 ability 某列 = {cost:0,
+        require_level:1}），dict 落到写盘 openpyxl 抛 "Cannot convert dict
+        to Excel" → 整行追加失败。schema 驱动处理：
+          - 子键命中真实表头（row1 显示名 / row2 规范名，去类型后缀小写比对）
+            且该列名未被 fields 占用 → 展开到对应列；
+          - 非表头子键 / 列表dict / 无 schema → 原列置空（待 Step2 补，不崩写盘）。
+        返回被处理的列名清单供 thinking 上报。
+        """
+        notes: list[str] = []
+        _cli = getattr(self, "_cli", None)
+        if not isinstance(fields, dict) or not _cli or not stem:
+            # 无 cli/stem 无法取 schema → 把显式 dict/list-dict 置空防写盘崩
+            for _k in list(fields.keys()):
+                _v = fields[_k]
+                if isinstance(_v, dict) or (
+                        isinstance(_v, list) and _v and isinstance(_v[0], dict)):
+                    fields[_k] = ""
+                    notes.append(f"{_k}→置空(无schema)")
+            return notes
+        if not hasattr(self, "_table_index_cache"):
+            try:
+                self._table_index_cache = {p.stem: p
+                                           for p in _cli.list_tables()}
+            except Exception:  # noqa: BLE001
+                self._table_index_cache = {}
+        _p = self._table_index_cache.get(stem)
+        _sheet = sheet
+        if _p is not None and not _sheet:
+            try:
+                _sheets = _cli.get_sheets(_p)
+                _biz = [s for s in _sheets if s and "说明" not in s and "CONFIG" not in s]
+                _sheet = _biz[0] if _biz else ""
+            except Exception:  # noqa: BLE001
+                _sheet = ""
+        _hdr_clean: set = set()
+        if _p is not None and _sheet:
+            try:
+                _hdrs, _ = self._read_schema_cached(_p, stem, _sheet)
+                for _h in (_hdrs or []):
+                    if _h:
+                        _hdr_clean.add(str(_h).split(":")[0].strip().lower())
+            except Exception:  # noqa: BLE001
+                pass
+        for _k in list(fields.keys()):
+            _v = fields[_k]
+            if isinstance(_v, dict):
+                _kept = 0
+                for _sk, _sv in _v.items():
+                    _skn = str(_sk).split(":")[0].strip().lower()
+                    if _skn and (_skn in _hdr_clean) and str(_sk) not in fields:
+                        fields[str(_sk)] = _sv
+                        _kept += 1
+                fields[_k] = ""  # 原列置空：dict 绝不落写盘
+                notes.append(f"{_k}→展开{_kept}子键")
+            elif isinstance(_v, list) and _v and isinstance(_v[0], dict):
+                fields[_k] = ""
+                notes.append(f"{_k}→列表dict置空")
+        return notes
+
+    def _lint_split_intents(self, intents: list, fk_edges: list = None) -> int:
+        """§Step1 解析层健康自检 + 保守自动修正（零 LLM，聚焦 step1 产出质量）。
+
+        把 LLM 产出的质量问题在 Step1 就抓出/修正，避免流到 Step3 才爆：
+          1. dict/list-dict 残留双保险（_flatten_dict_fields 漏网 → 再置空，绝不落盘）
+          2. consumes 占位符标签闭环：每个 <label> 找匹配 produces；不匹配 →
+             按 FK 边回填到被引表的唯一 produces（多 producer 歧义不回填只 warning），
+             治 produces/consumes 命名不一致（#3 的 Step1 兜底，边界独立、不混叠
+             operation_orchestrator._lookup 旧模糊策略）。
+        不阻断，仅 thinking 上报 + 保守回填。返回修正/告警条数。
+        """
+        n = 0
+        if not intents:
+            return 0
+        _produces = {(getattr(it, "produces", "") or "").strip()
+                     for it in intents if getattr(it, "produces", "")}
+        _produces.discard("")
+        # FK 边索引：(from_stem_lower, from_sheet_lower, from_column_lower) → to_stem
+        _fk: dict = {}
+        for _e in (fk_edges or []):
+            try:
+                _fs = (
+                    str(getattr(_e, "from_stem", "") or "").lower(),
+                    str(getattr(_e, "from_sheet", "") or "").lower(),
+                    str(getattr(_e, "from_column", "") or "").split(":")[0].strip().lower(),
+                )
+                _fk[_fs] = str(getattr(_e, "to_stem", "") or "")
+            except Exception:  # noqa: BLE001
+                pass
+        for it in intents:
+            _tbl = str(getattr(it, "table_hint", "") or "").strip()
+            _sht = str(getattr(it, "sheet_hint", "") or "").strip()
+            _fields = getattr(it, "fields", None)
+            if not isinstance(_fields, dict):
+                continue
+            for _col in list(_fields.keys()):
+                _v = _fields[_col]
+                # 1) dict/list-dict 残留 → 置空（绝不落盘 serial 化失败）
+                if isinstance(_v, dict) or (
+                        isinstance(_v, list) and _v and isinstance(_v[0], dict)):
+                    _fields[_col] = ""
+                    self.add_thinking("细分",
+                        f"lint: {_tbl}/{_sht} 列[{_col}] 残留 dict/list → 置空（防落盘崩）")
+                    n += 1
+                    continue
+                if not isinstance(_v, str) or "<" not in _v:
+                    continue
+                # 2) 标签闭环检查 + FK 边保守回填
+                for _m in __import__("re").finditer(r"<\s*([^>]+?)\s*>", _v):
+                    _label = _m.group(1).strip()
+                    if _label.lower() == "auto":
+                        continue
+                    if _label in _produces:
+                        continue
+                    _cc = str(_col).split(":")[0].strip().lower()
+                    _to_stem = _fk.get((_tbl.lower(), _sht.lower(), _cc))
+                    if _to_stem:
+                        _prods = [x for x in intents
+                                  if str(getattr(x, "table_hint", "") or "").lower()
+                                  == _to_stem.lower()
+                                  and (getattr(x, "produces", "") or "")]
+                        if len(_prods) == 1:
+                            _nl = _prods[0].produces
+                            _fields[_col] = _v.replace(f"<{_label}>", f"<{_nl}>")
+                            self.add_thinking("细分",
+                                f"lint: {_tbl}/{_sht} 列[{_col}] 标签悬空 "
+                                f"<{_label}>→<{_nl}>（FK 边回填到唯一 producer）")
+                            n += 1
+                        elif len(_prods) == 0:
+                            self.add_thinking("细分",
+                                f"lint: {_tbl}/{_sht} 列[{_col}] <{_label}> 无匹配 produces"
+                                f"，被引表 {_to_stem} 本批无 producer")
+                        else:
+                            self.add_thinking("细分",
+                                f"lint: {_tbl}/{_sht} 列[{_col}] <{_label}> 无匹配 produces，"
+                                f"被引表 {_to_stem} 有 {len(_prods)} 个 producer，歧义不回填")
+                    else:
+                        self.add_thinking("细分",
+                            f"lint: {_tbl}/{_sht} 列[{_col}] <{_label}> 无匹配 produces"
+                            f"，无 FK 边可回填（交 Step2/backfill 兜底）")
+        return n
 
     def _build_schema_block(self, candidates: list[CandidateTable],
                              text: str = "", column_signal=None) -> str:
@@ -896,6 +1396,13 @@ class DecomposeAgent(LLMSubAgent):
             " \"<produces_label>\" 占位符（如 \"<new_item_id>\"），**绝不能留空字符串 \"\"**。"
             "系统会按拓扑序先产出真实主键值后自动回填该占位符。留空会导致主键列写空值失败。\n"
             "- 引用他表新产出的 ID → 该字段值用 \"<produces_label>\" 占位符,并在 consumes 标注\n"
+            "- ⚠【produces/consumes 标签一致】消费方 consumes 里的 label **必须与被引用那条 add 的 "
+            "produces 字面完全一致**，系统靠标签字面回填产出值，对不上则占位符悬空→下游整条失败。"
+            "跨表引用整体走 `new_<stem>_id`（如引用 school_talent 新增行 → produces=\"new_school_talent_id\"，"
+            "消费方 consumes={\"神通id\":\"new_school_talent_id\"}）；**只有「同 sheet 多行互引用」"
+            "（对话树/多级进化链/多段关卡）才用唯一语义标签**（conv_root_id/opt_try_id…）。"
+            "禁止消费方自创别名（如 produces 叫 new_school_talent_id 却 consumes 写 new_pojun_lv1_id），"
+            "两者必须同名。\n"
             "- ⚠【同表多行互相引用】当同一 sheet 产出多行且彼此引用(如对话树的多个句子/"
             "选项、多级进化链、多段关卡)时,每行 produces 必须用**唯一**标签"
             "(如 conv_root_id / conv_prove_id / opt_try_id,而不是都叫 new_<stem>_id),"
@@ -917,6 +1424,13 @@ class DecomposeAgent(LLMSubAgent):
             "但若指令对同一表同一 sheet 有多个不同业务子任务"
             "(如 BuildingInteract 的 idle+collect 多状态行,或不同行不同 locator_value),"
             "必须按真实业务子任务产多条,每条 fields 各自不同,不可合并丢弃\n"
+            "- ⚠【标量值硬约束】fields 的每个值必须是标量（数字/字符串/布尔）或占位符 \"<label>\"，"
+            "**禁止嵌套对象 `{...}` 或对象数组**。若指令里某项含若干子属性（如 cost=0、require_level=1），"
+            "应拆成各自对应表头列分别填，不要合并成一个对象塞进单列——对象落盘会序列化失败整行报错。\n"
+            "- ⚠【枚举列中文标签硬约束】指令给某列的值是中文标签且该列在 schema 里是 int/数字枚举列"
+            "（如「类型节日」「品质上品」「部位武器」）时，fields 值**必须填中文标签原词**"
+            "（如 \"节日\"），**绝不能留空 \"\"**。系统会在下游把中文标签转成数字码，"
+            "或报错提示用户确认填数字码。留空会丢失用户明确给的枚举信息。\n"
             "- 不确定某列是否该填时:能从指令推断则填,不能则留空(\"\")由下游补,不要瞎编值\n"
             "- 仅输出 JSON 数组,不要解释,不要前后缀任何文字\n\n"
             "## 示例(跨表链,produces/consumes 占位符规范)\n"
@@ -947,6 +1461,19 @@ class DecomposeAgent(LLMSubAgent):
                 "{\"table\":\"interaction\",\"sheet\":\"InteractionConvOption\",\"action\":\"add\","
                 "\"fields\":{\"option_text\":\"再想想\"},\"produces\":\"opt_think_id\",\"consumes\":{}}]\n```"
                 if ("InteractionConv" in schema_block or "interaction" in schema_block.lower()) else ""
+            )
+            + (
+                "\n## ⚠ 多表候选时的选表决策（定位歧义场景）\n"
+                "当候选表有多个且表名相近/含同名别名（如 spawn_world_entity 与 spawn_*、"
+                "entity_prefab 与 pet/pet_evolve、item 与 equipment）时，按以下优先级选表：\n"
+                "- 优先选动作主语直接命中的表（指令主语词出现在该表 schema 显示名或专有列名里），"
+                "不要因 alias 命中相同关键词就选语义不符的表\n"
+                "- 多表都能配但语义不同时，每个动作主语产独立 intent 落到对应表，"
+                "不要合并到单一表丢弃其他\n"
+                "- 跨表 FK 关联（schema 块里「外键关联」列出 produces/consumes 边）"
+                "是强信号：动作链涉及多表时按 FK 链拆，每链节点一表一 intent\n"
+                "- 单纯从输入文本无法判别该选哪张表时，优先选 schema 里列名匹配数最多、"
+                "专有列（非 名称/描述/类型/id/编号/备注 等通用列）命中数最多的表\n"
             )
         )
 
@@ -1038,6 +1565,15 @@ class DecomposeAgent(LLMSubAgent):
             fields = item.get("fields") or {}
             if not isinstance(fields, dict):
                 fields = {}
+            # §#2 dict 嵌套值治理：LLM 偶把子属性合并成对象塞进单列（如 ability 某
+            # 列 = {cost:0, require_level:1}），dict 落到写盘 openpyxl 抛 "Cannot
+            # convert dict to Excel" → 整行追加失败。这里在 LLM 产出后、return 前做
+            # schema 驱动展开：子键命中真实表头 → 展开到对应列；非表头子键/列表dict →
+            # 原列置空待 Step2 补。边界独立，不依赖写盘/_coerce 旧路径。
+            _df_notes = self._flatten_dict_fields(fields, stem, sheet)
+            if _df_notes:
+                self.add_thinking("细分",
+                    f"dict 字段展开/置空 {stem}/{sheet or '?'}：{_df_notes}")
             produces = str(item.get("produces") or "").strip() or None
             consumes = item.get("consumes") or {}
             # O20g：set/delete 操作的行定位信号（locator_field/locator_value）

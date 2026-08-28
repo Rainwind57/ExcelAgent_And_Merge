@@ -59,7 +59,7 @@ class TestDeriveRequiredFields:
 
     def test_derive_high_rate_columns_required(self):
         """非空率 ≥ 0.9 的列 → 必填。"""
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         tables = self._make_tables()
         with patch("agent.excel.locator.table_index.load_index", return_value=tables):
             import tempfile
@@ -74,7 +74,7 @@ class TestDeriveRequiredFields:
 
     def test_derive_threshold_adjustable(self):
         """阈值调低（0.1）→ 备注列也变必填。"""
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         tables = self._make_tables()
         with patch("agent.excel.locator.table_index.load_index", return_value=tables):
             import tempfile
@@ -87,7 +87,7 @@ class TestDeriveRequiredFields:
 
     def test_derive_skips_low_row_tables(self):
         """row_count < 2 的 sheet 跳过（统计无意义）。"""
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         s = SheetMeta(name="S", headers=["a"], header_names=["a"],
                       row_count=1, col_non_empty=[1])
         tables = [TableMeta(path="t.xlsx", stem="t", md5="x", sheets=[s])]
@@ -99,7 +99,7 @@ class TestDeriveRequiredFields:
 
     def test_derive_skips_missing_col_non_empty(self):
         """col_non_empty 空/长度不匹配 → 跳过该 sheet（旧索引兼容）。"""
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         s = SheetMeta(name="S", headers=["a", "b"], header_names=["a", "b"],
                       row_count=10, col_non_empty=[])  # 空（旧索引）
         tables = [TableMeta(path="t.xlsx", stem="t", md5="x", sheets=[s])]
@@ -111,7 +111,7 @@ class TestDeriveRequiredFields:
 
     def test_derive_preserves_manual_entries(self):
         """手工条目优先，派生补缺不覆盖。"""
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         tables = self._make_tables()
         import tempfile
         tmp = Path(tempfile.mkstemp(suffix=".yaml")[1])
@@ -128,7 +128,7 @@ class TestDeriveRequiredFields:
     def test_derive_writes_required_fields_key(self):
         """输出 yaml 顶层 required_fields key 包裹（与 _load_required_fields 对齐）。"""
         import yaml
-        from agent.excel.skills.derive_required_fields import derive
+        from agent.excel.skills.scripts.derive_required_fields import derive
         tables = self._make_tables()
         import tempfile
         tmp = Path(tempfile.mkstemp(suffix=".yaml")[1])

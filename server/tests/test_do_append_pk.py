@@ -49,6 +49,13 @@ try:
     agent._verify_write_back = TableAgent._verify_write_back.__get__(agent)
     agent._allocate_pk = TableAgent._allocate_pk.__get__(agent)
     agent._is_misplaced_pk = TableAgent._is_misplaced_pk.__get__(agent)
+    agent._check_missing_required_after_add = TableAgent._check_missing_required_after_add.__get__(agent)
+    # §复合主键重构后 _do_append 拆出 _do_append_write + 复合键校验两个方法，
+    # SimpleNamespace mock 需补绑定；_load_composite_pk_for_sheet 返空走单列旧行为
+    # （本测试表无 primary_key 声明，仍走第一列校验路径）。
+    agent._do_append_write = TableAgent._do_append_write.__get__(agent)
+    agent._load_composite_pk_for_sheet = lambda *a, **k: []
+    agent._check_composite_pk_conflict = lambda *a, **k: None
 
     # T1: 新增 id=5（已占用）→ 拦截
     res1 = AgentResult(ok=True, intent=None)

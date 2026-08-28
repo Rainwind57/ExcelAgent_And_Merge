@@ -26,6 +26,7 @@ def _make_validator():
     v.parser = None
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     v._thinking_sink = None
     return v
 

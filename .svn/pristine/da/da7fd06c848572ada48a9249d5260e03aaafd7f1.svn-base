@@ -1,0 +1,2034 @@
+anti_patterns:
+- id: ap_ind_residence_building__any_c5dcc23f
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:48:39+08:00'
+  last_seen: '2026-08-19T12:48:39+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 限时活动,activity_id,reward_id,item_id,兑换券,新增
+  rationale: 输入为新增活动/奖励包/道具/邮件类实体配置，却落库到无关的 residence_building 表，属意图-表路由错配，应阻断并核实路由而非直接执行
+- id: ap_ind_residence_building__any_41deebf0
+  type: failed_operation
+  table_stem: residence_building
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:48:39+08:00'
+  last_seen: '2026-08-19T12:48:39+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未知错误类型,retry,兜底,unresolved
+  rationale: 错误类型无法识别时走通用 error_feedback retry 兜底，4 次重试均耗尽仍 unresolved，重复尝试无修复价值，应阻断并上报错误归类
+- id: ap_ind_residence_building_BuildingType_0498eecd
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: BuildingType
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:53:15+08:00'
+  last_seen: '2026-08-19T12:53:15+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 法宝,阴阳权重,spell_id,玄火灼烧,quest_id,next_quest_ids,reward_id,hero_id,HPMaxCon
+  rationale: 输入为跨多实体多表（法宝/技能/任务/奖励/角色）的综合修改，且不含目标表名；自动定位被错误路由到 residence_building/BuildingType，全部
+    4 次失败均落在此无关表。此类跨实体批量修改应先确认每项的目标表名再执行。
+- id: ap_ind_residence_building_BuildingType_0536ac72
+  type: failed_operation
+  table_stem: residence_building
+  sheet: BuildingType
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:53:15+08:00'
+  last_seen: '2026-08-19T12:53:15+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: verify_repair_exhausted,error_feedback,retry,未知错误类型
+  rationale: 同一目标表连续 4 次触发 verify_repair_exhausted，错误详情均为'未知错误类型，走通用 error_feedback
+    retry 兜底'，说明该表操作缺少明确错误分类，重试只会重复失败，应阻断并在修复路由后重试。
+- id: ap_ind_item_ItemBase_998bc17d
+  type: semantic_pattern
+  table_stem: item
+  sheet: ItemBase
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:56:58+08:00'
+  last_seen: '2026-08-19T12:56:58+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 删除,delete,废弃任务,任务,NPC,奖励包
+  rationale: 任务/奖励相关配置行的删除操作被 ap_fail_item_ItemBase_delete_row 高风险反模式拦截，说明此类删除已标记为不可自动执行的高危操作，命中时应阻断并转人工处理，而非重试。
+- id: ap_ind_item_Fabao_15315870
+  type: ambiguous_column
+  table_stem: item
+  sheet: Fabao
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T12:56:58+08:00'
+  last_seen: '2026-08-19T12:56:58+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 权重,属性描述,倍率,元素,Fabao,法宝,spell_id
+  rationale: 对 item/Fabao 表的多次修改均以未知错误类型兜底且 col 为空，说明自然语言字段（阴阳权重、属性描述、伤害倍率、元素等）未能映射到真实列名，命中时应先确认列映射再写入。
+- id: ap_ind_residence_building__any_ccc8c62f
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T13:25:10+08:00'
+  last_seen: '2026-08-19T13:25:10+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,聚灵塔,建筑类型,ID
+  rationale: 新增配置时直接沿用用户指定的固定 ID（building_type 12、item 22198），与表中已有主键冲突，11 次重试全部因主键重复失败；触发时应先核对
+    ID 占用情况或改用自增分配，避免盲目写入
+- id: ap_ind_residence_building_BuildingInteract_9aae8fcd
+  type: failed_operation
+  table_stem: residence_building
+  sheet: BuildingInteract
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T13:25:10+08:00'
+  last_seen: '2026-08-19T13:25:10+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,建筑,主键重复,冲突
+  rationale: 同一新增操作以相同 ID 连续重试 11 次，均因主键重复/ID 冲突报 verify_repair_exhausted，repair 策略耗尽仍未解决；应停止重试并改为重新分配可用
+    ID 或人工介入，而不是复用失败 ID
+- id: ap_ind_residence_building__any_92729d27
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T13:29:13+08:00'
+  last_seen: '2026-08-19T13:29:13+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,聚灵塔,building_type,ResidenceBuildingCollect
+  rationale: 同一聚灵塔配表任务被重复执行：前几轮已成功写入 BuildingType 行16、ResidenceBuilding 行104、BuildingInteract
+    行9，后续 11 轮仍以 add 方式重复写入相同主键（building_type=12、item_id=22198），触发主键重复且 verify 修复耗尽（id_reallocate
+    重分配只会产生重复实体，并非正解）。触发特征：输入要求「新增」指定了已存在 ID 的实体。命中时应先校验主键是否已存在，已存在则改为更新或跳过。
+- id: ap_ind_activity_Activity_151852dd
+  type: semantic_pattern
+  table_stem: activity
+  sheet: Activity
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T14:28:27+08:00'
+  last_seen: '2026-08-19T14:28:27+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,activity_id,主键重复,ID冲突
+  rationale: 同一活动新增指令连续 8 次均报"主键重复或 ID 冲突"且 id_reallocate 重试无效，说明手工指定 activity_id
+    与既有数据冲突并非偶发，重写重试无法自愈，需先人工确认该 ID 占用情况或改走主键自增分配，避免无限重试
+  fix:
+    auto_assign_pk: activity_id
+- id: ap_ind_activity_Activity_fe72211b
+  type: semantic_pattern
+  table_stem: activity
+  sheet: Activity
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-19T14:28:27+08:00'
+  last_seen: '2026-08-19T14:28:27+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,结束时间
+  rationale: 8 条输入的"结束时间"字段值均缺失（文本截断），新增类意图若携带必填字段不完整，反复重试只会持续失败，应在写入前校验必填字段完整性并提示用户补全
+- id: ap_ind_pve_combat_npc_PveCombatNpc_c6ead2f2
+  type: semantic_pattern
+  table_stem: pve_combat_npc
+  sheet: PveCombatNpc
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:18:18+08:00'
+  last_seen: '2026-08-20T13:18:18+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 战斗,胜利奖励,失败奖励,平局奖励,奖励包
+  rationale: 战斗配置中的奖励字段（胜利/失败/平局奖励）属于战斗主表，而 pve_combat_npc 是怪物/NPC 表，不含这些列；每次把带奖励字段的战斗意图路由到
+    NPC 表都会触发列名不存在错误。命中时应确认字段归属表，并将奖励字段重定向到战斗主表或跳过该列。
+- id: ap_ind_activity_Activity_90d2fb36
+  type: semantic_pattern
+  table_stem: activity
+  sheet: Activity
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:21:16+08:00'
+  last_seen: '2026-08-20T13:21:16+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,活动,activity_id
+  rationale: '新增活动类数据在首次写入即连续命中 schema_missing: sheet 表头，说明目标 sheet 缺表头属环境性问题；在表头就绪前所有写入与校验结果（唯一约束、主键冲突）均不可信，应阻断后续重试而非软提示继续'
+- id: ap_ind_activity_Activity_94b58284
+  type: semantic_pattern
+  table_stem: activity
+  sheet: Activity
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:21:16+08:00'
+  last_seen: '2026-08-20T13:21:16+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: schema_missing,表头,主键重复
+  rationale: 表头缺失后连锁触发两类误报：全列被报 unique_violation（活动id/名称/描述/起止时间均报唯一冲突）及主键重复/ID冲突；它们同源于
+    schema 无法解析，不应逐列重试或走 id_reallocate 修复，应归因为一次 schema 问题
+- id: ap_ind_activity_Activity_5d477c33
+  type: failed_operation
+  table_stem: activity
+  sheet: Activity
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:21:16+08:00'
+  last_seen: '2026-08-20T13:21:16+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,活动,重试
+  rationale: 同一输入被反复执行 18 次，在根因（缺表头）未修复前每次都以相同结果失败直至 verify_repair_exhausted，说明对同源失败的无脑重试是无价值循环，应限制单操作重试轮数并要求人工修复前置条件
+- id: ap_ind_item_Fabao_dd8b722d
+  type: failed_operation
+  table_stem: item
+  sheet: Fabao
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:27:29+08:00'
+  last_seen: '2026-08-20T13:27:29+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 法宝,Fabao,item,28501
+  rationale: 多条独立意图在 item/Fabao 表均报未知错误类型，走通用 error_feedback retry 兜底后仍 verify_repair_exhausted，且
+    col 为空，说明表路由或列定位存在系统性异常，重试无法自愈，应阻断并人工排查 schema，避免空转重试
+- id: ap_ind_item_Fabao_3ff1867b
+  type: ambiguous_column
+  table_stem: item
+  sheet: Fabao
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:27:29+08:00'
+  last_seen: '2026-08-20T13:27:29+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 阴阳权重,阳属性描述,阴属性描述
+  rationale: 三个意图执行后 col 均为空且底层报未知错误类型，疑似字段名（阴阳权重/阳属性描述/阴属性描述）未能映射到 Fabao 表真实列名，命中时应先向用户确认列映射而非直接写入
+- id: ap_ind_residence_building_BuildingInteract_95ea2b9e
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: BuildingInteract
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T13:28:20+08:00'
+  last_seen: '2026-08-20T13:28:20+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 聚灵塔,building_type,交互动画,idle,collect,状态
+  rationale: 同一条指令要求为同一建筑类型(building_type=12)写入两条交互动画(idle/collect)，第一条idle写入成功，后续所有collect行均报'主键重复'。说明该表主键实为building_type单列，同一类型无法存多个状态行；且此前重试策略id_reallocate不可用——重分配主键会破坏用户要求的building_type值。该需求模式(一类型多状态交互)会反复触发同类冲突。
+- id: ap_ind_quest_QuestGroup_50b1aac1
+  type: ambiguous_column
+  table_stem: quest
+  sheet: QuestGroup
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T17:22:41+08:00'
+  last_seen: '2026-08-20T17:22:41+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 主线任务,任务组,限定条件,任务描述
+  rationale: 任务描述/目标类型/战斗编号/奖励包/限定条件等字段属于任务表(Quest)，而非任务组表(QuestGroup)只含组ID/组名/类型，整组任务字段塞入QuestGroup导致7列连续col_not_found
+- id: ap_ind_pve_combat_npc_PveCombatNpc_7e51bf43
+  type: ambiguous_column
+  table_stem: pve_combat_npc
+  sheet: PveCombatNpc
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T17:22:41+08:00'
+  last_seen: '2026-08-20T17:22:41+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 战斗,怪物,坐标,PVE
+  rationale: 战斗怪属性表(PveCombatNpc)无坐标列，坐标属于刷怪/生成配置表，误随战斗怪属性写入导致坐标列不存在且引发主键冲突
+- id: ap_ind_reward_Reward_7496b389
+  type: ambiguous_column
+  table_stem: reward
+  sheet: Reward
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T17:22:41+08:00'
+  last_seen: '2026-08-20T17:22:41+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 奖励包,每日限领,必给数量,奖励包编号
+  rationale: reward/Reward表头无'奖励包编号/每日限领次数/必给数量'列，字段名与真实表头不一致属列名映射错误，且同批出现主键冲突
+- id: ap_ind_entity_prefab_Base_eb742ead
+  type: ambiguous_column
+  table_stem: entity_prefab
+  sheet: Base
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T17:22:41+08:00'
+  last_seen: '2026-08-20T17:22:41+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: NPC,model_id,对话内容,引导
+  rationale: entity_prefab/Base仅承载预制体基础字段(ID/名称/model等)，战场/坐标/对话内容等应分流至生成与交互表，全部写入Base导致5列col_not_found
+- id: ap_ind__global__any_63821832
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T17:22:41+08:00'
+  last_seen: '2026-08-20T17:22:41+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 任务号,战斗编号,奖励包编号,250600
+  rationale: 多个表(reward/PveCombatNpc)连续出现'主键重复或ID冲突'且自动重分配策略已耗尽，用户指定ID可能与已有数据冲突，应回写前确认新ID而非自动分配
+- id: ap_ind_residence_building__any_0776c3d8
+  type: semantic_pattern
+  table_stem: residence_building
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T18:22:20+08:00'
+  last_seen: '2026-08-20T18:22:20+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,建筑,等级,图标,数量上限,所属州,prefab_id
+  rationale: 新增配置类指令中，「数量上限-洞府等级1」「建筑等级」「地图图标id」「升级所需洞府等级」「所属州id」「正式入口prefab_id」等业务上允许重复的非唯一列反复触发
+    unique_violation 软校验，属校验器将非唯一列纳入唯一性检查的误报，同源高频出现，应仅提示不阻断
+- id: ap_ind_residence_entry_District_7acda8d3
+  type: type_constraint
+  table_stem: residence_entry
+  sheet: District
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T18:22:20+08:00'
+  last_seen: '2026-08-20T18:22:20+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 坐标,(-150,15,-880),pos_list
+  rationale: 用户以字符串文本 (-150,15,-880) 提供坐标，而目标列「选后传送」期望类型为 list[tuple[float,float,float]]，字符串与结构化类型不匹配，属类型约束反模式，应提示需将坐标解析为数值三元组后再写入
+- id: ap_ind_quest__any_d4cab267
+  type: semantic_pattern
+  table_stem: quest
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T19:22:47+08:00'
+  last_seen: '2026-08-20T19:22:47+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 查询,第一行,读取
+  rationale: 只读查询指令（如'查询XX表第一行'）被误当作写操作进入校验修复流程，修复重试耗尽后走通用兜底仍无法解决，应识别为读操作直接返回数据而非走
+    verify_repair
+- id: ap_ind_pet__any_420be467
+  type: semantic_pattern
+  table_stem: pet
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-20T19:37:04+08:00'
+  last_seen: '2026-08-20T19:37:04+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 查看,所有属性,查询,只读
+  rationale: 查看/查询类指令被误路由进写入校验流程（如 set 操作），导致该校验体系无法处理的未知错误类型，走 error_feedback retry
+    兜底后仍无法解决；此类只读请求不应经过写前校验/修复链路。
+- id: ap_ind_quest_Quest_d83e1e80
+  type: semantic_pattern
+  table_stem: quest
+  sheet: Quest
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:16:19+08:00'
+  last_seen: '2026-08-21T10:16:19+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 删掉,废弃任务,连带清掉,一并删掉,next_quest_ids,spawn_quest_entity,reward
+  rationale: 级联删除指令（主任务删除+引用清理+关联表删除）被路由到无关表导致定位全面失败：规则路由到 _test_item 而非 quest，多表操作未拆分成子意图，表/sheet/col
+    全部为空且 unresolved。同类级联清理指令（含'连带/一并'关联表清理、next_quest_ids 引用清理）会重复出现，应先正确路由到主表 quest
+    并拆分为 quest/spawn_quest_entity/reward 多个子操作，且删除类高危操作需确认目标表归属。
+- id: ap_ind__global__any_8dd1da7b
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:20:47+08:00'
+  last_seen: '2026-08-21T10:20:47+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 删掉,连带,一并删掉,引用,next_quest_ids,spawn_quest_entity,reward
+  rationale: 级联删除类指令涉及多表联动（主表记录+外键引用+NPC刷新+奖励包），跨表引用清理步骤多、易因表路由或列映射失败而走 error_feedback
+    兜底且 unresolved，需在执行前确认目标表归属
+- id: ap_ind__global__any_9c16ffeb
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:31:08+08:00'
+  last_seen: '2026-08-21T10:31:08+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 全服邮件,global_id,邮件类型,发送时间,模板,奖励包
+  rationale: 单条指令同时包含全服邮件配置（应属邮件表）、奖励包发放与活动改名（应属活动表）等多个表域意图，表路由/字段映射无法收敛到单一目标表，导致
+    verify 循环后仍 unresolved。此类『复合指令』会重复出现，应先拆分子任务并对每个子任务的表归属做确认。
+- id: ap_ind__global__any_0d4bb36d
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:31:08+08:00'
+  last_seen: '2026-08-21T10:31:08+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 附带,reward_id,发送人
+  rationale: 输入在关键引用处被截断（如『reward_』后关键ID缺失），核心数值/引用不完整时映射与校验必然失败。凡出现附带/引用类引导词且后续参数缺失，应触发输入完整性确认，而非反复
+    retry 兜底。
+- id: ap_ind_pet_Pet_a76900ed
+  type: semantic_pattern
+  table_stem: pet
+  sheet: Pet
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:41:12+08:00'
+  last_seen: '2026-08-21T10:41:12+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 饕餮,一阶,灵兽
+  rationale: 用户以带阶数限定词（如「一阶」）的灵兽名称定位行，表中「名称」列通常不含阶数修饰或与用户叫法存在差异，导致按名称匹配失败触发 row_not_found；此类以修饰词化实体名进行行定位的失败会重复出现，需列出相近候选供确认。
+- id: ap_ind_pet_Pet_79dfb5c6
+  type: semantic_pattern
+  table_stem: pet
+  sheet: Pet
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T10:41:14+08:00'
+  last_seen: '2026-08-21T10:41:14+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 灵兽,饕餮,名称,属性
+  rationale: 用户以俗称/简称（如饕餮）按名称列精确查询灵兽属性未命中，实际可能是名称列名不一致（非「名称」）或表中名称带后缀标记（如一阶），直接精确匹配误报不存在，应提示相近项由用户确认后再写入
+- id: ap_ind_item__any_625e1e51
+  type: semantic_pattern
+  table_stem: item
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T15:01:11+08:00'
+  last_seen: '2026-08-21T15:01:11+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,名称,定位列,相近项,手动输入
+  rationale: 按名称在目标表（如 item/ItemBase）中引用实体时未命中，常见于实体尚未创建、测试数据或名称输入有误，属跨表引用反复出现的场景。不应直接判定失败，应在写入前向用户确认是新建实体、选用相近项还是修正名称，避免同类失败重复阻断配表流程。
+- id: ap_ind_spirit__any_da5a3c0d
+  type: semantic_pattern
+  table_stem: spirit
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T15:03:32+08:00'
+  last_seen: '2026-08-21T15:03:32+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,Spirit,内容
+  rationale: '在表 Spirit 新增数据行（行11，内容={2: 1}）时执行失败（execute_failed_no_llm），新增实体/行的编号或取值通常远超历史分布中位数，易被语义离群校验误报为非法而阻断写入；此类新增值合法，应在写入前跳过离群校验。'
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_item_ItemBase_f9209b35
+  type: semantic_pattern
+  table_stem: item
+  sheet: ItemBase
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T15:51:26+08:00'
+  last_seen: '2026-08-21T15:51:26+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,名称,法宝,item,ItemBase,row_not_found
+  rationale: 用户以实体名称（如法宝/装备/道具名）在目标表中按定位列查找但未命中，常见于名称拼写差异、实体归属其他表或尚未创建，属于会重复出现的名称引用缺失，应提供相近项点选或确认手动输入的正确值后再写入。
+  fix:
+    skip_outlier_check: true
+- id: ap_ind__global__any_86407ca7
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T16:33:49+08:00'
+  last_seen: '2026-08-21T16:33:49+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 待,ConcludeAgent,诊断,反模式归纳
+  rationale: 输入为系统待处理标记/元指令（如'待 ConcludeAgent(§5) 诊断/反模式归纳'），并非真实业务数据，直接执行写入必然产生 execute_failed_no_llm
+    失败且无有效表/列信息可填，应阻断落库并转入诊断流程。
+- id: ap_ind__global__any_92efc3a1
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T19:30:22+08:00'
+  last_seen: '2026-08-21T19:30:22+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: ID,已存在,更换,新增,重复
+  rationale: 配表新增行时手动指定的主键ID与表中已有行的ID冲突，系统拒绝写入并提示更换ID。此类失败源于未先查询已占用ID区间或主键本应自增却手动配置，属于可复现的重复模式。
+- id: ap_ind_BuildingInteract__any_1543ae2a
+  type: semantic_pattern
+  table_stem: BuildingInteract
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:12:15+08:00'
+  last_seen: '2026-08-21T21:12:15+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID已存在,更换ID
+  rationale: '9 次失败均为主键冲突：新增行时硬编码 ID（22198 重复 5 次，另有 30005/12/8008/2），这些 ID 在表中已存在，反复命中''ID
+    已存在，请更换 ID 后重试''；且写入内容只带 {1: ID} 部分列也属同一类。正确修法是主键自增或写前先查重，命中时自动走自增分配可预防复发。'
+  fix:
+    auto_assign_pk: '1'
+- id: ap_ind_BuildingInteract__any_1e448779
+  type: type_constraint
+  table_stem: BuildingInteract
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:12:15+08:00'
+  last_seen: '2026-08-21T21:12:15+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: '''开'',''关'''
+  rationale: 同一布尔列（col6，配合 DongfuIdle.graph/DongfuCollect.graph）在成功写入 True/False 后，再次尝试写入中文'开'/'关'导致类型转换失败；布尔列应统一使用
+    True/False，或用 open/close 做显式映射。
+- id: ap_ind__global__any_8808bf4a
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:12:15+08:00'
+  last_seen: '2026-08-21T21:12:15+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 无法匹配任何目标列,类型转换全部失败
+  rationale: 写入时目标列完全无法匹配或值类型全部转换失败，说明列名/表名与目标 schema 不一致或值格式整体错误；写前应先核对表头真实列名与各列值类型，避免整行写入落空。
+- id: ap_ind__global__any_881c0cc0
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:26:05+08:00'
+  last_seen: '2026-08-21T21:26:05+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,物品编号,row_not_found
+  rationale: 7 条失败中 5 条为 row_not_found_needs_confirm（item/Fabao、item/ItemType 中找不到物品编号
+    700010/250003/250002/8001/10），高频复用特征明显。根因多为用户填写外键/引用值时引用了尚未添加的实体编号，或编号归属其他表/类型/前缀不同。命中时应确认是「新增实体」「换表」还是「修正编号」，避免静默写入悬空引用。
+- id: ap_ind__global__any_db554f51
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:26:05+08:00'
+  last_seen: '2026-08-21T21:26:05+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 改成,列不存在,LLM幻觉
+  rationale: 用户输入了指令性占位词（如「改成」）而非实际数值，LLM 将占位词当作待写值并幻觉出不存在的列「描述」，触发 execute_failed_no_llm。此类半截指令/占位输入属于可复用失败类别：未构成完整「列=值」的用户意图，应拦截并要求补齐完整数值，而非自行猜测列名。
+- id: ap_ind__global__any_b1b0ced3
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:26:05+08:00'
+  last_seen: '2026-08-21T21:26:05+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 删除,高风险,手动处理
+  rationale: 删除类操作被守卫判定为高风险反模式而失败（execute_failed_no_llm）。删除/覆盖类写操作属于通用危险操作类别，风险不因具体表而异，凡命中删除语义均应转人工确认或阻断自动执行，防止误删配置数据。
+- id: ap_ind__global__any_3d338b7c
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:33:05+08:00'
+  last_seen: '2026-08-21T21:33:05+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 缺少行定位值,行定位,定位值缺失
+  rationale: 失败均为 execute_failed_no_llm 且表/列/定位信息全为空，输入缺少行定位值时执行无法确定目标行必然失败；执行前应校验定位值是否完整并要求确认后再写。
+- id: ap_ind_Pet__any_a55adf3b
+  type: semantic_pattern
+  table_stem: Pet
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:33:05+08:00'
+  last_seen: '2026-08-21T21:33:05+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,Pet,行62
+  rationale: '新增实体（Pet 行62 内容={21: 900009}）编号远超历史中位数但为合法新增，被语义离群校验误报导致 failed；命中时跳过离群校验预防复发。'
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_school_School_6a120fb8
+  type: semantic_pattern
+  table_stem: school
+  sheet: School
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:43:25+08:00'
+  last_seen: '2026-08-21T21:43:25+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID 已存在,请更换 ID
+  rationale: 新增操作显式指定的主键 ID 与已存在行冲突，且同一表（School）连续多条新增均 failed，说明新增时应优先采用系统自增分配主键，命中时走自增分配以预防
+    ID 冲突复发。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind_school_School_d1b774cc
+  type: semantic_pattern
+  table_stem: school
+  sheet: School
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:43:25+08:00'
+  last_seen: '2026-08-21T21:43:25+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,定位列
+  rationale: 在 school/School 中按「大世界model_id」定位值 800020 未找到，触发 row_not_found_needs_confirm；常见于跨表引用外键或取值写错，需人工确认是纠正输入还是新建行，不应静默自动新增。
+- id: ap_ind_school_School_917be856
+  type: failed_operation
+  table_stem: school
+  sheet: School
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:43:25+08:00'
+  last_seen: '2026-08-21T21:43:25+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,内容,School,行
+  rationale: School 表行14、行15 连续两次新增文本映射（列3→'幽冥鬼爪'/'幽冥核心组'）均 execute_failed_no_llm，同一表新增操作反复失败，说明新增前缺少主键/列合法性校验，命中时应提示检查新增数据完整性后再写入。
+- id: ap_ind_school_School_543bf64b
+  type: semantic_pattern
+  table_stem: school
+  sheet: School
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-21T21:43:33+08:00'
+  last_seen: '2026-08-21T21:43:33+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,定位列,相近项
+  rationale: 跨表引用（如大世界model_id）在目标表的定位列中找不到对应行是高频重复失败，常见成因：引用值写错、指错表、目标行缺失或尚未配置。命中时应暂停并让用户选择相近项或手动输入正确值，避免静默落错数据。
+- id: ap_ind_Activity__any_3aa8cef0
+  type: semantic_pattern
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T11:26:45+08:00'
+  last_seen: '2026-08-24T11:26:45+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,Activity,ID,行
+  rationale: 新增实体行（如 Activity 行16 {3:'春节活动'}）时，新编号/内容与历史分布差异大，被语义离群校验误判为非法而失败；此类新增合法，命中后跳过离群校验
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_quest_Quest_4774f091
+  type: semantic_pattern
+  table_stem: quest
+  sheet: Quest
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T12:05:48+08:00'
+  last_seen: '2026-08-24T12:05:48+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 任务ID,新增任务,新任务
+  rationale: 新增/引用任务时，用户手写或预期中存在的任务ID（如260700、260601）在 Quest 表定位不到，同类失败出现3次。说明新增任务后未确认真实写入ID、或手输ID不存在，直接报错会让用户陷入反复重试，应要求确认实际ID后再执行写入/引用。
+- id: ap_ind_quest_任务目标配置_48f2a9ac
+  type: semantic_pattern
+  table_stem: quest
+  sheet: 任务目标配置
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T12:05:48+08:00'
+  last_seen: '2026-08-24T12:05:48+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: Conversation,任务目标类型,目标
+  rationale: 目标类型/目标取值「Conversation」在 Quest 与 任务目标配置 两张表均定位不到，同类失败出现2次。合法值但目标表无对应行，说明用户引用了一个尚未建行或命名不一致的配置，直接失败易反复，应先确认是否需同步新建该目标配置行或修正值。
+- id: ap_ind__global__any_b5163508
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T12:05:48+08:00'
+  last_seen: '2026-08-24T12:05:48+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新建,对话树,坐标,model_id,内容
+  rationale: 用户用一整句自然语言描述新建实体（名字+model_id+坐标+对话内容），系统将整句写入单元格导致内容截断、行内容异常，同类失败出现3次（combat_data、InteractionConvOption、space_data）。应先将自然语言描述拆分为结构化字段再逐列写入，并在写入前校验单元格内容长度/格式。
+- id: ap_ind__global__any_b1cf5663
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T12:05:48+08:00'
+  last_seen: '2026-08-24T12:05:48+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: combat_id,prefab_id,跨表引用,必填
+  rationale: 新建实体缺少必填/跨表引用列值且无法从前序结果自动回填时，系统暂停并留下占位风险，同类失败出现2次（effect 的 combat_id、实体Prefab
+    ID）。应在写入前静态校验必填引用列，缺值先要求补充而非尝试写入。
+- id: ap_ind__global__any_897f835b
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T13:26:23+08:00'
+  last_seen: '2026-08-24T13:26:23+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 叫,名字叫,AI 用,概率掉落池,任务引导,aggressive_ai,pool_id,封魔长老,魔龙
+  rationale: 输入为自然语言描述（如“怪物名字叫魔龙 Razak”“一个概率掉落池，pool_id 2001”），LLM 将整段描述原样写入结构化列而非解析为
+    ID/枚举/数值，导致列值非法、execute_failed。
+- id: ap_ind__global__any_c7c96ee9
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T13:26:23+08:00'
+  last_seen: '2026-08-24T13:26:23+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,请更换 ID
+  rationale: 主键 ID 与已有记录冲突导致新增失败，属于写前可预判的失败，应校验并阻断。
+  fix:
+    auto_assign_pk: id
+- id: ap_ind_spell/buff_data__any_8fa8611e
+  type: semantic_pattern
+  table_stem: spell/buff_data
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T13:26:23+08:00'
+  last_seen: '2026-08-24T13:26:23+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,定位,描述
+  rationale: 用描述文本在定位列做精确匹配查找行失败，需用户点选相近项或手动输入正确值后再写入。
+- id: ap_ind__global__any_c393fec7
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:16:25+08:00'
+  last_seen: '2026-08-24T14:16:25+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID,已存在
+  rationale: 新增行时用户手动指定的 ID 与表中已有主键冲突，报错'ID [xxx] 已存在'（如 600、25060001、100600），属典型高复发的主键冲突操作失败，多发生在未确认已占用
+    ID 就执行插入时。命中应提示改用自增分配或更换未占用 ID；同类'新增行失败'笼统错误多亦源于此。
+  fix:
+    auto_assign_pk: id
+- id: ap_ind__global__any_cc13f32e
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:16:25+08:00'
+  last_seen: '2026-08-24T14:16:25+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: NPC,对话,任务引导,model_id,坐标
+  rationale: 将整段自然语言需求（如'一个任务引导 NPC 叫封魔长老，model_id 1015，放在战场 10050 坐标(110,0,70)…'）整体写入单个单元格，而非拆分为结构化字段，导致新增后校验/流程失败，多个表（Base、InteractionConvOption、SpawnWorldEntity、combat_data）反复出现，属高复发语义模式。命中应提醒把需求拆成各列对应的结构化值。
+- id: ap_ind__global__any_14538611
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:16:25+08:00'
+  last_seen: '2026-08-24T14:16:25+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,status=failed
+  rationale: 日志显示'已新增：<表> 行N'但整体 status=failed，说明写入后仍有提交/事务/后续校验失败，数据可能未真正生效或已半写入，多次出现（Interaction、Base、InteractionConvOption、SpawnWorldEntity、combat_data）。命中时需确认落盘结果，避免误以为新增成功。
+- id: ap_ind_Activity__any_f7147bd7
+  type: semantic_pattern
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:26:01+08:00'
+  last_seen: '2026-08-24T14:26:01+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,内容
+  rationale: 用户以「已新增：表名 行号 内容={...}」句式描述对配置表的增量写入（新增行/单元格），但该描述只给出部分键值，缺少完整列映射（如主键、必填列），配表执行层在关键字段缺失时直接失败（execute_failed_no_llm）。此类「增量新增但信息不完整」的表述易重复出现，命中时应提示补充关键列信息或先确认表结构。
+- id: ap_ind__global__any_104998e8
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:39:48+08:00'
+  last_seen: '2026-08-24T14:39:48+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 饕餮,一阶,名称
+  rationale: 两条失败均为按「名称」列精确查找实体（饕餮 / 饕餮一阶）时 row_not_found。共性触发特征：用户输入的目标名是表的名称列真实值的变体——带阶位/阶段后缀（如「饕餮一阶」）或简称别名，精确匹配必然落空。该模式在
+    Pet、Ability 等多张表中重复出现，说明名称列查找遇变体名时应主动进入确认流程，给用户提供相近项选择或人工修正，而不是直接判定为空。
+- id: ap_ind__global__any_b70d7da7
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:56:22+08:00'
+  last_seen: '2026-08-24T14:56:22+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换ID,新增失败
+  rationale: 新增操作连续因主键ID已被占用而失败（ID 700、ID 20070），说明写前未检查ID占用也未自动分配新ID，触发时应确认改用自增分配或提示换ID
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_e3e8b42c
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:56:22+08:00'
+  last_seen: '2026-08-24T14:56:22+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,新建的,model_id,对话树,点击后展开
+  rationale: 同一段「新建长老」AI需求原文（含model_id、坐标、对话树等自然语言指令）被写入 combat_data、InteractionConvOption、Vault、Assistant、PutuanAcupoint、CityTemplate
+    多个表且全部失败，说明非结构化需求被直接当作单元格内容写入而非解析为结构化字段，写入前应识别此类长描述文本并预警
+- id: ap_ind_quest_Quest_d1b774cc
+  type: failed_operation
+  table_stem: quest
+  sheet: Quest
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:56:22+08:00'
+  last_seen: '2026-08-24T14:56:22+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未找到,定位列
+  rationale: 按定位列（任务ID）查找行失败（未找到260601），说明写前未校验定位行是否存在，触发时应要求人工确认是新建还是修正定位值
+- id: ap_ind__global__any_9564b234
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T14:56:22+08:00'
+  last_seen: '2026-08-24T14:56:22+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 缺少行定位值
+  rationale: 写入操作缺少行定位值导致无法确定目标行，写前应校验定位字段是否完整，触发时应要求补全定位值
+- id: ap_ind__global__any_98ee0ccc
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T15:49:58+08:00'
+  last_seen: '2026-08-24T15:49:58+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,status=failed
+  rationale: 新增实体行时日志输出“已新增：{表} 行{n} 内容={...}”，但最终结果 status=failed 且 表/sheet/col 均为空，说明带人工指定新编号（如
+    Activity 的10010、combat_data 的100140009）的写入在落库或后续离群校验环节被拦截，属写后失败。此类以手工指定实体编号新增数据时反复出现，应提示用户核对行数据与编号合法性。
+  fix:
+    skip_outlier_check: true
+- id: ap_ind__global__any_446fd23d
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T15:49:58+08:00'
+  last_seen: '2026-08-24T15:49:58+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,已存在,更换ID
+  rationale: 手动指定主键 ID 新增行时，若该 ID 已存在则直接报错“ID [10001] 已存在，请更换 ID 后重试”，即重复主键冲突。用户常基于已知编号补数据而反复命中；应在写入前先查重，命中时需用户确认新
+    ID 或走自增分配，避免直接失败。
+  fix:
+    auto_assign_pk: id
+- id: ap_ind__global__any_cf2e963a
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T17:07:21+08:00'
+  last_seen: '2026-08-24T17:07:21+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,ID,已存在,更换ID,重试
+  rationale: 手动指定主键ID时未做占用校验，与已有记录冲突导致新增失败；这类ID碰撞在人工分配主键场景下会反复出现，写入前应校验ID是否已存在或改用自增分配，命中时需用户确认更换ID或自动分配。
+- id: ap_ind__global__any_76381aea
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T17:48:51+08:00'
+  last_seen: '2026-08-24T17:48:51+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID,已存在,更换ID
+  rationale: 新增记录时用户手动指定主键 ID，与已有数据冲突导致写入失败。此类冲突为重复出现的模式，正确做法是检测到已存在时改走自增分配，避免手动换号重试的反复失败
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_1768d334
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T20:30:03+08:00'
+  last_seen: '2026-08-24T20:30:03+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 打一场,战斗配置,坐标,新建,model_id,技能
+  rationale: 8 次失败均在 combat_data/space_data/RewardCalc/Reward/Vault/PveCombatNpc/CityTemplate/Base
+    等配置表把「打一场 BOSS 战…」「新建的长老叫…」「刷九幽守护者…」这类中文自然语言操作描述直接写入单元格：以动作动词开头、混入 space_id/坐标/model_id/技能等配置术语、内容超长被截断，是把意图描述当数据值写入，命中应预警并改写为结构化配置。
+- id: ap_ind_quest_Quest_df3e0d32
+  type: semantic_pattern
+  table_stem: quest
+  sheet: Quest
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T20:30:03+08:00'
+  last_seen: '2026-08-24T20:30:03+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 任务目标类型,Conversation,未找到
+  rationale: 在 quest/Quest 表「任务目标类型」定位列填写了表内不存在的值 Conversation，触发 row_not_found_needs_confirm。枚举/引用列取值需与表内既有值精确一致，命中时应弹出相近项并要求确认。
+- id: ap_ind_quest_Quest_1f714a21
+  type: semantic_pattern
+  table_stem: quest
+  sheet: Quest
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T20:37:44+08:00'
+  last_seen: '2026-08-24T20:37:44+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 任务ID,Quest
+  rationale: 两次在 quest/Quest 以任务ID定位均失败（260700、260601），同型失败重复出现，说明需求引用了未登记的任务ID（悬空外键），直接写入会造成引用断裂，应先确认ID已登记再落库
+- id: ap_ind_quest_任务目标配置_93466f1e
+  type: semantic_pattern
+  table_stem: quest
+  sheet: 任务目标配置
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T20:37:44+08:00'
+  last_seen: '2026-08-24T20:37:44+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 目标,Conversation,任务目标
+  rationale: 在 quest/任务目标配置 以定位列「目标」找不到 Conversation，属引用值未登记导致的行定位失败，与任务ID类确认失败同源，需拦截并要求人工确认而非直接写入
+- id: ap_ind__global__any_50557324
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-24T20:37:44+08:00'
+  last_seen: '2026-08-24T20:37:44+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新建,长老,对话树,model_id,space_id
+  rationale: 同一「新建长老+对话树」需求在 space_data/Vault/InteractionConvOption/CityTemplate/combat_data
+    五个表逐次新增全部 execute_failed_no_llm（含「缺少行定位值」），说明复杂自然语言新增需求被逐表盲写、缺少主表选择与行定位策略，失败高度重复，应提示先拆解需求并确认主表写入路径
+- id: ap_ind__global__any_967e3342
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T10:37:21+08:00'
+  last_seen: '2026-08-25T10:37:21+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 都填,对话后结束对话,首杀奖励,每日限领,boss_ai,model_id,reward_id
+  rationale: 7 条失败均为"已新增"某表某行时，把一段中文复合策划指令（多列 dict 内容，含"都填 2""叫焚天赤龙""model_id 1200""boss_ai""对话后结束对话""首杀奖励""每日限领""2024-12-"等叙事/规划文本）当作单行数据一次性写入，值既非单一合法单元格值、又跨多列且引用多个实体，说明上游把一条复合需求误当成行内容而非解析为具体列值/拆行，写入前应要求确认拆分后再落库，防止同类
+    execute_failed_no_llm 反复出现。
+- id: ap_ind__global__any_a5b8a75f
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:01:21+08:00'
+  last_seen: '2026-08-25T11:01:21+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 都填,配上,对话后结束对话,知道了,奖励包含,内容=
+  rationale: '7 条失败全部呈「已新增：表 行N 内容={列号: 自然语言}」形态，单元格被写入祈使句/对话脚本等配置指令原文（如『都填 2』『BOSS
+    战斗也一起配上：在战场 10050 坐标 (200,0,150)…』『对话后结束对话…首杀奖励包含 20 个精炼石』），而非该列应填的结构化值；此类内容无法解析为具体列值，写行必然失败，且结果摘要中表/sheet/col
+    全部为空、status=failed。命中应在写入前阻断，先由模型将指令拆解为结构化列值。'
+- id: ap_ind__global__any_3e117c41
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:01:21+08:00'
+  last_seen: '2026-08-25T11:01:21+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 世界 BOSS,model_id,技能列表,坐标,boss_ai,reward_id,每日限领
+  rationale: 同一『焚天赤龙』BOSS 的配置被塞进 Base、combat_data、HeroLevel、Activity、PlayerCommon、common_spell、Fabao
+    等不同表的单个新增行，单元格内容同时含刷怪坐标、model_id、技能列表、AI、奖励包（reward_id 30010、每日限领 1 次、必给道具 10001×20）等跨表多字段叙述，单行单单元格无法承载且跨表依赖未先建立，导致多次
+    execute_failed_no_llm。命中需先确认并拆分到各表对应列、先建主行（如奖励包）再写关联。
+- id: ap_ind__global__any_481c47a8
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:07:15+08:00'
+  last_seen: '2026-08-25T11:07:15+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 都填,配上,对话后,建一下,奖励跳到
+  rationale: 7 条失败共同特征：单元格值被写成了中文自然语言指令句（如'都填 2'、'BOSS 战斗也一起配上'、'对话后结束对话'、'包也建一下'），而非结构化字段值。此类输入本应经
+    LLM 解析拆分后再执行，但 execute_failed_no_llm 表明执行端无 LLM 直接按字面文本写入，必然失败。命中时应提示该内容为指令句而非可写值，需先解析/确认。
+- id: ap_ind__global__any_66d3f794
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:07:15+08:00'
+  last_seen: '2026-08-25T11:07:15+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 也一起配上,也建一下,同时,也配
+  rationale: case 1/2/4/6 含跨对象联动指令（'BOSS 战斗也一起配上'、'包也建一下'、'都填 2'），一条输入同时要求配置多表多行（战场刷怪、奖励包、道具、技能列表等），单行/单表写入无法满足配置需求。命中时应要求确认是否展开为多表操作后再执行。
+- id: ap_ind__global__any_497edf9b
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:13:42+08:00'
+  last_seen: '2026-08-25T11:13:42+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 都填,配上,建一下,BOSS,首杀,奖励,model_id,reward_id,技能列表,boss_ai
+  rationale: 用户把跨表联动的完整玩法需求（BOSS 战斗、怪物属性、技能列表、奖励包、活动时间）写成自然语言指令，一次性塞进单行单格新增；内容超长被截断且含'都填/配上/建一下'等指示性中文，单表行无法承载多表数据导致执行失败。7
+    条失败均为此形态，跨表不同仍复现。
+- id: ap_ind__global__any_d2ec2a50
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:13:42+08:00'
+  last_seen: '2026-08-25T11:13:42+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 对话,选项,结束对话,内容为,奖励包含
+  rationale: 对话/剧情类说明文本（对话后结束、给一个选项、奖励包含 xx 共 xx 个）被当作单元格内容输入，实为需拆成独立对话表、奖励表的流程描述，单格无法表达结构化对话流，故持续失败。
+- id: ap_ind__global__any_1cdc62c2
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:22:03+08:00'
+  last_seen: '2026-08-25T11:22:03+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: _narr_skipped,UnboundLocalError,dispatch_exception
+  rationale: 连续7次相同报错：变量 _narr_skipped 在未被赋值时被访问，说明生成逻辑的某个分支未初始化该变量，属于同一类可复现的代码缺陷（分支未赋值即引用局部变量），非单次偶发。
+- id: ap_ind_item_ItemBase_a18a079b
+  type: semantic_pattern
+  table_stem: item
+  sheet: ItemBase
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:25:36+08:00'
+  last_seen: '2026-08-25T11:25:36+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 名称,未找到,item,ItemBase,定位列
+  rationale: 在配置表按“名称”列定位记录失败（row_not_found_needs_confirm），多为输入了别名、近似名或未收录名称，直接失败会丢失用户意图，需人工确认或提示相近项后由用户选择。
+- id: ap_ind__global__any_6dd8c4c2
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:36:13+08:00'
+  last_seen: '2026-08-25T11:36:13+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 引导NPC,对话,战场,坐标,奖励,选项
+  rationale: 三条失败均为 execute_failed_no_llm（纯代码执行失败），输入均为引导 NPC/剧情对话类超长中文自然语言描述，含中文引号、单引号、逗号、括号等特殊字符，且跨
+    Base、Reward、InteractionConvOption 三张表重复出现；此类自由文本直接作为单元格值写入会因引号/逗号/编码解析失败，属可复用模式而非单表偶发，写前需确认转义与内容完整性。
+- id: ap_ind__global__any_a66c7057
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:42:37+08:00'
+  last_seen: '2026-08-25T11:42:37+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,内容=
+  rationale: 4 次失败输入均以「已新增：{表} 行{N} 内容={...}」的状态汇报格式开头，疑似把变更汇报/日志误当作配表写入指令执行，导致 execute_failed_no_llm，需确认后拦截。
+- id: ap_ind__global__any_d9408f3c
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:42:37+08:00'
+  last_seen: '2026-08-25T11:42:37+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 引导 NPC,model_id,坐标,对话
+  rationale: 3 次失败输入值为长自然语言需求描述（引导 NPC 设定、model_id、战场坐标、点击弹出对话等剧情文案），并非实际配表单元格值，语义上必然执行失败，应提示用户输入具体配表数据而非需求描述。
+- id: ap_ind_Interaction__any_630e02ed
+  type: semantic_pattern
+  table_stem: Interaction
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:46:59+08:00'
+  last_seen: '2026-08-25T11:46:59+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: NPC,model_id,坐标,新增,引导
+  rationale: 新增 NPC/引导交互配置时，新实体的 model_id 编号（如 1020）常远超历史数据分布，被语义离群校验误判为异常值导致写入失败（execute_failed_no_llm），但该值实为合法的新增实体编号。命中时应仅提示并可跳过离群校验，防止合法的新增配置被误阻断。
+  fix:
+    skip_outlier_check: true
+- id: ap_ind__global__any_76d525df
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:52:00+08:00'
+  last_seen: '2026-08-25T11:52:00+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: NPC,对话,BOSS,引导,刷
+  rationale: 4条失败均为将叙述性自然语言文本（BOSS/NPC 描述、对话台词、引导提示，如"弹出对话"、"刷一只 PVE 世界 BOSS"、"引导
+    NPC"）写入结构化配表，文本为散文式描述而非结构化字段值，与列格式不匹配导致 execute_failed_no_llm；命中此类叙述特征时提示用户可能为非结构化内容。
+- id: ap_ind_Activity__any_cadd5d59
+  type: semantic_pattern
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T11:58:01+08:00'
+  last_seen: '2026-08-25T11:58:01+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,新增内容,无法解析,Activity,行
+  rationale: 4条失败均出现在新增内容写入环节，错误详情反复出现'已新增：Activity 行15 内容=...'与'无法解析新增内容'，说明新增行内容在解析/校验阶段即失败。该类失败并非单次偶发，而是新增内容解析的共性薄弱点：解析失败时status直接置为failed且无明确列定位。需在写入前要求确认或提示解析问题，避免静默失败后无法定位表列。
+- id: ap_ind_GameplayAbilityChoicePool__any_05a043ae
+  type: semantic_pattern
+  table_stem: GameplayAbilityChoicePool
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T12:04:15+08:00'
+  last_seen: '2026-08-25T12:04:15+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增内容,无法解析,范围
+  rationale: '6条失败全部为 execute_failed_no_llm 且高度重复（5条同为无法解析新增内容），唯一带详情样本显示新增内容为自然语言描述（{7:
+    ''含 PhyAtkCon 范围 100-200''}），共性为新增内容未按目标列的结构化格式写入（混入说明性文字如含/范围），导致解析阶段必失败，属于可预防的复发模式；应在写入前识别此类自然语言特征并提示改用结构化格式'
+- id: ap_ind__global__any_a57931d4
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T12:42:32+08:00'
+  last_seen: '2026-08-25T12:42:32+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 无法解析,新增内容
+  rationale: 两条失败均为 execute_failed_no_llm，错误详情同为'无法解析新增内容'，即新增的行/列/字段内容未落入既有解析规则导致解析失败，且结果中表/sheet/col
+    均为空，说明解析在定位阶段即中断。此类新增内容解析失败会反复出现，应先以提示方式告知用户检查新增内容的格式合法性，而非直接阻断整个流程。
+- id: ap_ind_Reward__any_93d0ea69
+  type: semantic_pattern
+  table_stem: Reward
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T12:54:21+08:00'
+  last_seen: '2026-08-25T12:54:21+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 无法解析新增内容,已新增,内容=,Reward,包也建一下,填 800
+  rationale: '9 条失败均为 execute_failed_no_llm 且错误详情集中在''无法解析新增内容''；案例2给出具体新增内容 {42:
+    ''包也建一下，'', 9: ''填 800；''}，其值含中文自然语言/人工指令文本（拟人语气、分号结尾），说明是人类草稿或备注被误当作数据值填入。此类内容无法被解析器解析，是同类失败可复现的触发特征，应识别为待确认的说明性内容而非硬解析。'
+- id: ap_ind__global__any_17469130
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T13:09:35+08:00'
+  last_seen: '2026-08-25T13:09:35+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 叫,都不给,AI 用,boss_ai,输了,和平局
+  rationale: 多次失败（案例2、3及后续4-7）均源于口语化叙述一次性描述多个实体属性与行为逻辑（如'叫焚天赤龙'、'AI 用 boss_ai'、'输了和平局都不给'），无法被可靠切分为单元格，导致文本被截断拼接进相邻列（残留'model_'、串行'包
+    30010'）并反复报'无法解析新增内容'。命中应要求用户按'列名=值'结构化重述或确认列映射后再写入。
+- id: ap_ind__global__any_08ff02ce
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T13:09:35+08:00'
+  last_seen: '2026-08-25T13:09:35+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 也建一下,首杀,奖励包,reward_id,配套
+  rationale: 案例1表明：输入在创建新配置时引用了尚未创建的前置关联数据（奖励包 new_reward_id），前序结果未能回填导致 placeholder_unresolved。'配套...也建一下'这类跨配置依赖描述会反复出现，命中时应先确认被依赖对象是否已存在或调整创建顺序，避免占位文本污染数据。
+- id: ap_ind_Reward__any_815709e6
+  type: type_constraint
+  table_stem: Reward
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T13:27:09+08:00'
+  last_seen: '2026-08-25T13:27:09+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: Reward,行105,model_,30010
+  rationale: 配表单元格被填入整段自由中文文本（含中文逗号、完整句式的对话式/备注内容），而该列预期为数值/枚举/ID 等结构化格式，类型不匹配导致 execute_failed_no_llm
+    确定性执行失败；此类将聊天/备注文本误贴进配表结构列的情况会反复出现，写入前应做类型格式校验并提示，而非直接执行失败。
+- id: ap_ind__global__any_60f9b417
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T13:27:19+08:00'
+  last_seen: '2026-08-25T13:27:19+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增内容,无法解析,execute_failed_no_llm
+  rationale: 4条失败错误类型与详情完全一致（execute_failed_no_llm/无法解析新增内容），且表、sheet、col 均为空，说明失败与具体表结构无关，而是
+    LLM 执行阶段无法解析新写入的内容这一泛化问题反复出现，具备可复用特征；但输入缺乏表/列上下文，无法确定精确修法，故仅提示写入新增内容前确认格式。
+- id: ap_ind_Activity__any_5d0ae99c
+  type: semantic_pattern
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T13:39:20+08:00'
+  last_seen: '2026-08-25T13:39:20+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: Activity,新增,行,时间
+  rationale: 对表Activity新增行(如行16)写入含新实体ID(10011)及新时间范围(2024-12-21~2024-12-28)时execute_failed_no_llm。新增ID及日期区间属合法新配置，却因偏离历史分布被离群/合理性校验误判为失败，应跳过离群校验以预防复发。
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_Reward__any_5737a20a
+  type: semantic_pattern
+  table_stem: Reward
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T14:36:31+08:00'
+  last_seen: '2026-08-25T14:36:31+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: Reward,新增,行,内容,model_,包
+  rationale: 在 Reward 等奖励/配置表新增行时，单元格内容为「数字键→中文文本」的映射字典（如 {2:'叫焚天赤龙，model_', 42:'包
+    30010，输了和平局都不给。'}），键与值均带游戏文案/物品编号特征，此类映射型多值内容与单元格单值写入语义冲突，导致写入直接失败且未走 LLM 诊断（execute_failed_no_llm）。同一张奖励/配置表后续再次新增此类映射内容时会重复出现同类失败。
+- id: ap_ind__global__any_997c1e88
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T15:45:52+08:00'
+  last_seen: '2026-08-25T15:45:52+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,新增,execute_failed
+  rationale: 多条失败均为「已新增」行的执行失败（execute_failed_no_llm），新增数据（含新实体编号如3050）易被写入校验/离群校验拦截，应要求确认而非静默失败
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_Activity__any_908d2a68
+  type: type_constraint
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T15:45:52+08:00'
+  last_seen: '2026-08-25T15:45:52+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 日期,时间,空值,字符串,新增
+  rationale: Activity 日期区间列同时含空字符串('')与完整日期时间字符串，日期类字段空值/格式混排导致新增执行失败，属于高频复发场景
+- id: ap_ind_Reward__any_3a4d56b4
+  type: type_constraint
+  table_stem: Reward
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T15:45:52+08:00'
+  last_seen: '2026-08-25T15:45:52+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 数值,浮点,字符串,Reward
+  rationale: Reward 同列数值出现 100.0(float) 与 '500'(字符串) 混写，数值列类型不一致导致写入校验失败，应提示统一数值类型
+- id: ap_ind_Reward_reward_cb757424
+  type: semantic_pattern
+  table_stem: Reward
+  sheet: reward
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T15:45:52+08:00'
+  last_seen: '2026-08-25T15:45:52+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 名称,未找到,row_not_found,定位列
+  rationale: 以名称列定位行未命中（如「初心奖励Day2」），常见于名称变体/大小写/编号后缀差异，应要求人工确认匹配而非直接报错，避免错误写入
+- id: ap_ind_Activity__any_be0adf71
+  type: semantic_pattern
+  table_stem: Activity
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T17:57:27+08:00'
+  last_seen: '2026-08-25T17:57:27+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,内容
+  rationale: 新增行已成功写入（详情含'已新增'+内容记录）但整体状态判failed，属写入成功却被判负的矛盾模式；常见于新增合法实体编号（如10015）超历史中位数触发离群误报，建议仅提示并跳过离群校验，避免误阻断正常新增
+  fix:
+    skip_outlier_check: true
+- id: ap_ind_ItemBase__any_69f4ee4e
+  type: failed_operation
+  table_stem: ItemBase
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:16:38+08:00'
+  last_seen: '2026-08-25T18:16:38+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,新增行,ItemBase,status=failed
+  rationale: 新增行写入失败时结果摘要中表/sheet/col 均为空，无法定位失败位置；此类 execute_failed_no_llm 失败多为写入层约束问题（字段类型不匹配、主键冲突、数值越界），属可复现的机械性失败，应在新增行时补齐失败上下文（表/sheet/col）并校验待写入字段类型与主键唯一性。
+- id: ap_ind_ItemBase__any_9adda458
+  type: semantic_pattern
+  table_stem: ItemBase
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:26:17+08:00'
+  last_seen: '2026-08-25T18:26:17+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,ItemBase,execute_failed_no_llm,failed
+  rationale: 新增行操作（已新增）执行层判定失败（execute_failed_no_llm），数据已写入但状态 failed；同类「新增后状态失败」场景可能因缺二次确认或写入后校验异常重复出现，建议仅告警提示，不阻断后续写入
+- id: ap_ind__global__any_be309a68
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:38:19+08:00'
+  last_seen: '2026-08-25T18:38:19+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: item_id,占位,新建,建一下,道具,物品编号
+  rationale: 输入含"道具建一下/新建...item_id 占位"时，物品编号列引用前置 new_item_id（新建道具自身产出的主键）。若道具主表自增未启用或前置创建步骤未执行，占位
+    unresolved 复现（案例2、3 同构）。提示并令物品编号走自增分配即可避免。
+  fix:
+    auto_assign_pk: 物品编号
+- id: ap_ind__global__any_7d485580
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:44:05+08:00'
+  last_seen: '2026-08-25T18:44:05+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID 已存在,更换 ID
+  rationale: 案例2/3/4均为同一主键ID（10015）冲突导致新增失败，属主键碰撞型操作失败，重复出现且可通过自增分配主键预防复发；案例1为代码变量未定义(NameError)属单次代码bug，无可复用共性，不归纳
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_c1251068
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:53:39+08:00'
+  last_seen: '2026-08-25T18:53:39+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: intent is not defined,NameError,dispatch_exception
+  rationale: intent 变量未定义的分发异常属确定性代码 bug，相同触发条件下会 100% 重复失败，命中应阻断而非反复重试，直至代码补齐变量定义
+- id: ap_ind__global__any_63a097a7
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T18:53:39+08:00'
+  last_seen: '2026-08-25T18:53:39+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,已存在,更换 ID
+  rationale: 新增操作显式指定已存在的 ID 触发主键冲突，案例 2、3 完全重复，属高复用模式；根因是未走自增分配，命中应阻断重试并改为主键自增
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_b35679d4
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T19:02:22+08:00'
+  last_seen: '2026-08-25T19:02:22+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: ID,已存在,新增失败
+  rationale: 手动指定主键ID导致与已存记录冲突，连续重复3次，属同类失败复发；建议新增前先校验ID唯一性，避免冲突后回滚重试
+- id: ap_ind__global__any_c28caa11
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T20:09:15+08:00'
+  last_seen: '2026-08-25T20:09:15+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,缺少行定位值,execute_failed_no_llm
+  rationale: 多张表（space_data、World02）新增行数据时系统仍走行定位逻辑，因新增行尚无行定位值导致 execute_failed_no_llm
+    重复失败（含「缺少行定位值」明确报错）。命中时应阻断写入并确认走新增/自增路径，而非继续按已有行定位。
+- id: ap_ind_guild_GuildHall_ae0be88e
+  type: semantic_pattern
+  table_stem: guild
+  sheet: GuildHall
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T20:09:15+08:00'
+  last_seen: '2026-08-25T20:09:15+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: row_not_found_needs_confirm,未找到,定位列
+  rationale: 用「朝向」列作为行定位但值「90」不存在，疑似定位列选错（朝向非唯一标识）或值输入错误，属需人工确认的失败场景；命中应提示用户点选相近项或重输，避免静默失败。
+- id: ap_ind_活动__any_d275bfaf
+  type: semantic_pattern
+  table_stem: 活动
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-25T20:56:56+08:00'
+  last_seen: '2026-08-25T20:56:56+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,活动,活动id
+  rationale: 用户描述"新增实体"操作时携带了该实体的主键列（如活动id），此类主键本应由前置步骤创建或自增分配，而非由用户在输入中提供。系统此前未识别该列为主键，导致写入
+    new_activity_id 占位符。命中"新增/创建 + <实体>id"组合时，应将该列识别为主键并走自增分配，从源头避免占位符污染。
+  fix:
+    auto_assign_pk: 活动id
+- id: ap_ind__global__any_cd485e25
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T11:39:25+08:00'
+  last_seen: '2026-08-26T11:39:25+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: '已新增,内容={1:'
+  rationale: 'BuildingType 行19/行29、ItemBase 行872 等多例新增行内容仅含 {1: 主键}，无任何业务列数据，是''只补主键、漏填业务列''的高发特征；命中提示补全业务列，避免生成残缺行。'
+- id: ap_ind__global__any_5c8b58f8
+  type: ambiguous_column
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T11:39:25+08:00'
+  last_seen: '2026-08-26T11:39:25+08:00'
+  action: force_exact
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 未能写入任何列
+  rationale: 写入列全部失败，失败列清单含中文'建筑类型'与英文 state_id、character_montage、building_state、soft_stop
+    等混合列名，说明写入列与目标表真实 schema 列名不一致（列歧义/误映射）；命中应强制按 schema 精确匹配列名，防止写错列导致整行写入失败。
+- id: ap_ind_Library__any_9aef84fe
+  type: failed_operation
+  table_stem: Library
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T11:55:09+08:00'
+  last_seen: '2026-08-26T11:55:09+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: ID,已存在,更换ID,新增失败,新增
+  rationale: 两条失败均为新增/写入操作因主键冲突而失败：案例2明确报错 ID [10082] 已存在，需用户更换 ID 后重试；案例1 Library
+    行11 新增失败同为写入期主键/唯一键冲突。此类错误在用户手写实体 ID 且未预查重时反复出现，归纳为新增操作主键冲突模式，命中时应提示改用自增分配或先查重。
+  fix:
+    auto_assign_pk: id
+- id: ap_ind__global__any_0f0cb4c6
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:12:02+08:00'
+  last_seen: '2026-08-26T13:12:02+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,已存在,更换ID,ID重复
+  rationale: 4 次失败均为新增操作时主键 ID 冲突：错误明确提示 ID 已存在、需更换后重试，其中一次仅报『新增行失败』但同属新增写入链路。此类失败由写入方手动/重复指定
+    ID 或未查重导致，命中时应阻断重试并提示改用自增分配或更换 ID，避免反复提交浪费。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_b3769733
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:39:06+08:00'
+  last_seen: '2026-08-26T13:39:06+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换ID,新增失败,ID冲突
+  rationale: 新增操作因 ID 已被占用而失败（如 29012 已存在）。此类主键冲突在连续多次新增中反复出现，因手动选号或跨表复用导致；写入前应校验主键占用，命中时需与用户确认是更换
+    ID 还是复用已有行，避免盲目重试仍失败。
+- id: ap_ind__global__any_485cce2f
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:39:06+08:00'
+  last_seen: '2026-08-26T13:39:06+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 上游新增,未产出,占位符,placeholder,new_id,上游依赖
+  rationale: 下游行引用上游新增产生的新 ID（new_item_id/new_entity_prefab_id/new_interaction_id/opt_go_id/opt_done_id）时，因上游新增未执行或已失败，占位符无法解析导致整条写入被跳过。6
+    次同类失败表明这是批量跨表新增的稳定隐患：应先确保上游新增成功并取回真实 ID，再发起下游写入；命中时须确认上游链路状态再继续。
+- id: ap_ind__global__any_e53a4d8f
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:39:06+08:00'
+  last_seen: '2026-08-26T13:39:06+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,内容,failed,None
+  rationale: 日志显示行已写入（已新增：Quest 行38/39、ItemBase 行872）但操作最终 status=failed，且部分内容含 None/缺列。说明写入动作本身成功而后续校验（必填列缺失、空值、类型）使其判为失败，存在写入与状态判定不一致。命中时应提示核对新增行的列完整性与
+    None 值后再判定结果。
+- id: ap_ind__global__any_24811298
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:40:12+08:00'
+  last_seen: '2026-08-26T13:40:12+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 检查上游,新增操作,是否成功,上游
+  rationale: 15 条失败中 14 条均为 upstream_placeholder_unresolved：输入'检查上游新增操作是否成功'时，agent
+    依赖上游 producer 产出 new_*_id/conv_*_id 等占位符作为外键，但 producer 未执行到或已失败，占位符未解析，导致本次写入整体
+    failed 且被跳过。此类占位符依赖操作反复出现（questgroup/item/quest/combat/conv/opt 等多张表），共性极强：写前若检测到依赖的上游占位符未解析，应阻断本次
+    dry-run 写入并先确保上游 producer 执行成功，而非直接跳过产生静默失败。
+- id: ap_ind__global__any_aaab672d
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:42:34+08:00'
+  last_seen: '2026-08-26T13:42:34+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 上游,新增操作,依赖,未产出,外键,producer
+  rationale: 6/11 案例（5-9、11）高度同构：写入依赖其他表新产出外键 ID 的行时，上游 producer 未执行或已失败，占位符（opt_obey_id/opt_leave_id/new_interaction_id/new_entity_prefab_id/conv_elder2_id）无法解析，系统跳过写入致整条新增链断裂。归纳触发特征：本次操作引用了上游新增操作的产出
+    ID，且上游状态未确认。建议命中时先校验上游新增操作是否成功，失败则要求用户确认继续或中止。
+- id: ap_ind_ItemBase__any_13afe2ce
+  type: failed_operation
+  table_stem: ItemBase
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:42:34+08:00'
+  last_seen: '2026-08-26T13:42:34+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,ID,已存在,更换ID,主键,重复
+  rationale: 案例3、4 明确，案例1、10 疑似：agent 预分配新 ID（如 29012）后直接写入，未先校验该 ID 在目标表是否已存在，触发主键冲突失败（ID
+    [29012] 已存在）。归纳触发特征：新增行操作，候选 ID 来自预分配而非表内最大值推导。建议新增前对候选 ID 做已存在检测，命中时提示更换 ID 并确认。
+- id: ap_ind__global__any_a0413f50
+  type: type_constraint
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:42:34+08:00'
+  last_seen: '2026-08-26T13:42:34+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 写后验证不符,expected,actual,datetime,日期
+  rationale: 案例2：写入整数 25，写后验证实际被解析为 datetime.datetime(1900,1,25)，说明目标列被识别为日期类型列，裸数字被当作日期偏移处理。归纳触发特征：数值型内容写入疑似日期列，写后验证出现
+    expected/actual 类型漂移。建议数值写入日期列前提示确认，或按日期语义转写。
+- id: ap_ind__global__any_65684a3f
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:48:16+08:00'
+  last_seen: '2026-08-26T13:48:16+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,ID,已存在,更换ID
+  rationale: 多个案例（Quest 行38、ItemBase 行872）反复出现「新增失败：ID 已存在，请更换 ID」：新增行时手工/预测指定主键 ID，与表内既有主键冲突。配表新增的主键应由表自增分配而非操作方指定，命中后写前自动走自增分配，可预防此类失败复发。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_a62f5f0b
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:48:16+08:00'
+  last_seen: '2026-08-26T13:48:16+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 上游,依赖,未产出,producer,占位符
+  rationale: 5 个案例反复出现写入行时引用上游 producer 产出的占位 ID（new_entity_prefab_id、new_interaction_id、opt_go_id、opt_done_id），但上游未执行或已失败导致占位符未解析、写入被跳过。属跨行依赖顺序问题：写依赖行前必须确认上游
+    producer 已成功产出 ID，否则应在 dry-run 阶段阻断本次写入，避免反复生成被跳过的残缺写入。
+- id: ap_ind__global__any_7c59d62b
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 2
+  first_seen: '2026-08-26T13:49:36+08:00'
+  last_seen: '2026-08-26T14:14:11+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,status=failed,新增失败
+  rationale: 四条失败均发生在'新增行'指令：系统已反馈'已新增'（写入动作已执行）但最终 status=failed，或直接反馈'新增失败'。说明新增指令存在前置校验缺失（主键唯一性、内容合法性），写前未校验导致先写入后整体判定失败。命中时应先做查重与合法性校验并需确认后再执行。;
+    四条错误详情均含「已新增：{表} 行{行号} 内容={...}」且结果摘要 status=failed，说明新增类写入操作触发后端校验失败后整体标记 failed，此触发特征可复用，命中时提示用户检查新增行的字段/主键合法性。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_d4ef9efa
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 2
+  first_seen: '2026-08-26T13:49:36+08:00'
+  last_seen: '2026-08-26T14:01:27+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: ID,已存在,更换ID
+  rationale: 新增行时显式指定主键 ID 与既有行冲突（ID [1] 已存在）导致新增失败。主键不应由用户硬编码指定，命中时应先查重并提示更换 ID，或建议走自增分配避免冲突。;
+    新增行时与目标表已有主键冲突，直接写固定ID必然失败；应先查重或走自增分配，写前需用户确认新ID
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_357c149e
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:50:39+08:00'
+  last_seen: '2026-08-26T13:50:39+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,failed,status=failed
+  rationale: 多条失败（Quest/Reward/PveCombatNpc）错误详情均以『已新增：表 行N 内容=...』表述操作已完成，但结果 status=failed，说明成功判定与执行工具返回文本不一致，可能是误报或存在静默写入失败，需核对执行返回与最终状态
+- id: ap_ind__global__any_e0028062
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T13:50:39+08:00'
+  last_seen: '2026-08-26T13:50:39+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换 ID,主键,重复
+  rationale: 新增操作因 ID 已存在而失败，说明主键冲突源于手动指定已占用的 ID，正确修法为主键走自增分配避免碰撞
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_b6dfd394
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:00:32+08:00'
+  last_seen: '2026-08-26T14:00:32+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换ID,重试,新增失败
+  rationale: 新增操作显式指定主键 ID，但该 ID 已存在于目标表，写入冲突失败。命中时应阻断并改为主键自增分配，避免重复撞键。
+  fix:
+    auto_assign_pk: id
+- id: ap_ind__global__any_7377abd6
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:00:32+08:00'
+  last_seen: '2026-08-26T14:00:32+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,内容,行
+  rationale: '多次出现：新增行仅提供部分列的数字索引到值的映射（如 {6: ''2''}、{9: ''500''}），缺少主键或必填列，写入后被标记
+    failed。写入前应校验新增行是否覆盖全部必填列。'
+- id: ap_ind__global__any_a6f623f5
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:00:32+08:00'
+  last_seen: '2026-08-26T14:00:32+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 上游,依赖,未产出,producer,跳过
+  rationale: 写入依赖上游生产者产出的占位符字段（如 new_traitor_prefab_id），但上游未执行或已失败，直写会生成缺失外键的残缺行。应提示校验上游执行顺序或重跑上游后再写入。
+- id: ap_ind__global__any_cf967f4b
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 2
+  first_seen: '2026-08-26T14:01:27+08:00'
+  last_seen: '2026-08-26T15:28:11+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,内容,failed
+  rationale: 三例均在'新增行'后报 failed，错误详情仅回显新增内容而未指明原因，说明新增行触发了后续语义校验（疑似与已有行重复、内容不完整或离群值）；写前应预检新行是否与已有行重复、内容是否完整;
+    案例1/3/4共性：新增行已写入成功但整体status=failed，多为写入后的语义校验（如离群检测）对新增实体ID远超历史区间产生误报，导致已成功的数据被判定失败。应区分写入成功与校验失败，命中时仅提示而非阻断，避免误杀合法新增。
+  fix:
+    skip_outlier_check: true
+- id: ap_ind__global__any_f00a9816
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:08:28+08:00'
+  last_seen: '2026-08-26T14:08:28+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,行,内容,status=failed
+  rationale: 3/5 案例（Quest/Reward/PveCombatNpc）错误详情均以「已新增：表 行X 内容={...}」开头但 status=failed，说明数据可能已落盘而流水线误判失败；直接重试会产生重复行，命中时需先确认目标行是否真实写入再决定重试或回滚
+- id: ap_ind__global__any_b3becefd
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:08:28+08:00'
+  last_seen: '2026-08-26T14:08:28+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换 ID,重试
+  rationale: ID 主键冲突属高频重复失败（新增前未查重），提示「请更换 ID 后重试」；命中时先与用户确认覆盖原行还是分配新 ID，避免反复撞键
+- id: ap_ind__global__any_2b323fa1
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:08:28+08:00'
+  last_seen: '2026-08-26T14:08:28+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 上游依赖,未产出,producer,upstream_placeholder_unresolved
+  rationale: 上游 producer 未产出导致 placeholder 无法解析而跳过写入，属链路性失败，可能连带影响后续依赖表；应提示用户先检查上游执行状态并重跑
+- id: ap_ind__global__any_a7a8ca97
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:14:11+08:00'
+  last_seen: '2026-08-26T14:14:11+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增,ID 已存在,更换 ID,主键
+  rationale: 全部四条失败均为新增配置行且携带主键 ID（1000001/100608/90000018 等），其中案例 2 明确报错「ID 已存在，请更换
+    ID 后重试」。新增操作遇主键冲突会整体失败（status=failed），属跨表可复现的模式，需在写入前校验 ID 唯一性，冲突时要求更换 ID 或改用自增分配。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_bac074f9
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:19:23+08:00'
+  last_seen: '2026-08-26T14:19:23+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,failed,execute_failed_no_llm
+  rationale: 3/4 案例消息显示『已新增：表名 行N』但最终 status=failed，说明写入前置步骤（列映射、sheet 定位、表存在性校验）或写回后续链路失败，实际未成功落库；命中时仅提示，须检查执行链路而非重试新增
+- id: ap_ind__global__any_b7d72343
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T14:19:23+08:00'
+  last_seen: '2026-08-26T14:19:23+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID,已存在,请更换
+  rationale: 案例2 新增时 ID [1] 已存在导致执行失败，属目标表主键冲突的可复用触发特征；命中时应在新增前校验目标行 ID 唯一性，冲突时要求用户确认更换
+    ID 或覆盖策略，而非盲目重试
+- id: ap_ind__global__any_6626e0db
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T15:28:11+08:00'
+  last_seen: '2026-08-26T15:28:11+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: ID,已存在,更换ID,新增失败
+  rationale: 案例2：新增时指定了已存在的ID导致主键冲突。新增场景应优先走自增分配，而非要求用户手工指定可能与既有行冲突的ID；命中时需确认是换用自增ID还是覆盖，避免反复新增失败。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind__global__any_10ae93e3
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T16:34:55+08:00'
+  last_seen: '2026-08-26T16:34:55+08:00'
+  action: require_confirm
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已存在,更换ID,新增失败,ID
+  rationale: 新增行操作报 execute_failed_no_llm，错误详情明确为「ID 已存在，请更换 ID 后重试」，根因是写入前未做主键唯一性校验，重复
+    ID 导致插入被拒。命中时需先确认主键唯一性、提示更换新 ID 后再写。
+- id: ap_ind__global__any_0b781056
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T16:34:55+08:00'
+  last_seen: '2026-08-26T16:34:55+08:00'
+  action: warn_only
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 已新增,status=failed,行
+  rationale: 多条新增失败案例错误详情均为「已新增：表 行N 内容=...」但结果 status=failed，说明数据已实际写入却整体判定失败；此时若直接重试会触发主键重复冲突（与「ID
+    已存在」案例互为因果）。命中时提示本次写入已发生，重试前需先检查并回滚已写行。
+- id: ap_ind_ItemBase__any_d78abaaa
+  type: failed_operation
+  table_stem: ItemBase
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 1
+  first_seen: '2026-08-26T18:09:44+08:00'
+  last_seen: '2026-08-26T18:09:44+08:00'
+  action: block_dry_run
+  status: pending_review
+  source: ai_induction
+  trigger_pattern: 新增失败,ID,已存在,更换ID,重试
+  rationale: 6条失败中5条明确为"新增失败：ID 已存在"，且同一ID被反复重试（100608出现2次、29012出现3次），主键冲突导致 execute_failed_no_llm。触发特征稳定：执行"新增/插入"操作时指定了表中已存在的ID。应写入前阻断并核对表内已有主键，避免重复新增与无效重试。案例1中
+    ItemBase 新增了 ID 29012，随后两次尝试再次新增同一 ID 均冲突，印证同一模式。

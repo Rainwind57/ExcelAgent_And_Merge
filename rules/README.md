@@ -46,6 +46,7 @@ rules/
 tables:
   item:                       # 表名 stem
     ItemBase:                 # sheet 名
+      primary_key: [item_id]  # sheet 级主键（单列或复合，见下）
       columns:
         quality:
           type: int           # 类型：int/float/str/bool/list[...]
@@ -67,8 +68,27 @@ tables:
 | `required` | 必填 | Step2 必填检查 |
 | `enum` | 枚举白名单 | Step2 枚举检查 |
 | `min` / `max` | 数值范围 | Step2 范围检查 |
-| `unique` | 唯一约束 | Step2 唯一性检查 |
+| `unique` | 单列唯一约束 | Step2 唯一性检查 |
+| `primary_key` | sheet 级主键（单列或复合）| Step2/Step3 唯一性 + 冲突检测 |
 | `regex` | 正则匹配 | 预留 |
+
+### `primary_key`（复合主键）
+
+在 **sheet 级**（与 `columns` 同层）声明，取值为列名数组：
+
+```yaml
+tables:
+  fabao:
+    FabaoLevel:
+      primary_key: [法宝id, 法宝等级]   # 组合唯一
+      columns: { ... }
+```
+
+- 单元素 `primary_key: [id]` 等价于列级 `unique: true`，两条路收敛到同一检测。
+- 复合键（≥2 列）按"组合值"判唯一/冲突，避免误把同一实体的多个等级行
+  （如 `fabao.FabaoLevel` 的 `(法宝id, 法宝等级)`）判成主键冲突。
+- 优先级：`primary_key` 声明 > `table_relations` FK 列推断 > 表头首列兜底。
+- 通配：表名/sheet 名可用 `*`，`_global.md` 里 `id: {unique: true}` 仍是单列兜底。
 
 ### 通配
 

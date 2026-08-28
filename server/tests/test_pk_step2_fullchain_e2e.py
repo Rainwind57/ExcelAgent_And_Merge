@@ -67,7 +67,7 @@ def _make_agent(cli) -> types.SimpleNamespace:
     for name in (
         "_do_append", "_auto_sort_after_write", "_refresh_index_after_write",
         "_verify_write_back", "_allocate_pk", "_is_misplaced_pk",
-        "_real_pk_col_name", "_locate_pk_col",
+        "_real_pk_col_name", "_locate_pk_col", "_check_missing_required_after_add",
     ):
         setattr(agent, name, getattr(TableAgent, name).__get__(agent))
     return agent
@@ -79,6 +79,7 @@ def _make_validator() -> ValidatorAgent:
     v._parser = None
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     return v
 
 
@@ -173,21 +174,19 @@ def test_A_suggested_id_is_max_plus_one(env):
 # ───────────────────── B. 无 cb：标 skipped 不落 Step3 ─────────────────────
 
 def test_B_no_callback_marks_skipped(env):
-    """无 cb（非交互）→ Step2 检测到冲突标 validation.skipped=True，
-    intent PK 不改（避免静默改用户显式 ID），不落 Step3 半成品路径。"""
+    """无 cb（非交互）→ 自动改号为下一可用 ID（29004 修复：避免 skip 复位后
+    写盘撞 PK），ok=True 不卡死，PK 改为建议值。"""
     agent, cli, path, v, sg, dg = env
     # v._ask_callback 已为 None（_make_validator 设的）
     it = _intent({"reward_id": 99001, "名称": "测试奖励包"})
     vr = v.validate_two_layer([it], schema_getter=sg, data_getter=dg)
 
-    assert vr["ok"] is False  # 要求 A：无 cb 标 skipped → 真阻断（非 ok=True 恒）
+    assert vr["ok"] is True  # 无 cb 自动改号兜底，不卡死
+    # PK 自动改写为下一可用 ID（max 100602 + 1 = 100603）
+    assert it.extras["fields"]["reward_id"] == 100603
     _v = getattr(it, "validation", None)
-    assert _v is not None and getattr(_v, "skipped", False) is True, \
-        "无 cb 时应标 skipped=True，让 _phase_execute 跳写盘"
-    # PK 未被静默改写
-    assert it.extras["fields"]["reward_id"] == 99001
-    # issue 留在 tips → 走软失败上报（Step4 显式列出未解决）
-    assert vr.get("tips"), "skipped 的 PK 冲突应留在 tips 走软失败上报"
+    assert _v is None or getattr(_v, "skipped", False) is False, \
+        "自动改号后不应标 skipped"
 
 
 def test_B_user_skip_marks_skipped(env):

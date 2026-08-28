@@ -55,7 +55,7 @@ def _make_agent(cli) -> types.SimpleNamespace:
     for name in (
         "_do_append", "_auto_sort_after_write", "_refresh_index_after_write",
         "_verify_write_back", "_allocate_pk", "_is_misplaced_pk",
-        "_real_pk_col_name", "_locate_pk_col",
+        "_real_pk_col_name", "_locate_pk_col", "_check_missing_required_after_add",
     ):
         setattr(agent, name, getattr(TableAgent, name).__get__(agent))
     return agent
@@ -67,6 +67,7 @@ def _make_validator() -> ValidatorAgent:
     v._parser = None
     v._ask_callback = None
     v._required_fields = None
+    v._pk_cols_cache = None
     return v
 
 
@@ -140,24 +141,21 @@ def test_validate_two_layer_coverage_gap_no_unbound_merged():
                   raw="新增奖励包 reward_id 30010",
                   extras={"fields": {"reward_id": 30010, "名称": "焚天赤龙首杀奖励"}})
 
-    # 不应抛 UnboundLocalError
+    # 不应抛 UnboundLocalError；漏表预检已移除，降级为 schema_missing issue
     vr = v.validate_two_layer([it], schema_getter=None,
                               locator_result=locator_result)
     assert isinstance(vr, dict)
-    # 漏表预检 issue 应出现在 tips（intent_coverage_gap）
     _tips_blob = " ".join(str(t) for t in (vr.get("tips") or []))
     _issues_blob = " ".join(str(i) for i in (vr.get("issues") or []))
-    assert ("coverage_gap" in _tips_blob or "coverage_gap" in _issues_blob
-            or "漏" in _tips_blob or "漏" in _issues_blob), (
-        f"应挂漏表预检 issue，tips={vr.get('tips')} issues={vr.get('issues')}")
+    assert ("schema_missing" in _tips_blob or "schema_missing" in _issues_blob), (
+        f"schema_getter=None 应挂 schema_missing issue，tips={vr.get('tips')}")
 
 
 # ── 3. Step1 _filter_intents 真实表保留（不再当幻觉丢弃） ──────────────
 
 def test_filter_intents_keeps_real_table_outside_candidates():
-    """候选池 cap 把 interaction 挤出候选后，兜底产出的 interaction 意图仍应保留
-    （interaction 是真实表 cli.list_tables stem），只有指向不存在表的才算幻觉丢弃。
-    """
+    """候选内全保留；候选外默认丢弃（CODEMAKER_DECOMPOSE_KEEP_ALIAS 默认关，
+    保现状行为）。keep_alias=1 灰度时候选外 alias 命中候选内 stem 才保留。"""
     from agent.excel.subagent.decompose_agent import DecomposeAgent
 
     fake_cli = types.SimpleNamespace(
@@ -170,7 +168,7 @@ def test_filter_intents_keeps_real_table_outside_candidates():
     intents = [
         types.SimpleNamespace(table_hint="reward", sheet_hint="Reward",
                               extras={"fields": {"reward_id": 30010}}),
-        # 候选外但真实存在 → 应保留
+        # 候选外（默认丢弃，无论是否真实表）
         types.SimpleNamespace(table_hint="interaction", sheet_hint="",
                               extras={"fields": {"对话内容": "去讨伐"}}),
         # 候选外且不存在 → 真幻觉，丢弃
@@ -180,7 +178,7 @@ def test_filter_intents_keeps_real_table_outside_candidates():
     kept = da._filter_intents(intents, candidates, valid_stems, path="test")
     kept_stems = {getattr(it, "table_hint", "") for it in kept}
 
-    assert "interaction" in kept_stems, "候选外真实表 interaction 应保留，不当幻觉丢弃"
     assert "reward" in kept_stems, "候选内表应保留"
-    assert "不存在的幻觉表" not in kept_stems, "不存在的表才算真幻觉，应丢弃"
+    assert "interaction" not in kept_stems, "候选外默认丢弃（keep_alias 默认关）"
+    assert "不存在的幻觉表" not in kept_stems, "不存在的表丢弃"
 
