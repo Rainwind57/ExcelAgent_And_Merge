@@ -88,22 +88,6 @@ if rw1.exists() and rwt.exists():
     _set_commit(rwt, sn, [(3, 2, _name_variant(_cell(rw_base, sn, 3, 2), "trunk")),
                           (5, 2, _name_variant(_cell(rw_base, sn, 5, 2), "trunk"))], TRUNK, "trunk merge_back reward")
 
-# 目录合并: subdev_1 vs trunk ability CONFIG + item_drop 名称相对种子 trunk 基准
-ab_sub = SUBDEV1 / "ability.xlsx"; ab_tr = TRUNK / "ability.xlsx"
-ab_base = SEED_TRUNK / "ability.xlsx"
-if ab_sub.exists() and ab_tr.exists():
-    _set_commit(ab_sub, "CONFIG", [(1, 2, _name_variant(_cell(ab_base, "CONFIG", 1, 2), "subdev_1")),
-                                   (2, 2, _name_variant(_cell(ab_base, "CONFIG", 2, 2), "subdev_1"))], SUBDEV1, "subdev_1 ability CONFIG")
-    _set_commit(ab_tr, "CONFIG", [(1, 2, _name_variant(_cell(ab_base, "CONFIG", 1, 2), "trunk")),
-                                   (2, 2, _name_variant(_cell(ab_base, "CONFIG", 2, 2), "trunk"))], TRUNK, "trunk ability CONFIG")
-# item_drop（相对种子 trunk 基准）
-id_sub = SUBDEV1 / "item_drop.xlsx"; id_tr = TRUNK / "item_drop.xlsx"
-id_base = SEED_TRUNK / "item_drop.xlsx"
-if id_sub.exists() and id_tr.exists():
-    wb = load_workbook(id_sub); sn = wb.sheetnames[0]; wb.close()
-    _set_commit(id_sub, sn, [(5, 2, _name_variant(_cell(id_base, sn, 5, 2), "subdev_1")),
-                             (8, 2, _name_variant(_cell(id_base, sn, 8, 2), "subdev_1"))], SUBDEV1, "subdev_1 item_drop")
-    _set_commit(id_tr, sn, [(5, 2, _name_variant(_cell(id_base, sn, 5, 2), "trunk")),
-                            (8, 2, _name_variant(_cell(id_base, sn, 8, 2), "trunk"))], TRUNK, "trunk item_drop")
-
+# 目录合并的 subdev_1/2/3 冲突已由 build_svn_small_branches.stage_subdir_trunk_conflicts
+# 统一按目标规模制造，此处不再重复注入 subdev_1 冲突，避免污染计数。
 print("\n冲突补充完成。")

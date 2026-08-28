@@ -218,22 +218,8 @@ def main() -> None:
     if c7 or c8:
         _commit(TRUNK, f"trunk: merge_back冲突扩充 item{len(c7)} monster{len(c8)}（相对基准真实差异化）")
 
-    # ── 目录合并: subdev_1 改 monster + ability 多行 ──
-    # base = 种子 trunk（subdev_1 创建时快照）。monster 名称、ability 名称做语义替换。
-    mon_sub = SUBDEV1 / "monster.xlsx"
-    ab_sub = SUBDEV1 / "ability.xlsx"
-    sub_mon_rows = [(5, 2), (8, 2), (11, 2)]
-    sub_mon_lv_rows = [(5, 3), (8, 3), (11, 3)]
-    c10 = _batch_set(mon_sub, "Monster",
-        [(r, c, _name_variant(_cell(mon_base, "Monster", r, c), "subdev_1")) for r, c in sub_mon_rows]
-        + [(r, c, _int_variant(_cell(mon_base, "Monster", r, c), "subdev_1")) for r, c in sub_mon_lv_rows]) if mon_sub.exists() else []
-    # ability 名称列(2)=string：行2/3 相对种子 trunk 基准做 subdev_1 替换
-    sub_ab_rows = [(2, 2), (3, 2)]
-    c11 = _batch_set(ab_sub, "Ability",
-        [(r, c, _name_variant(_cell(SEED_TRUNK / "ability.xlsx", "Ability", r, c), "subdev_1")) for r, c in sub_ab_rows]) if ab_sub.exists() else []
-    if c10 or c11:
-        _commit(SUBDEV1, f"subdev_1: 目录合并冲突扩充 monster{len(c10)} ability{len(c11)}（相对基准真实差异化）")
-
+    # 目录合并的 subdev_1/2/3 冲突已由 build_svn_small_branches.stage_subdir_trunk_conflicts
+    # 统一按目标规模制造，此处不再重复注入 subdev_1 冲突，避免污染计数。
     print("\n冲突扩充完成（分支值相对基准真实差异化，非 {branch}_xxx 占位符）。")
 
 

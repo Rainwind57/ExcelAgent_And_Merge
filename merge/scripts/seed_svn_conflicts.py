@@ -173,24 +173,8 @@ def main() -> None:
         print("trunk 改动: item 行7 name（merge_back 冲突点）")
         _svn_commit(TRUNK, "trunk: 前进改 item 行7（merge_back 冲突源，相对基准真实差异化）")
 
-    # ── subdev_1: ability 改 cell 制造目录合并冲突，新增 sheet ──
-    # ability 名称列(2)=string：相对 trunk ability 基准做 subdev_1 语义替换
-    # base = 种子 trunk ability（subdev_1 fork 时快照）
-    ab_sub = SUBDEV1 / "ability.xlsx"
-    ab_base = SEED_TRUNK / "ability.xlsx"
-    changed = []
-    # ability 名称列(2)=string：相对 trunk ability 基准做 subdev_1 语义替换
-    # Ability sheet 行2 是首条数据名称（CONFIG 是配置 sheet 不参与合并 compare）
-    if ab_sub.exists():
-        v_ab = _name_variant(_read_cell(ab_base, "Ability", 2, 2), "subdev_1")
-        if _set_cell(ab_sub, "Ability", 2, 2, v_ab):
-            changed.append("ability Ability 行2 名称")
-    if _add_sheet(ab_sub, "SubSheet", ["k", "v"], [1, "subdev新增"]):
-        changed.append("ability 新增 sheet SubSheet（结构增删）")
-    if changed:
-        print(f"subdev_1 改动: {changed}")
-        _svn_commit(SUBDEV1, f"subdev_1: 制造目录合并冲突 {', '.join(changed)}（相对基准真实差异化）")
-
+    # 目录合并的 subdev_1/2/3 冲突已由 build_svn_small_branches.stage_subdir_trunk_conflicts
+    # 统一按目标规模制造，此处不再重复注入 subdev_1 冲突，避免污染计数。
     print("\n完成。冲突数据已提交到 demo_svn 仓库（分支值相对基准真实差异化，非占位符）。")
 
 

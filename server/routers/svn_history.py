@@ -143,6 +143,16 @@ def svn_log(path: str = Query(...), limit: int = Query(50, ge=1, le=500)):
     return {"path": path, "entries": entries}
 
 
+def _svn_wc_root(target: Path) -> Optional[Path]:
+    """返回 target 所属 SVN 工作副本根目录（含 .svn 的最近祖先），非工作副本返回 None。"""
+    cur = target if target.is_dir() else target.parent
+    while cur != cur.parent:
+        if (cur / ".svn").exists():
+            return cur
+        cur = cur.parent
+    return None
+
+
 def _run_soft(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
     """`_run` 的"软失败"版本：不抛 HTTPException，返回 (stdout, error_code)。
 
@@ -154,9 +164,25 @@ def _run_soft(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
     派生点，已使用手工指定基准"这类提示文案。因此本端点统一走 HTTP 200 +
     结构化响应体（`ok`/`error_code`/`message`），把"需要 fallback"当作一种
     正常的业务结果，而不是异常。
+
+    兼容 Windows：TortoiseSVN/unisvn 对绝对路径做大小写解析时偶发 E720005，
+    而工作副本内相对路径 + cwd=工作副本根 稳定。`svn log` 这类命令的最末参数若是
+    工作副本内的绝对路径，改写为相对路径并设置 cwd 后执行；其它命令原样透传。
     """
+    if not cmd:
+        return None, "svn_unavailable"
+    run_cmd = list(cmd)
+    cwd = None
+    last = run_cmd[-1]
+    lp = Path(last)
+    if lp.is_absolute():
+        root = _svn_wc_root(lp)
+        if root is not None:
+            run_cmd[-1] = "." if lp == root else lp.relative_to(root).as_posix()
+            cwd = str(root)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        r = subprocess.run(run_cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60, cwd=cwd)
     except FileNotFoundError:
         return None, "svn_unavailable"
     except subprocess.TimeoutExpired:

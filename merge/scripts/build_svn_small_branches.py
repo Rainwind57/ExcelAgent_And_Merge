@@ -4,10 +4,10 @@
   平行分支（branches/ 下，与 dev1/dev2 同级；subdev_1 不再作分支，改 trunk 子目录）：
     /branches/dev3     svn copy /trunk@R，删 3 大表，改 ability/reward/tips
     /branches/dev4     svn copy /trunk@R，删 3 大表，改 const/fabao/guild
-  trunk 下子目录（私有表集合，目录合并 source）：
-    /trunk/subdev_1/   随 trunk 导入（5 张私有表：ability/const/item_drop/monster/reward）
-    /trunk/subdev_2/   5 张小私有表 {const,fabao,guild,mail,tips}（B2 改私有标记）
-    /trunk/subdev_3/   5 张小私有表 {ability,reward,map,interaction,world_buff}
+  trunk 下子目录（私有表集合，目录合并 source，冲突规模按需差异化）：
+    /trunk/subdev_1/   8 张小私有表 → 16 冲突（10-19）
+    /trunk/subdev_2/   21 张小私有表 → 31 冲突（30-40）
+    /trunk/subdev_3/   15 张小私有表 → 23 冲突（20-30）
   全配对冲突锚点：dev1/dev2/dev3/dev4 的 tips.xlsx 首个 sheet B2 各写不同值，
     使任两分支合并都在该单元格冲突。
 
@@ -55,10 +55,33 @@ NEW_BRANCHES = ["dev3", "dev4"]
 DEV3_MODIFY = ["ability.xlsx", "reward.xlsx", "tips.xlsx"]
 DEV4_MODIFY = ["const.xlsx", "fabao.xlsx", "guild.xlsx"]
 
-# trunk 下子目录（目录合并 source），各保留 5 张小私有表（与 subdev_1 集合错开）
+# trunk 下子目录（目录合并 source）：表集合与冲突规模按需差异化。
+#  - subdev_1：8 张表 → 16 冲突（10-19）
+#  - subdev_2：21 张表 → 31 冲突（30-40）
+#  - subdev_3：15 张表 → 23 冲突（20-30）
 NEW_SUBDIRS = ["subdev_2", "subdev_3"]
-SUBDEV2_KEEP = ["const.xlsx", "fabao.xlsx", "guild.xlsx", "mail.xlsx", "tips.xlsx"]
-SUBDEV3_KEEP = ["ability.xlsx", "reward.xlsx", "map.xlsx", "interaction.xlsx", "world_buff.xlsx"]
+SUBDEV1_KEEP = ["ability.xlsx", "const.xlsx", "reward.xlsx", "fabao.xlsx",
+                "mail.xlsx", "tips.xlsx", "world_buff.xlsx", "interaction.xlsx"]
+SUBDEV2_KEEP = [
+    "ability.xlsx", "activity.xlsx", "const.xlsx", "entity_prefab.xlsx",
+    "exclusive_state.xlsx", "fabao.xlsx", "gameplay_tags.xlsx", "guild.xlsx",
+    "id_mgr.xlsx", "interaction.xlsx", "mail.xlsx", "map.xlsx",
+    "material_effect.xlsx", "model_prefab.xlsx", "player_common.xlsx",
+    "realm_info.xlsx", "reward.xlsx", "space.xlsx", "spawn_world_entity.xlsx",
+    "tips.xlsx", "world_buff.xlsx",
+]
+SUBDEV3_KEEP = ["ability.xlsx", "activity.xlsx", "const.xlsx", "entity_prefab.xlsx",
+                "exclusive_state.xlsx", "fabao.xlsx", "gameplay_tags.xlsx", "guild.xlsx",
+                "interaction.xlsx", "mail.xlsx", "map.xlsx", "reward.xlsx",
+                "space.xlsx", "tips.xlsx", "world_buff.xlsx"]
+
+# 目录合并冲突规模：(子目录, 表集合, 每表冲突数)。冲突数列表与表集合等长，
+# 每表 1 或 2 个 name 列数据行冲突；subdev 侧与 trunk 侧写不同语义值构成真冲突。
+SUBDIR_PLANS = [
+    ("subdev_1", SUBDEV1_KEEP, [2] * 8),               # 8 表 → 16 冲突
+    ("subdev_2", SUBDEV2_KEEP, [2] * 10 + [1] * 11),   # 21 表 → 31 冲突
+    ("subdev_3", SUBDEV3_KEEP, [2] * 8 + [1] * 7),     # 15 表 → 23 冲突
+]
 
 # dev1-4 全面冲突场景：分散多表 + 同表不同 sheet + 新增 sheet(结构差异) + 新增行(含同 PK 冲突)。
 # 每个 dev 都参与每场景（写本分支值），故任两 dev 合并在每场景都冲突/差异。用户要求
@@ -83,9 +106,7 @@ ALL_BRANCHES = ["dev1", "dev2", "dev3", "dev4"]
 # 双方都改、值不同即冲突。stage4 只改 subdev 一侧（B2 私有标记）→ 单向变更非冲突。
 # 用户反馈"subdev_2 和 trunk 没有冲突、数量太少无参考价值"，要求增至 10-20 个。
 # 3 单元格 × 5 表 × 2 子目录 = 30 个双方冲突（每子目录 15，落在 10-20）。
-SUBDIR_CONFLICT_CELLS = [(2, 2), (2, 3), (2, 4)]  # 旧固定格（已废，改 _find_data_rows 动态取行）
-SUBDIR_ROW_COUNT = 3        # 每表取 3 个唯一 PK 数据行
-SUBDIR_COLS = (2,)          # 每行改 1 格(B) → 3 表×3 行=9~15 冲突/子目录（落在 10-20）
+SUBDIR_COLS = (2,)          # 冲突列固定为名称列(B)
 
 
 def _name_variant(base_val, branch: str) -> str:
@@ -185,7 +206,7 @@ def _name_variant(base_val, branch: str) -> str:
     # 未命中兜底后缀
     suffix = {
         "dev1": "·精", "dev2": "·极", "dev3": "·异", "dev4": "·变",
-        "subdev_2": "·私", "subdev_3": "·独", "trunk": "·改",
+        "subdev_1": "·异", "subdev_2": "·私", "subdev_3": "·独", "trunk": "·改",
     }.get(branch, "·改")
     return sv + suffix
 
@@ -216,9 +237,9 @@ def _cell_val(xlsx: Path, sheet: str, row: int, col: int):
     return v
 
 
-def _run(cmd, check=True, timeout=600):
+def _run(cmd, check=True, timeout=600, cwd=None):
     r = subprocess.run(cmd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=timeout)
+                       encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd)
     if check and r.returncode != 0:
         err = (r.stderr or "").strip()
         out = (r.stdout or "").strip()
@@ -226,8 +247,37 @@ def _run(cmd, check=True, timeout=600):
     return r
 
 
-def _svn(*args, check=True, timeout=600):
-    return _run(["svn", *args], check=check, timeout=timeout)
+def _wc_root(p: Path):
+    """给定工作副本内某路径，返回其所属 SVN 工作副本根目录（含 .svn 的最近祖先）。"""
+    cur = p if p.is_dir() else p.parent
+    while cur != cur.parent:
+        if (cur / ".svn").exists():
+            return cur
+        cur = cur.parent
+    return None
+
+
+def _svn(*args, check=True, timeout=600, cwd=None):
+    """执行 svn，自动把绝对文件系统路径改写为 (cwd=工作副本根, 相对路径)。
+
+    本机 TortoiseSVN/unisvn 对绝对路径做大小写解析时偶发 E720005，但相对路径 + cwd
+    稳定。URL（file:// 等）与非路径参数原样透传，不受影响。
+    """
+    new_args = []
+    wc_cwd = cwd
+    for a in args:
+        s = str(a)
+        pa = Path(s)
+        if pa.is_absolute():
+            root = _wc_root(pa)
+            if root is not None:
+                if wc_cwd is None:
+                    wc_cwd = str(root)
+                rel = "." if pa == root else pa.relative_to(root).as_posix()
+                new_args.append(rel)
+                continue
+        new_args.append(s)
+    return _run(["svn", *new_args], check=check, timeout=timeout, cwd=wc_cwd)
 
 
 def _repo_url() -> str:
@@ -308,7 +358,7 @@ def _find_data_rows(xlsx: Path, sheet: str, count: int) -> list[int]:
     必须写在 A 列唯一的数据行上。从 row 3 起跳过表头(1)+类型(2)。
     """
     from openpyxl import load_workbook
-    wb = load_workbook(xlsx, read_only=True)
+    wb = load_workbook(xlsx)
     ws = wb[sheet] if sheet in wb.sheetnames else wb[wb.sheetnames[0]]
     rows: list[int] = []
     seen: set[str] = set()
@@ -412,8 +462,12 @@ def stage2_checkout(url: str):
             _svn("revert", "-R", str(wc), check=False)
             _svn("update", str(wc))
             continue
-        wc.mkdir(parents=True, exist_ok=True)
-        _svn("checkout", f"{url}/branches/{name}", str(wc))
+        wc.parent.mkdir(parents=True, exist_ok=True)
+        # 清掉 clean 阶段留下的空目录（存在空目录会让 svn checkout 触发大小写解析失败）
+        if wc.exists() and not (wc / ".svn").is_dir():
+            shutil.rmtree(wc, onerror=lambda f, p, e: (os.chmod(p, stat.S_IWRITE), f(p)))
+        # 相对路径 + cwd=父目录 检出，规避 Windows 上绝对路径大小写不一致导致的 E720005
+        _svn("checkout", f"{url}/branches/{name}", name, cwd=str(wc.parent))
         print(f"  wc/branches/{name}")
 
 
@@ -451,118 +505,111 @@ def stage3_dev_branch(branch: str, modify_tables: list[str]):
 
 
 def stage4_trunk_subdirs(url: str):
-    """在 trunk 工作副本下创建 subdev_2/subdev_3 子目录（目录合并 source）。
+    """在 trunk 工作副本下创建/整理 subdev_1/2/3 子目录（目录合并 source）。
 
-    子目录内放 5 张小私有表：从 trunk 顶层拷入，改 B2 作私有标记（相对 trunk 基准的
-    语义替换，如"狂刀"→"狂刀·私"，非 {subname}_priv 占位符），svn add 子目录
-    （递归加入未版本化子项）后提交到 trunk。与 subdev_1（trunk/subdev_1/）同级，
-    前端 /api/merge/subdir/dirs 递归扫描可见。
+    每子目录内放入其私有表集合（SUBDIR_PLANS 定义）：
+      - subdev_1 由 build_svn_real 随 trunk 导入，此处归一化为 8 张小表（去掉大表）
+      - subdev_2/3 新建，各放目标张数小表
+    从 trunk 顶层拷入同名表，svn add/rm 后随 trunk 一次提交。实际冲突制造在
+    stage_subdir_trunk_conflicts 中统一完成（按 SUBDIR_PLANS 目标规模）。
     """
-    print("=== [4/5] 在 trunk 下创建 subdev_2/subdev_3 子目录 ===")
-    for subname, keep in [("subdev_2", SUBDEV2_KEEP), ("subdev_3", SUBDEV3_KEEP)]:
+    print("=== [4/5] 在 trunk 下整理 subdev_1/2/3 子目录 ===")
+    for subname, keep, _conf in SUBDIR_PLANS:
         sdir = TRUNK_WC / subname
         existed = sdir.is_dir() and (sdir / ".svn").is_dir()
         sdir.mkdir(parents=True, exist_ok=True)
+        keep_set = set(keep)
+        # 删除不在目标集合中的旧表（如 subdev_1 的 monster/item_drop 大表）
+        for fp in list(sdir.iterdir()):
+            if fp.is_file() and fp.suffix == ".xlsx" and fp.name not in keep_set:
+                _svn("rm", str(fp), check=False)
+                print(f"  rm {subname}/{fp.name}")
+        # 拷入缺失的目标表
         for name in keep:
             src_fp = TRUNK_WC / name
+            dst = sdir / name
+            if dst.exists():
+                continue
             if not src_fp.exists():
                 print(f"  警告：trunk/{name} 不存在，跳过", file=sys.stderr)
                 continue
-            dst = sdir / name
             shutil.copy2(src_fp, dst)
-            sheet = _first_sheet(dst)
-            # base = trunk 顶层同名表 B2 当前值
-            base_val = _cell_val(src_fp, sheet, 2, 2)
-            marker = _name_variant(base_val, subname)
-            _set_cell(dst, sheet, 2, 2, marker)
-            print(f"  {subname}/{name}!{sheet}!B2 = {marker}")
-        # svn add 子目录本身（递归加入未版本化子项；已版本化则 check=False 跳过）
+        # 新拷入的文件在已版本化子目录下需显式 add（svn add 子目录对新目录递归；已有目录只加新文件）
+        for name in keep:
+            dst = sdir / name
+            if not dst.exists():
+                continue
+            st = _svn("status", str(dst), check=False).stdout or ""
+            if st.startswith("?") or st.startswith("I"):
+                _svn("add", str(dst), check=False)
         if not existed:
             _svn("add", str(sdir), check=False)
-        msg = (f"trunk/{subname}: 新增私有子目录（{len(keep)} 张小表："
-               f"{', '.join(keep)}），目录合并 source，相对基准真实差异化" if not existed
-               else f"trunk/{subname}: 刷新私有表标记")
-        # 提交整个 trunk wc（子目录变更随 trunk 一起进版本库）
+        msg = (f"trunk/{subname}: 私有子目录归一化（{len(keep)} 张小表），目录合并 source"
+               if not existed else f"trunk/{subname}: 刷新私有表集合为 {len(keep)} 张")
         _svn("commit", str(TRUNK_WC), "-m", msg)
-        print(f"  trunk/{subname} 提交完成")
+        print(f"  trunk/{subname} 提交完成（{len(keep)} 张表）")
 
 
 def stage_subdir_trunk_conflicts():
-    """为 subdev_2/subdev_3 vs trunk 制造真实冲突（每子目录 ~15 个，落在用户要求的 10-20）。
+    """按 SUBDIR_PLANS 为 subdev_1/2/3 vs trunk 制造目标数量的真实冲突。
 
     目录合并 source=subdev_N（trunk 子目录）→ target=trunk，base=subdev 创建时 trunk 快照。
-    冲突 = subdev_N/table 与 trunk/table 同名表同单元格都改且值不同。stage4 只改 subdev 一侧
-    （B2 私有标记）→ 单向变更非冲突。本阶段对每张表在 subdev 与 trunk 同名表上同改 3 个
-    单元格（B2/C2/D2）写不同值，构成双方都改的真冲突。subdev 子目录与 trunk 同名表都在
-    trunk 工作副本下，一次 commit trunk wc 覆盖两侧。
+    冲突 = subdev_N/table 与 trunk/table 同名表同单元格都改且值不同。本函数对每张表取
+    指定数量的数据行，在名称列(B)写不同语义值（subdev 侧 vs trunk 侧），构成双方都改的
+    真冲突。subdev 子目录与 trunk 同名表都在 trunk 工作副本下，一次 commit trunk wc 覆盖。
+
+    两侧分作者提交：commit_authors 同作者自动合并会把同作者同格改动算自动合并、不算冲突。
+    故 subdev 侧用作者 subname 提交，trunk 侧用作者 trunk 提交 → 真冲突。demo_svn 单用户
+    仓库在比对时已禁用同作者合并（use_authors={}），但仍保持分作者以贴近真实场景。
+
+    每个冲突格对应一个 (subname, tname, sheet, row)：subdev 侧与 trunk 侧各写一次，
+    总共 2 次提交（先全部 subdev 子树，后全部 trunk 顶层）。
     """
-    print("=== [5/7] subdev_2/3 vs trunk 冲突制造（3 单元格 × 5 表 × 2 子目录）===")
-    pairs = [("subdev_2", SUBDEV2_KEEP), ("subdev_3", SUBDEV3_KEEP)]
-    n_conflict = 0
-    # 分两阶段提交、两侧不同 svn 作者：commit_authors 同作者自动合并（D3）会把同作者同格
-    # 改动算自动合并、不算冲突。故 subdev 侧用作者 subname 提交，trunk 侧用作者 trunk 提交
-    # → 真冲突。先改+提交 subdev 子树（仅 subdev 侧），再改+提交 trunk 顶层（仅 trunk 侧）。
-    # 行号由 _find_data_rows 动态取（A 列唯一数据行）——subdev 副本与 trunk 同名表 A 列一致，
-    # 故两侧取到同一批行号，单元格对齐才冲突（空/重复 A 列的行 compare 会折叠成 1 行）。
-    # 每表 SUBDIR_ROW_COUNT 行 × SUBDIR_COLS 列，5 表 = ~15 冲突/子目录（落在 10-20）。
-    # 值相对 trunk 基准真实差异化：名称列(2)做语义替换，非 {subname}_conf_rNcM 占位符。
-    table_rows: dict[str, list[int]] = {}  # tname -> 数据行号（两侧共用）
-    for subname, keep in pairs:
-        sub_changed = 0
-        for tname in keep:
+    print("=== [5/7] subdev_1/2/3 vs trunk 冲突制造（按 SUBDIR_PLANS 目标规模）===")
+    targets = []  # (subname, tname, sheet, row) — 每个元素 = 1 个冲突单元格
+    for subname, keep, conflict_counts in SUBDIR_PLANS:
+        for tname, nconf in zip(keep, conflict_counts):
             sub_fp = TRUNK_WC / subname / tname
             trunk_fp = TRUNK_WC / tname
             if not sub_fp.exists() or not trunk_fp.exists():
                 print(f"  警告：{subname}/{tname} 或 trunk/{tname} 不存在，跳过", file=sys.stderr)
                 continue
             sheet = _first_data_sheet(sub_fp)
-            rows = table_rows.setdefault(tname, _find_data_rows(sub_fp, sheet, SUBDIR_ROW_COUNT))
-            if not rows:
-                print(f"  警告：{tname}!{sheet} 无 A 列唯一数据行，跳过", file=sys.stderr)
+            rows = _find_data_rows(sub_fp, sheet, nconf)
+            if len(rows) < nconf:
+                print(f"  警告：{subname}/{tname}!{sheet} 数据行不足（需 {nconf}，得 {len(rows)}），跳过", file=sys.stderr)
                 continue
             for r in rows:
-                for c in SUBDIR_COLS:
-                    # base = 原始种子 trunk 同名表同格（不可变，避免前置 stage 污染叠加）
-                    seed_fp = SEED_TRUNK / tname
-                    base_val = _cell_val(seed_fp, sheet, r, c) if seed_fp.exists() else _cell_val(trunk_fp, sheet, r, c)
-                    v = _name_variant(base_val, subname)
-                    if _set_cell(sub_fp, sheet, r, c, v):
-                        sub_changed += 1
-                    n_conflict += 1
-            print(f"  {subname}/{tname}!{sheet}：subdev 侧 {len(rows)} 行 × {len(SUBDIR_COLS)} 格")
-        # 提交 subdev 子树（作者=subname）
-        if sub_changed:
-            _svn_commit_as(TRUNK_WC / subname,
-                 f"{subname}: 目录合并 source 侧改 {sub_changed} 格（作者 {subname}，与 trunk 侧构成真冲突，相对基准真实差异化）",
-                 subname)
-            print(f"  trunk/{subname} 提交完成（作者 {subname}，{sub_changed} 格）")
-    # trunk 顶层侧：对每张表同批数据行同格写不同语义值（trunk 后缀），最后一次性提交（作者=trunk）
-    trunk_changed = 0
-    for subname, keep in pairs:
-        for tname in keep:
-            trunk_fp = TRUNK_WC / tname
-            sub_fp = TRUNK_WC / subname / tname
-            if not sub_fp.exists() or not trunk_fp.exists():
-                continue
-            sheet = _first_data_sheet(sub_fp)
-            rows = table_rows.get(tname, [])
-            if not rows:
-                continue
-            for r in rows:
-                for c in SUBDIR_COLS:
-                    # base = 原始种子 trunk 同名表同格（不可变）
-                    seed_fp = SEED_TRUNK / tname
-                    base_val = _cell_val(seed_fp, sheet, r, c) if seed_fp.exists() else _cell_val(sub_fp, sheet, r, c)
-                    v = _name_variant(base_val, "trunk")
-                    if _set_cell(trunk_fp, sheet, r, c, v):
-                        trunk_changed += 1
-            print(f"  trunk/{tname}!{sheet}：trunk 侧 {len(rows)} 行 × {len(SUBDIR_COLS)} 格")
-    if trunk_changed:
+                targets.append((subname, tname, sheet, r))
+
+    # 阶段一：改并提交 subdev 子树（作者=subname）
+    changed = 0
+    for subname, tname, sheet, r in targets:
+        sub_fp = TRUNK_WC / subname / tname
+        seed_fp = SEED_TRUNK / tname
+        base_val = _cell_val(seed_fp, sheet, r, 2) if seed_fp.exists() else _cell_val(sub_fp, sheet, r, 2)
+        if _set_cell(sub_fp, sheet, r, 2, _name_variant(base_val, subname)):
+            changed += 1
+    for subname, _keep, _conf in SUBDIR_PLANS:
+        _svn_commit_as(TRUNK_WC / subname,
+             f"{subname}: 目录合并 source 侧制造冲突（作者 {subname}，相对基准真实差异化）",
+             subname)
+    print(f"  subdev 侧共改 {changed} 格")
+
+    # 阶段二：改并提交 trunk 顶层（作者=trunk）
+    changed = 0
+    for subname, tname, sheet, r in targets:
+        trunk_fp = TRUNK_WC / tname
+        seed_fp = SEED_TRUNK / tname
+        base_val = _cell_val(seed_fp, sheet, r, 2) if seed_fp.exists() else _cell_val(trunk_fp, sheet, r, 2)
+        if _set_cell(trunk_fp, sheet, r, 2, _name_variant(base_val, "trunk")):
+            changed += 1
+    if changed:
         _svn_commit_as(TRUNK_WC,
-             f"trunk: 目录合并 target 侧改 {trunk_changed} 格（作者 trunk，与 subdev 侧构成真冲突，相对基准真实差异化）",
+             f"trunk: 目录合并 target 侧制造冲突（作者 trunk，相对基准真实差异化）",
              "trunk")
-        print(f"  trunk 顶层提交完成（作者 trunk，{trunk_changed} 格）")
-    print(f"  共 {n_conflict} 个冲突单元格（subdev_2、subdev_3 各 ~{n_conflict // 2}），两侧分作者提交")
+    print(f"  trunk 侧共改 {changed} 格")
+    print(f"  冲突规模：{[(p[0], len(p[1]), sum(p[2])) for p in SUBDIR_PLANS]}")
 
 
 def stage_rich_dev_conflicts():
@@ -687,8 +734,8 @@ def stage5_verify(url: str, trunk_rev: int):
             ok_all = False
         print(f"  branches/{name}: copyfrom={'/trunk@r'+cf_rev.group(1) if cf_rev else '?'} "
               f"大表已删={big_missing} [{status}]")
-    # trunk/subdev_2|3：子目录存在 + 含 5 张小表
-    for subname, keep in [("subdev_2", SUBDEV2_KEEP), ("subdev_3", SUBDEV3_KEEP)]:
+    # trunk/subdev_1|2|3：子目录存在 + 含目标张数小表
+    for subname, keep, _conf in SUBDIR_PLANS:
         sdir = TRUNK_WC / subname
         has_all = all((sdir / n).exists() for n in keep)
         status = "OK" if has_all else "WARN"
@@ -771,9 +818,10 @@ def main():
     print("  平行分支（/api/merge/branch/dirs）：")
     print("    svn/demo_svn/wc/branches/dev3  ← 跨分支合并（小表，已删 monster/skill_level/item_drop）")
     print("    svn/demo_svn/wc/branches/dev4  ← 跨分支合并（小表）")
-    print("  trunk 下子目录（/api/merge/subdir/dirs 递归扫描）：")
-    print("    svn/demo_svn/wc/trunk/subdev_2  ← 目录合并 source（const/fabao/guild/mail/tips）")
-    print("    svn/demo_svn/wc/trunk/subdev_3  ← 目录合并 source（ability/reward/map/interaction/world_buff）")
+    print("  trunk 下子目录（/api/merge/subdir/dirs 递归扫描，目录合并 source）：")
+    print("    svn/demo_svn/wc/trunk/subdev_1  ← 8 张表，16 冲突")
+    print("    svn/demo_svn/wc/trunk/subdev_2  ← 21 张表，31 冲突")
+    print("    svn/demo_svn/wc/trunk/subdev_3  ← 15 张表，23 冲突")
     print("  排除大表：", ", ".join(sorted(BIG_TABLES)))
     if not ok:
         print("\n注意：部分校验 [WARN]，请人工核对。", file=sys.stderr)

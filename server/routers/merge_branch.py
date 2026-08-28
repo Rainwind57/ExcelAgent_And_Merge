@@ -320,7 +320,7 @@ def list_branch_dirs():
         if not d.is_dir() or d.name.startswith("."):
             continue
         # 跳过已知非分支目录（svn/ 由第 2 步单独收集真实 SVN 工作副本）
-        if d.name in ("trunk", "src", "svn", "history", "mergebase", "samples", "legacy", "scripts", "_seed_data"):
+        if d.name in ("trunk", "src", "svn", "history", "mergebase", "samples", "legacy", "scripts", "_seed_data", "demo"):
             continue
         # 分支子目录（如 branches/A）
         if d.name == "branches" and d.is_dir():
@@ -751,6 +751,60 @@ def _wc_root_for(target: Path) -> Optional[Path]:
         if p in ("trunk", "branches") and i > 0:
             return Path(*parts[:i]).resolve()
     return None
+
+def _find_wc_root(p: Path) -> Optional[Path]:
+    """返回 p 所属 SVN 工作副本根目录（含 .svn 的最近祖先），非工作副本返回 None。"""
+    cur = p if p.is_dir() else p.parent
+    while cur != cur.parent:
+        if (cur / ".svn").is_dir():
+            return cur
+        cur = cur.parent
+    return None
+
+
+def _svn_commit_apply(base_dir: Path, commit_files: List[Path], commit_name: str) -> dict:
+    """apply 完成后把合并产物提交到目标 SVN 工作副本，返回新 HEAD revision 与状态。
+
+    base_dir 不在 SVN 工作副本内（demo 快照目录）时不做任何提交。
+    以 cwd=工作副本根 + 相对路径执行 svn add/commit/info，规避 Windows 上
+    TortoiseSVN/unisvn 对绝对路径大小写解析偶发的 E720005。提交失败不回滚文件，
+    只回传 error 供调用方透出告警（文件已落盘，用户可手动 svn commit）。
+    """
+    wc_root = _find_wc_root(base_dir)
+    if wc_root is None:
+        return {"is_svn": False, "committed": False, "revision": None, "error": None}
+    rels: List[str] = []
+    for f in commit_files:
+        try:
+            rels.append(f.resolve().relative_to(wc_root).as_posix())
+        except ValueError:
+            pass
+    if not rels:
+        return {"is_svn": True, "committed": False, "revision": None, "error": "无可提交文件"}
+    try:
+        # svn add 对已版本化文件是 no-op，仅登记新文件
+        subprocess.run(["svn", "add", "--parents", *rels],
+                       cwd=str(wc_root), capture_output=True, timeout=120)
+        msg = (commit_name or "").strip() or "merge apply"
+        r = subprocess.run(["svn", "commit", "-m", msg, *rels],
+                           cwd=str(wc_root), capture_output=True, timeout=300)
+        if r.returncode != 0:
+            err = r.stderr.decode("utf-8", "replace").strip() if isinstance(r.stderr, bytes) else str(r.stderr).strip()
+            return {"is_svn": True, "committed": False, "revision": None, "error": err or "svn commit 失败"}
+        info = subprocess.run(["svn", "info", "--show-item", "revision"],
+                              cwd=str(wc_root), capture_output=True, timeout=60)
+        rev = None
+        if info.returncode == 0:
+            try:
+                rev = int(info.stdout.decode("utf-8", "replace").strip())
+            except ValueError:
+                rev = None
+        return {"is_svn": True, "committed": True, "revision": rev, "error": None}
+    except FileNotFoundError:
+        return {"is_svn": True, "committed": False, "revision": None, "error": "未找到 svn 命令"}
+    except Exception as e:
+        return {"is_svn": True, "committed": False, "revision": None, "error": str(e)}
+
 
 
 def _repo_path_to_wc(repo_path: str, wc_root: Path) -> Path:
