@@ -699,30 +699,14 @@ def _locate_group_files(base_dir: Path, group_name: str) -> List[Path]:
             if not fp.name.startswith("~$") and not fp.name.startswith("_")]
 
 
-def _svn_rel_target(target: Path) -> Tuple[List[str], Optional[str]]:
-    """SVN 命令参数 + cwd 归一：target 在工作副本内时转相对路径 + cwd=wc 根，
-    规避 Windows 上 TortoiseSVN/unisvn 对绝对路径大小写解析偶发 E720005；
-    非工作副本回退绝对路径 + 无 cwd。返回 (argv 追加项, cwd 或 None)。
-    """
-    wc_root = _find_wc_root(target)
-    if wc_root is not None:
-        try:
-            rel = target.resolve().relative_to(wc_root).as_posix()
-            return [rel], str(wc_root)
-        except ValueError:
-            pass
-    return [str(target)], None
-
-
 def _svn_cat(target: Path, rev: Optional[int], dest: Path) -> None:
     """svn cat -r rev 取文件内容写到 dest；rev=None 取最新。"""
     cmd = ["svn", "cat"]
     if rev is not None:
         cmd += ["-r", str(rev)]
-    argv, cwd = _svn_rel_target(target)
-    cmd += argv
+    cmd.append(str(target))
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=60, cwd=cwd)
+        r = subprocess.run(cmd, capture_output=True, timeout=60)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         raise HTTPException(500, "svn cat 失败：svn 不可用或超时")
     if r.returncode != 0:
@@ -798,70 +782,28 @@ def _svn_commit_apply(base_dir: Path, commit_files: List[Path], commit_name: str
     if not rels:
         return {"is_svn": True, "committed": False, "revision": None, "error": "无可提交文件"}
     try:
-        # svn add 对已版本化文件是 no-op，仅登记新文件（含父目录自动 --parents）
+        # svn add 对已版本化文件是 no-op，仅登记新文件
         subprocess.run(["svn", "add", "--parents", *rels],
                        cwd=str(wc_root), capture_output=True, timeout=120)
-        # svn add 对已版本化文件是 no-op，不校验其返回码（新文件已登记即可）
         msg = (commit_name or "").strip() or "merge apply"
         r = subprocess.run(["svn", "commit", "-m", msg, *rels],
                            cwd=str(wc_root), capture_output=True, timeout=300)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace").strip() if isinstance(r.stderr, bytes) else str(r.stderr).strip()
             return {"is_svn": True, "committed": False, "revision": None, "error": err or "svn commit 失败"}
-        # 用 commit 输出解析实际 revision（"Committed revision 132."），
-        # 比 svn info --show-item revision（多 wc 根时取不到本次提交 rev）更可靠
+        info = subprocess.run(["svn", "info", "--show-item", "revision"],
+                              cwd=str(wc_root), capture_output=True, timeout=60)
         rev = None
-        out = r.stdout.decode("utf-8", "replace") if isinstance(r.stdout, bytes) else str(r.stdout)
-        m = re.search(r"Committed revision (\d+)", out)
-        if m:
-            rev = int(m.group(1))
-        if rev is None:
-            info = subprocess.run(["svn", "info", "--show-item", "revision"],
-                                  cwd=str(wc_root), capture_output=True, timeout=60)
-            if info.returncode == 0:
-                try:
-                    rev = int(info.stdout.decode("utf-8", "replace").strip())
-                except ValueError:
-                    rev = None
+        if info.returncode == 0:
+            try:
+                rev = int(info.stdout.decode("utf-8", "replace").strip())
+            except ValueError:
+                rev = None
         return {"is_svn": True, "committed": True, "revision": rev, "error": None}
     except FileNotFoundError:
         return {"is_svn": True, "committed": False, "revision": None, "error": "未找到 svn 命令"}
     except Exception as e:
         return {"is_svn": True, "committed": False, "revision": None, "error": str(e)}
-
-
-def _git_commit_apply(repo_root: Path, commit_files: List[Path], commit_name: str) -> dict:
-    """apply 成功后把本次改动 git 提交到项目仓库，返回 {committed, revision, error}。
-
-    提交范围：仓库内所有已跟踪文件的修改（含 _append_audit 更新的审计日志与
-    本次代码改动）。merge/svn/demo_svn 下的合并产物由 SVN 管理且被 .gitignore
-    排除，不进 git。失败不抛异常，只回传 error（SVN 已落盘，git 失败不影响结果）。
-    """
-    if not (repo_root / ".git").exists():
-        return {"committed": False, "revision": None, "error": "非 git 仓库"}
-    msg = (commit_name or "").strip() or "merge apply"
-    try:
-        # 只暂存已跟踪文件的修改（git add -u），避免把 gitignore 的 SVN 产物拖进来
-        subprocess.run(["git", "-C", str(repo_root), "add", "-u"],
-                       capture_output=True, timeout=60)
-        r = subprocess.run(["git", "-C", str(repo_root), "commit", "-m", msg],
-                           capture_output=True, timeout=120)
-        if r.returncode != 0:
-            err = r.stderr.decode("utf-8", "replace").strip() if isinstance(r.stderr, bytes) else str(r.stderr).strip()
-            if "nothing to commit" in (r.stdout.decode("utf-8", "replace") if isinstance(r.stdout, bytes) else str(r.stdout)) or \
-               "nothing to commit" in err:
-                return {"committed": False, "revision": None, "error": None}
-            return {"committed": False, "revision": None, "error": err or "git commit 失败"}
-        rev = None
-        out = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
-                             capture_output=True, timeout=30)
-        if out.returncode == 0:
-            rev = out.stdout.decode("utf-8", "replace").strip() or None
-        return {"committed": True, "revision": rev, "error": None}
-    except FileNotFoundError:
-        return {"committed": False, "revision": None, "error": "未找到 git 命令"}
-    except Exception as e:
-        return {"committed": False, "revision": None, "error": str(e)}
 
 
 
@@ -916,11 +858,9 @@ def _svn_export_dir(repo_wc_path: Path, rev: Optional[int], dest_dir: Path) -> b
     cmd = ["svn", "export"]
     if rev is not None:
         cmd += ["-r", str(rev)]
-    argv, cwd = _svn_rel_target(repo_wc_path)
-    cmd += argv
-    cmd += ["--force", str(dest_dir)]
+    cmd += ["--force", str(repo_wc_path), str(dest_dir)]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=120, cwd=cwd)
+        r = subprocess.run(cmd, capture_output=True, timeout=120)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
     return r.returncode == 0 and dest_dir.is_dir()
@@ -1825,10 +1765,7 @@ def branch_apply(req: BranchApplyRequest):
             # 写入前预记账：dest 已存在则备份到 tmp，便于失败时恢复原文件
             backup: Optional[Path] = None
             if dest.exists() and dest.is_file():
-                # group_name 可能含路径分隔符（嵌套表如 assistant/assistant），
-                # 备份名须扁平化，否则 tmp/{group}_backup_... 会拼出不存在的子目录
-                # 导致 shutil.copy2 报 WinError 3
-                backup = tmp / f"{_flat_group_name(item.group_name)}_backup_{dest_name}"
+                backup = tmp / f"{item.group_name}_backup_{dest_name}"
                 shutil.copy2(dest, backup)
             written.append((dest, backup))
 
@@ -1892,21 +1829,11 @@ def branch_apply(req: BranchApplyRequest):
         })
 
         invalidate_dirs_cache()
-
-        # 真实 SVN 工作副本：把本次写出的产物 svn commit，产生新 revision；
-        # 然后 git add/commit 项目仓库（失败不阻断，仅回传告警）
-        svn_report = _svn_commit_apply(tgt_dir, [Path(r["path"]) for r in results], req.commit_name)
-        git_report = {"committed": False, "revision": None, "error": None}
-        if svn_report.get("committed"):
-            git_report = _git_commit_apply(MERGE_DIR.parent, [], req.commit_name)
-
         return {
             "ok": True,
             "results": results,
             "new_version_dir": new_branch_dir.name if new_branch_dir else "",
             "ref_warning": "；".join(r["ref_integrity"]["warning"] for r in results if r["ref_integrity"]["warning"]),
-            "svn": svn_report,
-            "git": git_report,
         }
     except HTTPException:
         # 写入过程中失败：清理半成品新版本目录；还原已写入 tgt脏数据
