@@ -32,6 +32,51 @@ class Step2ValidateSubAgent:
         # services 收口 _wire_sinks / validate_intents 接口。
         self._services = services
 
+    @staticmethod
+    def _structural_errors(intents: list) -> list[StepError]:
+        """Cheap Step2 guard that does not need the legacy TableAgent service."""
+        errors: list[StepError] = []
+        for idx, it in enumerate(intents):
+            action = (getattr(it, "action", "") or "").strip().lower()
+            table = getattr(it, "table_hint", None)
+            sheet = getattr(it, "sheet_hint", None)
+            if action not in {"add", "set", "delete", "get", "col"}:
+                errors.append(StepError(
+                    step_id=STEP2_VALIDATE,
+                    error_type="invalid_action",
+                    message=f"Intent {idx + 1} has unsupported action: {action or '<empty>'}",
+                    table=table, sheet=sheet, is_hard=True))
+            if action in {"add", "set", "delete", "get", "col"} and not table:
+                errors.append(StepError(
+                    step_id=STEP2_VALIDATE,
+                    error_type="table_missing",
+                    message=f"Intent {idx + 1} has no target table",
+                    sheet=sheet, is_hard=True))
+            if action in {"add", "set"}:
+                fields = (getattr(it, "extras", None) or {}).get("fields")
+                if fields is not None and not isinstance(fields, dict):
+                    errors.append(StepError(
+                        step_id=STEP2_VALIDATE,
+                        error_type="fields_not_object",
+                        message=f"Intent {idx + 1} fields must be a JSON object",
+                        table=table, sheet=sheet, is_hard=True))
+                if action == "add" and not isinstance(fields, dict):
+                    errors.append(StepError(
+                        step_id=STEP2_VALIDATE,
+                        error_type="add_fields_missing",
+                        message=f"Intent {idx + 1} add operation has no fields object",
+                        table=table, sheet=sheet, is_hard=True))
+                if action == "set":
+                    has_target = bool(getattr(it, "target_field", None))
+                    has_fields = isinstance(fields, dict) and bool(fields)
+                    if not has_target and not has_fields:
+                        errors.append(StepError(
+                            step_id=STEP2_VALIDATE,
+                            error_type="set_target_missing",
+                            message=f"Intent {idx + 1} set operation has no target field or fields",
+                            table=table, sheet=sheet, is_hard=True))
+        return errors
+
     def execute(self, ctx: StepContext) -> StepResult:
         """Step2 执行：对 Step1 产出的 intents 跑 validate_two_layer。
 
@@ -56,6 +101,7 @@ class Step2ValidateSubAgent:
                 artifacts={"validated": []})
 
         validated = intents
+        errors.extend(self._structural_errors(intents))
         if self._services is not None:
             try:
                 # 复用 legacy validate_two_layer + ask + 修正
@@ -114,6 +160,30 @@ class Step2ValidateSubAgent:
         # validated 只存 Step2 自己的 artifacts（§硬隔离不变量：前一态不被后步改写）。
         # 原 s1.artifacts["validated"] = validated 已删除（违反 contracts.py 步间只追加不回退）。
         # Step3 只从 s2.artifacts["validated"] 取（step3:58-61 已优先 s2）。
+        seen = {
+            (e.error_type, e.table, e.sheet, e.column, e.root_cause or e.message)
+            for e in errors
+        }
+        for it in validated:
+            for f in (getattr(it, "failures", None) or []):
+                if not isinstance(f, dict):
+                    continue
+                table = f.get("table") or getattr(it, "table_hint", None)
+                sheet = f.get("sheet") or getattr(it, "sheet_hint", None)
+                root = f.get("root_cause") or f.get("message") or ""
+                key = (f.get("type", "validation_tip"), table, sheet, f.get("col"), root)
+                if key in seen:
+                    continue
+                seen.add(key)
+                errors.append(StepError(
+                    step_id=STEP2_VALIDATE,
+                    error_type=key[0],
+                    message=root or "Validation warning",
+                    root_cause=root,
+                    table=table, sheet=sheet, column=f.get("col"),
+                    suggestion=f.get("suggestion"),
+                    is_hard=False))
+
         ok = not any(e.is_hard for e in errors)
         return StepResult(
             step_id=STEP2_VALIDATE, ok=ok,

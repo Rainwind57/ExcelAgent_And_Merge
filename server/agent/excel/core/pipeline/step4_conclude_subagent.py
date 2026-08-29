@@ -25,6 +25,29 @@ from .contracts import STEP4_CONCLUDE, StepContext, StepError, StepResult
 logger = logging.getLogger(__name__)
 
 
+def _prior_step_failures(ctx: StepContext) -> list[dict]:
+    """Convert prior StepError objects into the Step4 failure shape."""
+    out: list[dict] = []
+    for sid, result in (ctx.results or {}).items():
+        if sid == STEP4_CONCLUDE:
+            continue
+        for err in (getattr(result, "errors", None) or []):
+            out.append({
+                "type": getattr(err, "error_type", "step_error"),
+                "table": getattr(err, "table", "") or "",
+                "sheet": getattr(err, "sheet", "") or "",
+                "col": getattr(err, "column", "") or "",
+                "root_cause": (
+                    getattr(err, "root_cause", "") or getattr(err, "message", "")
+                    or "Step failed"),
+                "attempted_strategies": getattr(err, "step_id", sid),
+                "suggestion": getattr(err, "suggestion", "") or "",
+                "status": "failed" if getattr(err, "is_hard", False) else "warning",
+                "user_reply": None,
+            })
+    return out
+
+
 class Step4ConcludeSubAgent:
     """Step4：总结归纳、生成经验。"""
 
@@ -46,14 +69,29 @@ class Step4ConcludeSubAgent:
 
         s3 = ctx.get_result("step3_execute")
         subtasks = (s3.artifacts.get("subtasks") if s3 else []) or []
-        failures = (s3.artifacts.get("failures") if s3 else []) or []
+        failures = list((s3.artifacts.get("failures") if s3 else []) or [])
+        seen = {
+            (f.get("type"), f.get("table"), f.get("sheet"), f.get("col"),
+             f.get("root_cause"))
+            for f in failures if isinstance(f, dict)
+        }
+        for f in _prior_step_failures(ctx):
+            key = (f.get("type"), f.get("table"), f.get("sheet"), f.get("col"),
+                   f.get("root_cause"))
+            if key not in seen:
+                failures.append(f)
+                seen.add(key)
 
         # §低危修复：Step4 ok 镜像 Step3（Step4 只汇总，不改 ok 语义）。
         # 原独立判 all_ok = n_fail==0，与 s3.ok（not any hard）口径不一致：
         # 如 s3 hard error 但 subtask 都 ok → s3.ok=False 但 Step4 all_ok=True 漂移；
         # 或 s3 ok 但 subtask 有 soft fail → Step4 all_ok=False。镜像 s3.ok 保一致。
         s3_ok = (s3.ok if s3 else None)
-        all_ok = bool(s3_ok)
+        if s3 is not None:
+            all_ok = bool(s3_ok)
+        else:
+            prior = [r for sid, r in ctx.results.items() if sid != STEP4_CONCLUDE]
+            all_ok = bool(prior) and all(r.ok for r in prior)
         # §低危修复：ok=None（needs_confirm 待确认）不计失败，与 Step3 口径一致。
         # 原 `not s.get("ok")` 把 None 当失败 → n_fail 误计。
         n_ok = sum(1 for s in subtasks if s.get("ok") is True)
@@ -75,6 +113,13 @@ class Step4ConcludeSubAgent:
                 col = f" 列[{f.get('col')}]" if f.get("col") else ""
                 rc = f.get("root_cause") or "未知"
                 summary += f"\n- {loc}{col}：{rc}"
+        elif failures:
+            summary = ctx.folded_message()
+            for f in failures[:5]:
+                loc = f"{f.get('table') or '?'}/{f.get('sheet') or '?'}"
+                col = f" [{f.get('col')}]" if f.get("col") else ""
+                rc = f.get("root_cause") or "unknown"
+                summary += f"\n- {loc}{col}: {rc}"
         else:
             summary = ctx.folded_message()
 

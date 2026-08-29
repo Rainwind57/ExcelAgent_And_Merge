@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -192,7 +193,30 @@ def _ph_key_of(v: Any) -> str:
             l = l.split(seg)[0]
     if l.endswith("_id"):
         l = l[:-3]
+    if l.startswith("new_"):
+        l = l[4:]
+    parts = [p for p in re.split(r"[_\W]+", l) if p and p != "new"]
+    if parts:
+        tail = re.sub(r"\d+$", "", parts[-1])
+        return tail or parts[-1]
     return l
+
+
+def _ph_labels_match(a: Any, b: Any) -> bool:
+    return _ph_label(a) == _ph_label(b) or _ph_key_of(a) == _ph_key_of(b)
+
+
+def _collect_placeholder_labels(v: Any) -> set[str]:
+    labels: set[str] = set()
+    if _is_placeholder(v):
+        labels.add(_ph_label(v))
+    elif isinstance(v, dict):
+        for item in v.values():
+            labels.update(_collect_placeholder_labels(item))
+    elif isinstance(v, (list, tuple)):
+        for item in v:
+            labels.update(_collect_placeholder_labels(item))
+    return labels
 
 
 def _norm_value(v: Any) -> Any:
@@ -227,9 +251,8 @@ def _values_equal(exp: Any, act: Any) -> bool:
     """
     if _is_placeholder(exp) or _is_placeholder(act):
         if _is_placeholder(exp) and _is_placeholder(act):
-            if _ph_label(exp) == _ph_label(act):
+            if _ph_labels_match(exp, act):
                 return True
-            return _ph_key_of(exp) == _ph_key_of(act)
         return False
     e = _norm_value(exp)
     a = _norm_value(act)
@@ -451,20 +474,23 @@ def run_case(case: dict, pa, la, da) -> dict:
     loc_ok = sum(1 for r in rows if r.get("locator_ok"))
 
     # 悬空占位符：#3 指标（actual fields 里有 <label> 但没有任何 expected 的 label 与之相等）
+    exp_labels = set()
+    for e in expected:
+        if _is_placeholder(e.get("produces")):
+            exp_labels.add(_ph_label(e.get("produces")))
+        exp_labels.update(_collect_placeholder_labels(e.get("row_content") or {}))
     ph_unresolved = 0
     for a in actual:
         for k, v in (a.get("fields") or {}).items():
             if _is_placeholder(v):
                 # 该 label 在 expected 全量 produces 里不存在 → 悬空
-                exp_labels = {_ph_label(e.get("produces")) for e in expected if _is_placeholder(e.get("produces"))}
-                if _ph_label(v) not in exp_labels:
+                if not any(_ph_labels_match(v, f"<{label}>") for label in exp_labels):
                     ph_unresolved += 1
     ph_resolved_total = 0
     for a in actual:
         for k, v in (a.get("fields") or {}).items():
             if _is_placeholder(v):
-                exp_labels = {_ph_label(e.get("produces")) for e in expected if _is_placeholder(e.get("produces"))}
-                if _ph_label(v) in exp_labels:
+                if any(_ph_labels_match(v, f"<{label}>") for label in exp_labels):
                     ph_resolved_total += 1
 
     return {

@@ -86,6 +86,11 @@ server/agent/excel/evidence/
 # ============================================================
 #  Agent 运行时产物
 # ============================================================
+server/agent/backups/
+server/tests/reports/
+server/agent/excel/audit_log.jsonl
+server/agent/excel/_table_index.json
+server/agent/excel/core/evidence/
 dialogs/
 dialog_examples/
 dialog_failures/

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 from .core.produces_inference import infer_produces_consumes
@@ -388,12 +389,17 @@ class ParseAgent:
             except Exception:  # noqa: BLE001
                 logger.warning("ParseAgent _assemble 全局 backfill 失败", exc_info=True)
         # §3.1 step 6a: SplitIntent → NLIntent 适配（SubTask 超集）
-        nl_intents = [self._split_to_nl(si, text) for si in split_intents]
+        nl_intents = self._dedupe_nl_intents(
+            [self._split_to_nl(si, text) for si in split_intents])
         # §P1 缺陷A 修复：灌值守卫 choke point 化。_assemble 是 DecomposeAgent LLM 路径
         # 的汇合点，所有 SplitIntent→NLIntent 在此统一过 _scrub_narrative_scalar 一道闸，
         # 兜住 LLM 退化把长叙述灌进数字/布尔列的 intent（清空灌值字段，不丢整条）。
         # 与 parse_baseline 的同方法配合，覆盖 Step1 全部子路径。
         self._scrub_narrative_scalar(nl_intents)
+        if locator_result is not None:
+            self._backfill_missing_fk_fields(
+                nl_intents, getattr(locator_result, "fk_edges", None) or [])
+        self._backfill_same_workbook_placeholder_fields(nl_intents)
         # §3.1 step 5: produces 推断（关系图驱动,原地补 produces_label/consumes 占位）
         try:
             infer_produces_consumes(nl_intents)
@@ -406,6 +412,128 @@ class ParseAgent:
                 it.produces_label = str(prod)
         self._think(f"ParseAgent 产出 {len(nl_intents)} 条 NLIntent(source=llm_decompose)")
         return nl_intents
+
+    @staticmethod
+    def _backfill_missing_fk_fields(intents: list[NLIntent], fk_edges: list) -> int:
+        producers: dict[tuple[str, str], list[str]] = {}
+        for it in intents:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if not label:
+                continue
+            producers.setdefault((
+                (getattr(it, "table_hint", "") or "").lower(),
+                (getattr(it, "sheet_hint", "") or "").lower(),
+            ), []).append(str(label))
+        n = 0
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            for edge in fk_edges:
+                from_stem = (getattr(edge, "from_stem", "") or "").lower()
+                from_sheet = (getattr(edge, "from_sheet", "") or "").lower()
+                if stem != from_stem or sheet != from_sheet:
+                    continue
+                target_key = (
+                    (getattr(edge, "to_stem", "") or "").lower(),
+                    (getattr(edge, "to_sheet", "") or "").lower(),
+                )
+                labels = producers.get(target_key) or []
+                if len(labels) != 1:
+                    continue
+                col = str(getattr(edge, "from_column", "") or "").split(":")[0].strip()
+                if not col or str(fields.get(col, "")).strip():
+                    continue
+                label = labels[0]
+                fields[col] = f"<{label}>"
+                if label not in (getattr(it, "consumes_labels", None) or []):
+                    it.consumes_labels.append(label)
+                n += 1
+        return n
+
+    def _backfill_same_workbook_placeholder_fields(self, intents: list[NLIntent]) -> int:
+        producers: list[tuple[str, str, str, list[str]]] = []
+        for it in intents:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if not label:
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            cols = [str(k) for k, v in fields.items()
+                    if str(v).strip() == f"<{label}>"]
+            if cols:
+                producers.append((
+                    (getattr(it, "table_hint", "") or "").lower(),
+                    (getattr(it, "sheet_hint", "") or "").lower(),
+                    str(label),
+                    cols,
+                ))
+        if not producers:
+            return 0
+        n = 0
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            existing_norm = {self._field_name_norm(k) for k in fields}
+            headers = self._headers_for(stem, getattr(it, "sheet_hint", "") or "")
+            type_row = self._type_row_for(stem, getattr(it, "sheet_hint", "") or "")
+            for p_stem, p_sheet, label, p_cols in producers:
+                if p_stem != stem or p_sheet == sheet:
+                    continue
+                wanted = {self._field_name_norm(c) for c in p_cols}
+                target_col = ""
+                for h, t in zip(headers, type_row):
+                    names = {self._field_name_norm(h)}
+                    if t:
+                        names.add(self._field_name_norm(str(t).split(":")[0]))
+                    if names & wanted:
+                        target_col = str(h or str(t).split(":")[0])
+                        break
+                if not target_col and p_cols:
+                    target_col = p_cols[0]
+                if not target_col or self._field_name_norm(target_col) in existing_norm:
+                    continue
+                fields[target_col] = f"<{label}>"
+                existing_norm.add(self._field_name_norm(target_col))
+                if label not in (getattr(it, "consumes_labels", None) or []):
+                    it.consumes_labels.append(label)
+                n += 1
+        return n
+
+    @staticmethod
+    def _field_name_norm(value) -> str:
+        return re.sub(r"[\s_:\-./\\()\[\]（）【】]+", "", str(value or "").lower())
+
+    def _headers_for(self, stem: str, sheet: str) -> list:
+        return self._schema_row_for(stem, sheet, type_row=False)
+
+    def _type_row_for(self, stem: str, sheet: str) -> list:
+        return self._schema_row_for(stem, sheet, type_row=True)
+
+    def _schema_row_for(self, stem: str, sheet: str, *, type_row: bool) -> list:
+        if self._cli is None or not stem or not sheet:
+            return []
+        try:
+            tables = {p.stem.lower(): p for p in self._cli.list_tables()}
+            path = tables.get(stem.lower())
+            if path is None:
+                return []
+            if type_row:
+                reader = getattr(self._cli, "read_type_row", None)
+                return reader(path, sheet) if callable(reader) else []
+            return self._cli.read_header(path, sheet) or []
+        except Exception:
+            return []
 
 
     def parse_baseline(self, text: str, splitter_intents: list) -> list[NLIntent]:
@@ -422,11 +550,11 @@ class ParseAgent:
         """
         if not splitter_intents:
             return []
-        nl_intents = [
+        nl_intents = self._dedupe_nl_intents([
             self._split_to_nl(si, text, source="splitter_baseline",
                               ai_check_skipped=True)
             for si in splitter_intents
-        ]
+        ])
         # §P1 缺陷A 修复：splitter_baseline 兜底产出的 NLIntent 也过 _scrub_narrative_scalar，
         # 兜住零 LLM 旁路（_splitter_baseline/CrossTableIntentSplitter 不经 _to_split_intents）
         # 的灌值 intent。与 _assemble 同方法，覆盖 Step1 全部子路径。
@@ -444,6 +572,162 @@ class ParseAgent:
 
     # ── 内部 ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _dedupe_nl_intents(intents: list[NLIntent]) -> list[NLIntent]:
+        """Remove exact or near-duplicate Step1 intents from retry/backfill merges."""
+        out: list[NLIntent] = []
+        seen: set[tuple] = set()
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if isinstance(fields, dict):
+                field_sig = tuple(sorted((str(k), repr(v)) for k, v in fields.items()))
+            else:
+                field_sig = repr(fields)
+            key = (
+                getattr(it, "action", None),
+                getattr(it, "table_hint", None),
+                getattr(it, "sheet_hint", None),
+                getattr(it, "locator_field", None),
+                repr(getattr(it, "locator_value", None)),
+                tuple(getattr(it, "locator_fields", None) or []),
+                tuple(repr(v) for v in (getattr(it, "locator_values", None) or [])),
+                field_sig,
+                getattr(it, "produces_label", None),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            dup_idx = next(
+                (idx for idx, old in enumerate(out)
+                 if ParseAgent._looks_semantic_duplicate(old, it)),
+                None,
+            )
+            if dup_idx is not None:
+                old = out[dup_idx]
+                if ParseAgent._semantic_dup_score(it) > ParseAgent._semantic_dup_score(old):
+                    out[dup_idx] = it
+                continue
+            out.append(it)
+        out = ParseAgent._drop_empty_add_shadows(out)
+        return out
+
+    @staticmethod
+    def _drop_empty_add_shadows(intents: list[NLIntent]) -> list[NLIntent]:
+        non_empty_groups: set[tuple] = set()
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            if any(str(v).strip() for v in fields.values()):
+                non_empty_groups.add((
+                    getattr(it, "action", None),
+                    (getattr(it, "table_hint", None) or "").lower(),
+                    (getattr(it, "sheet_hint", None) or "").lower(),
+                ))
+        out: list[NLIntent] = []
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            group = (
+                getattr(it, "action", None),
+                (getattr(it, "table_hint", None) or "").lower(),
+                (getattr(it, "sheet_hint", None) or "").lower(),
+            )
+            if (getattr(it, "action", None) == "add"
+                    and group in non_empty_groups
+                    and isinstance(fields, dict)
+                    and fields
+                    and not any(str(v).strip() for v in fields.values())):
+                continue
+            if (getattr(it, "action", None) == "add"
+                    and group in non_empty_groups
+                    and isinstance(fields, dict)
+                    and ParseAgent._is_sparse_shadow(it, intents)):
+                continue
+            out.append(it)
+        return out
+
+    @staticmethod
+    def _is_sparse_shadow(it: NLIntent, intents: list[NLIntent]) -> bool:
+        fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+        if not isinstance(fields, dict):
+            return False
+        vals = {repr(v) for v in fields.values()
+                if str(v).strip() and not str(v).strip().startswith("<")}
+        if not vals:
+            return False
+        group = (
+            getattr(it, "action", None),
+            (getattr(it, "table_hint", None) or "").lower(),
+            (getattr(it, "sheet_hint", None) or "").lower(),
+        )
+        for other in intents:
+            if other is it:
+                continue
+            other_group = (
+                getattr(other, "action", None),
+                (getattr(other, "table_hint", None) or "").lower(),
+                (getattr(other, "sheet_hint", None) or "").lower(),
+            )
+            if other_group != group:
+                continue
+            ofields = (getattr(other, "extras", None) or {}).get("fields") or {}
+            if not isinstance(ofields, dict):
+                continue
+            ovals = {repr(v) for v in ofields.values()
+                     if str(v).strip() and not str(v).strip().startswith("<")}
+            if vals < ovals and len(ovals) >= len(vals) + 2:
+                return True
+        return False
+
+    @staticmethod
+    def _semantic_dup_score(it: NLIntent) -> tuple[int, int, int]:
+        fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+        field_count = len(fields) if isinstance(fields, dict) else 0
+        ph_count = 0
+        if isinstance(fields, dict):
+            ph_count = sum(1 for v in fields.values()
+                           if isinstance(v, str) and v.strip().startswith("<"))
+        has_produces = 1 if getattr(it, "produces_label", None) else 0
+        has_consumes = 1 if getattr(it, "consumes_labels", None) else 0
+        # Prefer richer field maps; prefer produces only when placeholders/FK use exists.
+        prod_score = has_produces if ph_count or has_consumes else -has_produces
+        return (field_count, ph_count + has_consumes, prod_score)
+
+    @staticmethod
+    def _looks_semantic_duplicate(a: NLIntent, b: NLIntent) -> bool:
+        base_a = (
+            getattr(a, "action", None),
+            (getattr(a, "table_hint", None) or "").lower(),
+            (getattr(a, "sheet_hint", None) or "").lower(),
+            getattr(a, "locator_field", None),
+            repr(getattr(a, "locator_value", None)),
+            tuple(getattr(a, "locator_fields", None) or []),
+            tuple(repr(v) for v in (getattr(a, "locator_values", None) or [])),
+        )
+        base_b = (
+            getattr(b, "action", None),
+            (getattr(b, "table_hint", None) or "").lower(),
+            (getattr(b, "sheet_hint", None) or "").lower(),
+            getattr(b, "locator_field", None),
+            repr(getattr(b, "locator_value", None)),
+            tuple(getattr(b, "locator_fields", None) or []),
+            tuple(repr(v) for v in (getattr(b, "locator_values", None) or [])),
+        )
+        if base_a != base_b:
+            return False
+        fa = (getattr(a, "extras", None) or {}).get("fields") or {}
+        fb = (getattr(b, "extras", None) or {}).get("fields") or {}
+        if not isinstance(fa, dict) or not isinstance(fb, dict):
+            return False
+        vals_a = {repr(v) for v in fa.values()
+                  if str(v).strip() and not str(v).strip().startswith("<")}
+        vals_b = {repr(v) for v in fb.values()
+                  if str(v).strip() and not str(v).strip().startswith("<")}
+        if len(vals_a) < 2 or len(vals_b) < 2:
+            return False
+        overlap = len(vals_a & vals_b)
+        return overlap >= 2 and overlap * 2 >= min(len(vals_a), len(vals_b))
+
     def _split_to_nl(self, si, text: str, *,
                      source: str = "llm_decompose",
                      ai_check_skipped: bool = False) -> NLIntent:
@@ -460,7 +744,8 @@ class ParseAgent:
           "llm_chain"（llm_decompose）/ "splitter"（splitter_baseline），
         与 _llm_chain_decompose:5871 现状一致。
         """
-        fields = getattr(si, "fields", None) or {}
+        raw_fields = getattr(si, "fields", None) or {}
+        fields = dict(raw_fields) if isinstance(raw_fields, dict) else {}
         produces = getattr(si, "produces", None)
         extras: dict = {"fields": fields}
         if produces:
@@ -487,6 +772,25 @@ class ParseAgent:
                  "score": h.score, "source": h.source}
                 for h in (_ce.hits if _ce else [])
             ]
+        consumes_labels: list[str] = []
+        seen_consumes: set[str] = set()
+
+        def _collect_consumes(value) -> None:
+            if isinstance(value, str):
+                for m in re.finditer(r"<\s*([^>]+?)\s*>", value):
+                    label = m.group(1).strip()
+                    if label and label.lower() != "auto" and label not in seen_consumes:
+                        seen_consumes.add(label)
+                        consumes_labels.append(label)
+            elif isinstance(value, dict):
+                for nested in value.values():
+                    _collect_consumes(nested)
+            elif isinstance(value, (list, tuple)):
+                for nested in value:
+                    _collect_consumes(nested)
+
+        _collect_consumes(fields)
+
         return NLIntent(
             action=getattr(si, "action", "add") or "add",
             table_hint=getattr(si, "table_hint", None),
@@ -498,6 +802,7 @@ class ParseAgent:
             raw=getattr(si, "text", text) or text,
             extras=extras,
             produces_label=produces,
+            consumes_labels=consumes_labels,
             source=source,
             ai_check_skipped=ai_check_skipped,
         )
