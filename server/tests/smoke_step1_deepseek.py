@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -67,6 +68,25 @@ class _DeepSeekClient:
 
     def create_session(self, **_kwargs) -> _SessionResult:
         return _SessionResult(ok=True)
+
+    def extract_json_from_response(self, text: str) -> Any:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        start = min([i for i in [cleaned.find("["), cleaned.find("{")] if i >= 0] or [-1])
+        if start >= 0:
+            for end in range(len(cleaned), start, -1):
+                frag = cleaned[start:end].strip()
+                try:
+                    return json.loads(frag)
+                except json.JSONDecodeError:
+                    continue
+        return []
 
     def prompt(self, _session_id: str, prompt: str, timeout: int = 90,
                model: str = "", **_kwargs) -> _PromptResult:

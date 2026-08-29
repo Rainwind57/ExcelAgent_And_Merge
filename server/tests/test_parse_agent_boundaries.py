@@ -13,10 +13,19 @@ from agent.excel.subagent.locator_agent import FKEdge
 class _TinyCli:
     def list_tables(self):
         class P:
-            stem = "mail"
-        return [P()]
+            def __init__(self, stem):
+                self.stem = stem
+        return [P("mail"), P("school_ability"), P("school_talent"), P("school_spirit")]
 
     def read_header(self, _path, sheet):
+        if sheet == "SchoolAbility":
+            return ["ability id", "name", "desc"]
+        if sheet == "SchoolAbilityLevel":
+            return ["id", "ability id", "level", "spell"]
+        if sheet == "SchoolTalentLevel":
+            return ["id", "desc", "talent id", "level", "buff"]
+        if sheet == "SchoolSpirit":
+            return ["ability id", "school id", "spirit id", "buff"]
         if sheet == "GlobalMail":
             return ["全服邮件ID", "模板ID", "奖励"]
         if sheet == "MailTemplate":
@@ -24,6 +33,14 @@ class _TinyCli:
         return []
 
     def read_type_row(self, _path, sheet):
+        if sheet == "SchoolAbility":
+            return ["school_ability_id:int", "name:string", "desc:string"]
+        if sheet == "SchoolAbilityLevel":
+            return ["id:int", "school_ability_id:int", "level:int", "common_spell_id:int"]
+        if sheet == "SchoolTalentLevel":
+            return ["id:int", "desc:string", "talent_id:int", "level:int", "buff_id:int"]
+        if sheet == "SchoolSpirit":
+            return ["school_ability_id:int", "school_id:int", "spirit_id:int", "spirit_buffs[0]:int"]
         if sheet == "GlobalMail":
             return ["global_id:int", "template_id:int", "reward_id:int"]
         if sheet == "MailTemplate":
@@ -210,6 +227,138 @@ def test_backfill_missing_fk_fields_when_single_producer_exists():
     assert n == 1
     assert child.extras["fields"]["template_id"] == "<new_template_id>"
     assert child.consumes_labels == ["new_template_id"]
+
+
+def test_resolve_same_batch_name_fk_to_placeholder():
+    pa = ParseAgent(cli=_TinyCli())
+    ability = pa.parse_baseline("add ability", [
+        SplitIntent(
+            text="ability",
+            table_hint="school_ability",
+            sheet_hint="SchoolAbility",
+            action="add",
+            fields={"school_ability_id": "<new_ability1_id>", "name": "Taixu Sword"},
+            produces="new_ability1_id",
+        )
+    ])[0]
+    spirit = pa.parse_baseline("bind spirit", [
+        SplitIntent(
+            text="spirit",
+            table_hint="school_spirit",
+            sheet_hint="SchoolSpirit",
+            action="add",
+            fields={"school_ability_id": "Taixu Sword", "spirit_id": "Gold Root"},
+        )
+    ])[0]
+
+    class LR:
+        fk_edges = [
+            FKEdge("school_spirit", "SchoolSpirit", "school_ability_id",
+                   "school_ability", "SchoolAbility", "school_ability_id")
+        ]
+
+    n = pa._resolve_same_batch_name_refs([ability, spirit], LR())
+
+    assert n == 1
+    assert spirit.extras["fields"]["school_ability_id"] == "<new_ability1_id>"
+    assert spirit.extras["fields"]["spirit_id"] == "Gold Root"
+    assert spirit.consumes_labels == ["new_ability1_id"]
+
+
+def test_prune_and_remap_fields_against_selected_sheet_schema():
+    pa = ParseAgent(cli=_TinyCli())
+    ability_level = pa.parse_baseline("level", [
+        SplitIntent(
+            text="level",
+            table_hint="school_ability",
+            sheet_hint="SchoolAbilityLevel",
+            action="add",
+            fields={
+                "name": "Taixu Sword",
+                "desc": "long text",
+                "school_ability_id": "<new_ability1_id>",
+                "level": 0,
+            },
+        )
+    ])[0]
+    talent_level = pa.parse_baseline("talent", [
+        SplitIntent(
+            text="talent",
+            table_hint="school_talent",
+            sheet_hint="SchoolTalentLevel",
+            action="add",
+            fields={"school_talent_id": "<new_talent_id>", "desc": "damage up", "level": 1},
+        )
+    ])[0]
+
+    n = pa._prune_fields_not_in_schema([ability_level, talent_level])
+
+    assert n == 0
+    assert "name" not in ability_level.extras["fields"]
+    assert "desc" not in ability_level.extras["fields"]
+    assert ability_level.extras["fields"]["school_ability_id"] == "<new_ability1_id>"
+    assert "school_talent_id" not in talent_level.extras["fields"]
+    assert talent_level.extras["fields"]["talent_id"] == "<new_talent_id>"
+    assert talent_level.extras["fields"]["desc"] == "damage up"
+
+
+def test_prune_keeps_fields_when_nothing_matches_schema():
+    pa = ParseAgent(cli=_TinyCli())
+    intent = pa.parse_baseline("school", [
+        SplitIntent(
+            text="school",
+            table_hint="school_ability",
+            sheet_hint="SchoolAbilityLevel",
+            action="add",
+            fields={"unknown_name": "Taixu Sword", "unknown_desc": "long text"},
+        )
+    ])[0]
+
+    assert intent.extras["fields"] == {
+        "unknown_name": "Taixu Sword",
+        "unknown_desc": "long text",
+    }
+
+
+def test_resolve_ordinal_placeholder_by_fk_target_order():
+    pa = ParseAgent(cli=_TinyCli())
+    ability1 = pa.parse_baseline("a1", [
+        SplitIntent(
+            text="a1",
+            table_hint="school_ability",
+            sheet_hint="SchoolAbility",
+            action="add",
+            fields={"school_ability_id": "<new_ability1_id>", "name": "A1"},
+            produces="new_ability1_id",
+        )
+    ])[0]
+    ability2 = pa.parse_baseline("a2", [
+        SplitIntent(
+            text="a2",
+            table_hint="school_ability",
+            sheet_hint="SchoolAbility",
+            action="add",
+            fields={"school_ability_id": "<new_ability2_id>", "name": "A2"},
+            produces="new_ability2_id",
+        )
+    ])[0]
+    spirit = pa.parse_baseline("bind", [
+        SplitIntent(
+            text="bind",
+            table_hint="school_spirit",
+            sheet_hint="SchoolSpirit",
+            action="add",
+            fields={"school_ability_id": "<new_school_ability_id_2>", "spirit_id": 2},
+        )
+    ])[0]
+    edge = FKEdge("school_spirit", "SchoolSpirit", "school_ability_id",
+                  "school_ability", "SchoolAbility", "school_ability_id")
+
+    n = pa._resolve_ordinal_placeholders([ability1, ability2, spirit], [edge])
+
+    assert n == 1
+    assert spirit.extras["fields"]["school_ability_id"] == "<new_ability2_id>"
+    assert spirit.consumes_labels == ["new_ability2_id"]
 
 
 def test_backfill_same_workbook_placeholder_fields_by_shared_header():

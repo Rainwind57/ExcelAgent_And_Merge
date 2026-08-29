@@ -5214,24 +5214,45 @@ class TableAgent:
         except Exception:
             return None
         _exact_row: Optional[tuple] = None
+        _near_row: Optional[tuple] = None
         _hit_tables = 0
+        _near_hit_tables = 0
         _ambiguous = False
         for _c in (_cands or []):
             if _c.get("match_type") != "exact":
                 continue
             _ms = [m for m in (_c.get("matches") or [])
                    if str(m.get("value", "")).strip() == str(name).strip()]
-            if not _ms:
+            if _ms:
+                _hit_tables += 1
+                if _hit_tables > 1:
+                    return None  # 跨多表同名，不自动填
+                if len(_ms) > 1:
+                    _ambiguous = True  # 同表多行同名
+                    continue
+                _exact_row = (_c.get("table_stem"), _c.get("sheet"), _ms[0].get("row"))
                 continue
-            _hit_tables += 1
-            if _hit_tables > 1:
-                return None  # 跨多表同名，不自动填
-            if len(_ms) > 1:
-                _ambiguous = True  # 同表多行同名
+            _near = []
+            for m in (_c.get("matches") or []):
+                cell = str(m.get("value", "")).strip()
+                query = str(name).strip()
+                if not cell or cell == query:
+                    continue
+                if len(cell) <= 2 and len(query) > len(cell) and cell in query:
+                    _near.append(m)
+            if not _near:
                 continue
-            _exact_row = (_c.get("table_stem"), _c.get("sheet"), _ms[0].get("row"))
+            _near_hit_tables += 1
+            if _near_hit_tables > 1:
+                return None
+            if len(_near) > 1:
+                _ambiguous = True
+                continue
+            _near_row = (_c.get("table_stem"), _c.get("sheet"), _near[0].get("row"))
         if _exact_row is None or _ambiguous:
-            return None
+            if _near_row is None or _ambiguous:
+                return None
+            _exact_row = _near_row
         _t_stem, _t_sheet, _row = _exact_row
         _path = self._find_table_by_stem(_t_stem)
         if _path is None:

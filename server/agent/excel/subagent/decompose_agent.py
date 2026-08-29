@@ -1649,12 +1649,16 @@ class DecomposeAgent(LLMSubAgent):
                 "\"produces\":\"new_ability1_level_id\",\"consumes\":{\"school_ability_id\":\"new_ability1_id\"}},"
                 "{\"table\":\"school_spirit\",\"sheet\":\"SchoolSpirit\",\"action\":\"add\","
                 "\"fields\":{\"school_id\":\"<new_school_id>\",\"school_ability_id\":\"<new_ability1_id>\","
-                "\"spirit_buffs[0]\":600001},"
+                "\"spirit_id\":1,\"spirit_buffs[0]\":600001},"
                 "\"produces\":\"\",\"consumes\":{\"school_id\":\"new_school_id\","
                 "\"school_ability_id\":\"new_ability1_id\"}}]\n"
                 "```\n"
                 "Pattern notes: one repeated ability creates one SchoolAbility row plus one SchoolAbilityLevel row; "
-                "each spirit/talent mapping is its own row; never collapse repeated rows into arrays unless the schema column itself is an array column."
+                "each spirit/talent mapping is its own row; never collapse repeated rows into arrays unless the schema column itself is an array column. "
+                "Only write fields that exist in the selected sheet: SchoolAbilityLevel carries level/cost/condition/spell ids, "
+                "while ability names/descriptions belong to SchoolAbility. SchoolTalentLevel uses talent_id, not school_talent_id. "
+                "Integer FK/id columns must receive numeric ids or produced placeholders like <new_ability1_id>; do not put display names "
+                "such as ability names or spirit names into *_id fields."
             )
             examples.append(
                 "### few-shot: modify/delete by natural-language row identity\n"

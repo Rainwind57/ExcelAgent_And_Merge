@@ -767,6 +767,20 @@ class LocatorAgent(LLMSubAgent):
         raw = self._call_llm(prompt, timeout=30)
         if not raw:
             return None
+        if isinstance(raw, dict):
+            for key in ("stem", "table", "table_hint", "result", "answer"):
+                val = raw.get(key)
+                if isinstance(val, str) and val.strip():
+                    raw = val
+                    break
+            else:
+                vals = [v for v in raw.values() if isinstance(v, str) and v.strip()]
+                raw = vals[0] if len(vals) == 1 else ""
+        elif isinstance(raw, list):
+            vals = [v for v in raw if isinstance(v, str) and v.strip()]
+            raw = vals[0] if len(vals) == 1 else ""
+        if not isinstance(raw, str) or not raw.strip():
+            return None
         stem = raw.strip().splitlines()[0].strip()
         # 校验 LLM 输出在表池内(防幻觉)
         pool_check = (candidates or []) + all_tables

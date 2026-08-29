@@ -290,6 +290,11 @@ class Step3ExecuteSubAgent:
                             sub_res.failures.extend(_intent_fails)
                         except Exception:
                             logger.debug("Step3 intent.failures transfer 失败", exc_info=True)
+                    for f in (_intent_fails or []):
+                        if isinstance(f, dict):
+                            _record_failure(
+                                f, default_type="validation_tip",
+                                default_message="Validation warning")
                     all_steps.extend(sub_res.steps or [])
                     if sub_res.result_rows:
                         all_result_rows.extend(sub_res.result_rows)
@@ -308,6 +313,30 @@ class Step3ExecuteSubAgent:
                         "needs_user_fill": list(getattr(sub_res, "needs_user_fill", [])),
                         "partial": getattr(sub_res, "partial", False),
                     })
+                    if getattr(sub_res, "partial", False):
+                        failed_steps = [
+                            s for s in (getattr(sub_res, "steps", None) or [])
+                            if isinstance(s, dict) and s.get("ok") is False
+                        ]
+                        detail = "; ".join(
+                            str(s.get("message") or s.get("reason") or s.get("error") or "")[:120]
+                            for s in failed_steps[:3]
+                        )
+                        _record_failure({
+                            "type": "partial_write",
+                            "table": getattr(sub_res, "table_stem", "") or getattr(it, "table_hint", "") or "",
+                            "sheet": getattr(sub_res, "table_sheet", "") or getattr(it, "sheet_hint", "") or "",
+                            "col": "",
+                            "root_cause": (
+                                "Subtask wrote a partial row; some fields were skipped"
+                                + (f": {detail}" if detail else "")
+                            ),
+                            "attempted_strategies": "execute_partial",
+                            "suggestion": "Review skipped fields before treating the task as complete",
+                            "status": "warning",
+                            "user_reply": None,
+                        }, default_type="partial_write",
+                            default_message="Subtask wrote a partial row")
                     # §低危修复：needs_confirm（行未命中跨表搜索暂停）是"待确认"语义，
                     # 非"失败"。原 `if not sub_res.ok` 把 ok=None（needs_confirm 默认态）
                     # 当 False 走失败分支 → metrics subtasks_fail 误计 + failures 重复
@@ -436,7 +465,10 @@ class Step3ExecuteSubAgent:
                     message="全部子任务执行失败",
                     root_cause=f"{len(sub_tasks)} 个子任务均失败",
                     is_hard=True))
-        ok = not any(e.is_hard for e in errors)
+        ok = (
+            not any(e.is_hard for e in errors)
+            and not any(s.get("ok") is False for s in sub_tasks)
+        )
         return StepResult(
             step_id=STEP3_EXECUTE, ok=ok,
             errors=errors, warnings=warnings,
@@ -449,6 +481,7 @@ class Step3ExecuteSubAgent:
                 "subtasks_fail": sum(1 for s in sub_tasks if s.get("ok") is False),
                 "subtasks_pending": sum(1 for s in sub_tasks if s.get("needs_confirm")
                                          and s.get("ok") is None),
+                "subtasks_partial": sum(1 for s in sub_tasks if s.get("partial")),
                 # 本步 LLM 调用数（差值法，替代原 peek_total 累计值含 Step1/Step2）。
                 # 注：no_llm 短路后实际应为 0；差值法保真，即使短路未完全覆盖也报真实值。
                 "llm_calls": max(0, (self._services.peek_llm_total()

@@ -71,6 +71,46 @@ def _make_validator() -> ValidatorAgent:
     return v
 
 
+def test_resolve_fk_name_to_id_accepts_unique_short_enum_prefix():
+    agent = types.SimpleNamespace()
+    agent._cross_table_search = lambda *_args, **_kwargs: [
+        {
+            "match_type": "exact",
+            "table_stem": "spirit",
+            "sheet": "Spirit",
+            "matches": [{"row": 5, "value": "金"}],
+        }
+    ]
+    agent._find_table_by_stem = lambda _stem: Path("spirit.xlsx")
+    agent._locate_pk_col = lambda _path, _sheet: 1
+    agent.cli = types.SimpleNamespace(
+        read_cell=lambda *_args: types.SimpleNamespace(ok=True, data=1)
+    )
+    agent._resolve_fk_name_to_id = TableAgent._resolve_fk_name_to_id.__get__(agent)
+
+    assert agent._resolve_fk_name_to_id("金灵根", exclude_stem="school_spirit") == 1
+
+
+def test_resolve_fk_name_to_id_rejects_ambiguous_short_enum_prefix():
+    agent = types.SimpleNamespace()
+    agent._cross_table_search = lambda *_args, **_kwargs: [
+        {
+            "match_type": "exact",
+            "table_stem": "spirit",
+            "sheet": "Spirit",
+            "matches": [{"row": 5, "value": "金"}, {"row": 6, "value": "木"}],
+        }
+    ]
+    agent._find_table_by_stem = lambda _stem: Path("spirit.xlsx")
+    agent._locate_pk_col = lambda _path, _sheet: 1
+    agent.cli = types.SimpleNamespace(
+        read_cell=lambda *_args: types.SimpleNamespace(ok=True, data=1)
+    )
+    agent._resolve_fk_name_to_id = TableAgent._resolve_fk_name_to_id.__get__(agent)
+
+    assert agent._resolve_fk_name_to_id("金木灵根", exclude_stem="school_spirit") is None
+
+
 # ── 1. Step3 partial 归正 ────────────────────────────────────────────
 
 def test_do_append_partial_success_restores_ok_true():
