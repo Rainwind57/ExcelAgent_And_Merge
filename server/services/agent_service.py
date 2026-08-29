@@ -88,6 +88,85 @@ def _json_hash(obj) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+# 置信度融合权重：final = w_llm·llm_conf + w_rev·rev_conf + w_val·value_conf
+# 三者总和 = 1.0。LLM 自评权重最高（语义判断主信号），rev/值域为客观校正因子。
+# 规则因子无信号时返回 None，融合时用 llm_conf 兜底，保证"无规则信息不稀释 LLM 自评"。
+_CONF_W_LLM = 0.60
+_CONF_W_REV = 0.25
+_CONF_W_VALUE = 0.15
+
+
+def _rev_confidence(sv_rev: Any, other_revs: list) -> Optional[float]:
+    """修订号因子：被采纳版本相对其他候选的 rev 领先程度，映射到 [0,1]。
+
+    领先 1 档 → 0.6，领先 2 档 → 0.8，领先 ≥3 档 → 0.95；
+    落后 → 0.4（采纳"较旧"版本，负信号拉低）。无 rev 信息 → None（不校正）。
+    """
+    try:
+        sv = float(sv_rev)
+    except (TypeError, ValueError):
+        return None
+    nums = []
+    for r in other_revs:
+        try:
+            nums.append(float(r))
+        except (TypeError, ValueError):
+            continue
+    if not nums:
+        return None
+    lead = sv - max(nums)
+    if lead >= 3:
+        return 0.95
+    if lead == 2:
+        return 0.8
+    if lead == 1:
+        return 0.6
+    return 0.4
+
+
+def _value_confidence(sv_value: Any, col_name: str) -> Optional[float]:
+    """值域因子：被采纳值在该列语义下的合理性，映射到 [0,1]。
+
+    ID/编号列：正整数（>0）合理 → 0.9，否则 0.5。
+    数值列：有限数值合理 → 0.8，否则 0.4。
+    文本列：非空且较长（≥3 字符）合理 → 0.7，否则 0.5。
+    未知列 / 无法判断 → None（不校正）。
+    """
+    col_lower = (col_name or "").lower()
+    if any(kw in col_lower for kw in ("id", "编号", "等级", "level")):
+        try:
+            return 0.9 if float(sv_value) > 0 else 0.5
+        except (TypeError, ValueError):
+            return 0.5
+    try:
+        fv = float(sv_value)
+        if fv != fv or fv in (float("inf"), float("-inf")):
+            return 0.4
+        return 0.8
+    except (TypeError, ValueError):
+        pass
+    if sv_value is not None and len(str(sv_value).strip()) >= 3:
+        return 0.7
+    if sv_value is not None and str(sv_value).strip():
+        return 0.5
+    return None
+
+
+def _fuse_confidence(llm_conf: float, rev_conf: Optional[float],
+                     value_conf: Optional[float]) -> float:
+    """融合 LLM 自评 + 修订号因子 + 值域因子为最终置信度，截断到 [0,1]。
+
+    final = w_llm·llm_conf + w_rev·rev_conf + w_val·value_conf
+    规则因子为 None（无信号）时以 llm_conf 替代，确保无规则信息时不改变 LLM 自评。
+    """
+    r = llm_conf if rev_conf is None else rev_conf
+    v = llm_conf if value_conf is None else value_conf
+    fused = (_CONF_W_LLM * llm_conf
+             + _CONF_W_REV * r
+             + _CONF_W_VALUE * v)
+    return round(min(1.0, max(0.0, fused)), 4)
+
+
 class AgentService:
     """无状态的 Agent 服务包装器。
 
@@ -3474,11 +3553,20 @@ class AgentService:
                 conf = float(obj.get("confidence", 0.5))
             except (TypeError, ValueError):
                 conf = 0.5
+            # 融合规则因子：rev 领先度 + 值域合理性
+            other_revs = [
+                (version_meta or {}).get(fn, {}).get("rev")
+                for fn in versions if fn != sv
+            ]
+            rev_conf = _rev_confidence(
+                (version_meta or {}).get(sv, {}).get("rev"), other_revs)
+            value_conf = _value_confidence(versions.get(sv), col_name)
+            fused_conf = _fuse_confidence(conf, rev_conf, value_conf)
             return {
                 "suggested_version": sv,
                 "suggestion": str(versions.get(sv, "")),
                 "reasoning": str(obj.get("reasoning", "")),
-                "confidence": conf,
+                "confidence": fused_conf,
             }
         except Exception:
             return None
@@ -3558,11 +3646,19 @@ class AgentService:
                     conf = float(obj.get("confidence", 0.5))
                 except (TypeError, ValueError):
                     conf = 0.5
+                other_revs = [
+                    (version_meta or {}).get(fn, {}).get("rev")
+                    for fn in versions if fn != sv
+                ]
+                rev_conf = _rev_confidence(
+                    (version_meta or {}).get(sv, {}).get("rev"), other_revs)
+                value_conf = _value_confidence(
+                    versions.get(sv), items[idx].get("col_name", ""))
                 results[idx] = {
                     "suggested_version": sv,
                     "suggestion": str(versions.get(sv, "")),
                     "reasoning": str(obj.get("reasoning", "")),
-                    "confidence": conf,
+                    "confidence": _fuse_confidence(conf, rev_conf, value_conf),
                 }
             return results
         except Exception:

@@ -320,25 +320,43 @@ class ValidatorAgent(LLMSubAgent):
         try:
             if getattr(intent, "action", "") != "add":
                 return issues
+            raw_lower = (raw or "").lower()
+            # 触发条件：指令含引号（用户显式给过名字/描述值）或含显式赋值关键词
+            # （发送人/发送时间/奖励 等）。无此信号时用户可能本就没要求这些列，不报缺。
             quoted = any(q in (raw or "") for q in ("'", '"', "「", "」")) \
                 or any(kw in (raw or "")
-                       for kw in ("活动描述", "活动名称", "描述为", "名称为"))
+                       for kw in ("活动描述", "活动名称", "描述为", "名称为",
+                                  "发送人", "发送时间", "有效期", "奖励",
+                                  "开始时间", "结束时间", "图标", "邮件类型"))
             if not quoted:
                 return issues
             written_norm = {(str(k) or "").split(":")[0].strip().lower()
                             for k in fields.keys() if k}
-            kws = ("名称", "描述", "名")
+            # ① 名称/描述/名 类列：保持原 Pack3 契约——raw 含引号即视为用户给了
+            #    名字/描述值，缺失即报（保守，宁可多报不可漏半成品）。
+            name_kws = ("名称", "描述", "名")
+            # ② 显式赋值列：raw 中出现列名（用户明确给了该列值）才报缺。
+            explicit_kws = ("发送人", "发送时间", "时间", "奖励", "图标", "邮件类型",
+                            "开始时间", "结束时间", "有效期")
             for h in headers:
                 if not h:
                     continue
                 name = str(h).split(":")[0].strip()
-                if not name or not any(kw in name for kw in kws):
+                if not name:
                     continue
                 if name.lower() in written_norm:
                     continue
+                _is_name_kw = any(kw in name for kw in name_kws)
+                _is_explicit_kw = any(kw in name for kw in explicit_kws)
+                if not _is_name_kw and not _is_explicit_kw:
+                    continue
+                # 显式赋值列需 raw 出现列名才报（防表头有「奖励」列但用户没提误报）
+                if _is_explicit_kw and not _is_name_kw \
+                        and name.lower() not in raw_lower:
+                    continue
                 issues.append(Issue(
                     col=name, issue_type=IssueType.MISSING_REQUIRED.value,
-                    expected=f"业务必填列「{name}」（指令含引号说明用户已给名称/描述值，LLM 漏产）",
+                    expected=f"业务必填列「{name}」（指令明确给出该列值，LLM 漏产）",
                     suggestion=f"补填 {name} 列值；或跳过让 Step4 induce_anti_patterns 标失败",
                 ))
             if issues:

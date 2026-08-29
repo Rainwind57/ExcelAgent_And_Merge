@@ -397,12 +397,23 @@ class ParseAgent:
         # 字段集是他人子集」的影子（保留字段最全的 canonical），再叠 _drop_empty_
         # add_shadows 的空壳守卫。仅同 sheet 组内互比，不同 sheet/不同定位值绝不误杀。
         nl_intents = self._dedupe_same_sheet_shadows(nl_intents)
+        # 孤立全空壳 add 过滤：LLM 面对候选池噪声表（如 item）会产 fields 全空的
+        # add（只挂 produces=new_xxx_id 占位）。这类空壳既无字段可写，又没被本批
+        # 其他 intent 消费（不是任何 FK 链前置），写盘必失败。框架级判据：
+        # ① fields 无任何非空值；② 本批无 intent 消费其 produces。同时满足 → 删。
+        nl_intents = self._drop_orphan_empty_adds(nl_intents)
         # §P1 缺陷A 修复：灌值守卫 choke point 化。_assemble 是 DecomposeAgent LLM 路径
         # 的汇合点，所有 SplitIntent→NLIntent 在此统一过 _scrub_narrative_scalar 一道闸，
         # 兜住 LLM 退化把长叙述灌进数字/布尔列的 intent（清空灌值字段，不丢整条）。
         # 与 parse_baseline 的同方法配合，覆盖 Step1 全部子路径。
         self._scrub_narrative_scalar(nl_intents)
         self._resolve_same_batch_name_refs(nl_intents, locator_result)
+        # 既有表 FK 中文名→id 解析：LLM 把「金灵根」「太虚剑意」等中文名直接填进
+        # int 型 FK 列（spirit_id/school_ability_id），但 spirit/school_ability 是
+        # **已存在**的表（非本批 producer）。_resolve_same_batch_name_refs 只覆盖
+        # 本批 producer 的 name refs，这里补既有表：按 FK 边定位目标表 → 精确名匹配
+        # 唯一行 → 改写为该行 PK 值。命中唯一才改，多命中/无命中保留原文交 Step2 ask。
+        self._resolve_existing_name_fk(nl_intents, locator_result)
         self._prune_fields_not_in_schema(nl_intents)
         if locator_result is not None:
             self._backfill_missing_fk_fields(
@@ -616,6 +627,68 @@ class ParseAgent:
                     m[ParseAgent._field_name_norm(src)] = canon
         return m
 
+    @staticmethod
+    def _drop_orphan_empty_adds(intents: list[NLIntent]) -> list[NLIntent]:
+        """删孤立全空壳 add intent（框架级，防噪声表空壳落盘）。
+
+        判据：add 且 fields 无任何非空值（None/空串/占位符都算空），且本批
+        无其他 intent 消费其 produces（非 FK 链前置）。两者同时满足才删——
+        被消费的空壳（如纯 producer 占位行）保留，交下游拓扑回填。
+        """
+        if not intents:
+            return intents
+        # 仅当本批 >1 条（跨表上下文）才做孤立空壳过滤：单条空 add 可能是
+        # 用户单表新增（如「新增 quest」），空 fields 交 Step2 补，不能删。
+        if len(intents) <= 1:
+            return intents
+
+        def _has_real_value(fields) -> bool:
+            if not isinstance(fields, dict):
+                return False
+            for v in fields.values():
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s == "":
+                    continue
+                if s.startswith("<") and s.endswith(">"):
+                    continue  # 占位符 = 待补，不算实值
+                return True
+            return False
+
+        # 被消费的 produces 标签集合（跨 intent，供"孤立"判定）
+        consumed: set[str] = set()
+        for it in intents:
+            cl = getattr(it, "consumes_labels", None) or []
+            for c in cl:
+                consumed.add(str(c).strip())
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            import re as _re
+            for v in fields.values():
+                if isinstance(v, str):
+                    for m in _re.finditer(r"<\s*([^>]+?)\s*>", v):
+                        consumed.add(m.group(1).strip())
+
+        kept: list = []
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                kept.append(it)
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields")
+            if _has_real_value(fields):
+                kept.append(it)
+                continue
+            label = getattr(it, "produces_label", None) or \
+                ((getattr(it, "extras", None) or {}).get("produces"))
+            label_s = str(label).strip() if label else ""
+            if label_s and label_s in consumed:
+                kept.append(it)  # 被消费的空壳 producer，保留供拓扑
+                continue
+            # 孤立空壳 → 删
+        return kept
+
     def _resolve_same_batch_name_refs(self, intents: list[NLIntent],
                                       locator_result: Optional[LocatorResult]) -> int:
         """Rewrite same-batch display-name FK values to produced placeholders.
@@ -716,6 +789,142 @@ class ParseAgent:
                 n += 1
         if n:
             self._think(f"Step1 same-batch name refs resolved: {n}")
+        return n
+
+    def _resolve_existing_name_fk(self, intents: list[NLIntent],
+                                  locator_result: Optional[LocatorResult]) -> int:
+        """既有表 FK 中文名→id 解析（框架级，覆盖 spirit/ability 等已存在表）。
+
+        场景：LLM 把「金灵根」「太虚剑意」等中文名直接填进 int 型 FK 列
+        （school_spirit.spirit_id / school_ability_id）。这些目标表（spirit/
+        school_ability）是**已存在**的表，不是本批 producer，_resolve_same_batch_
+        name_refs 不覆盖。这里按 FK 边定位目标表 → 精确名匹配唯一行 → 改写为
+        该行 PK 值。命中唯一才改；多命中/无命中保留原文交 Step2 ask（不误填）。
+        """
+        if not intents or self._cli is None:
+            return 0
+        # FK 边索引：consumer (stem,sheet,col_norm) → target (to_stem, to_sheet)
+        edge_targets: dict[tuple[str, str, str], tuple[str, str]] = {}
+        for edge in (getattr(locator_result, "fk_edges", None) or []):
+            from_stem = (getattr(edge, "from_stem", "") or "").lower()
+            from_sheet = (getattr(edge, "from_sheet", "") or "").lower()
+            from_col = str(getattr(edge, "from_column", "") or "").split(":")[0]
+            to_stem = (getattr(edge, "to_stem", "") or "").lower()
+            to_sheet = (getattr(edge, "to_sheet", "") or "").lower()
+            if from_stem and from_sheet and from_col and to_stem:
+                edge_targets[(from_stem, from_sheet,
+                              self._field_name_norm(from_col))] = (to_stem, to_sheet)
+
+        # 目标表数据缓存：stem → 解析后的 (rows, resolved_sheet)，懒加载
+        _data_cache: dict[tuple[str, str], tuple[list, str]] = {}
+
+        def _table_rows(stem: str, sheet: str) -> tuple[list, str]:
+            key = (stem, sheet)
+            if key in _data_cache:
+                return _data_cache[key]
+            rows: list = []
+            resolved = sheet
+            try:
+                tables = {p.stem.lower(): p for p in self._cli.list_tables()}
+                path = tables.get(stem)
+                if path is not None:
+                    sheets = self._cli.get_sheets(path) or []
+                    biz = [s for s in sheets
+                           if s and "说明" not in s and "CONFIG" not in s.upper()]
+                    if not sheet:
+                        resolved = biz[0] if biz else ""
+                    else:
+                        # sheet 存在性 + 大小写不敏感回退（FK 边运行时推导的
+                        # to_sheet 可能是小写 'spirit'，真实 sheet 是 'Spirit'）
+                        hit = next((s for s in sheets if s == sheet), None)
+                        if hit is None:
+                            hit = next((s for s in sheets
+                                        if s.lower() == sheet.lower()), None)
+                        if hit is None and biz:
+                            hit = next((s for s in biz
+                                        if s.lower() == sheet.lower()), biz[0])
+                        resolved = hit or sheet
+                    rows = self._cli.read_sheet(path, resolved) or []
+            except Exception:
+                rows = []
+            _data_cache[key] = (rows, resolved)
+            return rows, resolved
+
+        # 名称列候选：name/名称/名字/title/描述（取第一个命中的非空值）
+        def _name_cols(headers) -> list[int]:
+            idxs = []
+            for i, h in enumerate(headers or []):
+                hn = self._field_name_norm(h)
+                if hn and ("name" in hn or "title" in hn
+                           or "名称" in str(h) or "名字" in str(h)):
+                    idxs.append(i)
+            return idxs
+
+        n = 0
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            for col, value in list(fields.items()):
+                if not isinstance(value, str):
+                    continue
+                value_s = value.strip()
+                if not value_s:
+                    continue
+                if value_s.startswith("<") and value_s.endswith(">"):
+                    # LLM 偶从 few-shot 抄来 <resolved_from_中文名> 占位符，
+                    # 剥出内部中文名继续按既有表解析。
+                    inner = value_s[1:-1].strip()
+                    _m = re.match(r"resolved_from_(.+)$", inner)
+                    if _m:
+                        value_s = _m.group(1).strip()
+                    else:
+                        continue  # 其他占位符（<new_xxx>）交拓扑，不处理
+                if not any('\u4e00' <= ch <= '\u9fff' for ch in value_s):
+                    continue  # 非中文名，跳过（数字/英文 id 不动）
+                col_n = self._field_name_norm(col)
+                if "id" not in col_n and "编号" not in str(col):
+                    continue  # 仅处理 id/编号类列
+                target = edge_targets.get((stem, sheet, col_n))
+                if not target:
+                    continue
+                to_stem, to_sheet = target
+                rows, resolved_sheet = _table_rows(to_stem, to_sheet)
+                if not rows:
+                    continue
+                headers = self._headers_for(to_stem, resolved_sheet) or []
+                name_idx = _name_cols(headers)
+                if not name_idx:
+                    continue
+                # 精确名匹配唯一行 → PK 是首列（或含 id 的首个列）
+                # 匹配策略：① 精确相等 ② 双向子串（表名「金」是用户值「金灵根」
+                # 的子串，或用户值「金」是表名「金灵根」的子串）。取全部命中，
+                # 唯一才解析；多命中/无命中保留原文交 Step2 ask。
+                matched: list[int] = []
+                for ri, r in enumerate(rows):
+                    for ni in name_idx:
+                        cell = str(r[ni]).strip() if ni < len(r) and r[ni] is not None else ""
+                        if not cell:
+                            continue
+                        if cell == value_s or cell in value_s or value_s in cell:
+                            matched.append(ri)
+                            break
+                if len(matched) != 1:
+                    continue  # 多命中/无命中 → 保留原文交 Step2 ask
+                row = rows[matched[0]]
+                pk = None
+                if row:
+                    pk = row[0]
+                if pk is None or str(pk).strip() == "":
+                    continue
+                fields[col] = pk
+                n += 1
+        if n:
+            self._think(f"Step1 existing-name FK resolved: {n}")
         return n
 
     def _schema_field_key_map(self, stem: str, sheet: str) -> dict[str, str]:
@@ -883,20 +1092,35 @@ class ParseAgent:
         """同一 (action,stem,sheet) 组内去稀疏影子 intent（Step1 确定性修复）。
 
         场景：LLM 单 prompt 面对大候选池/同 workbook 多 sheet 时，会把同一目标
-        sheet 拆成两版 add——① 仅含占位符的稀疏影子（如 MailTemplate 只写
-        「模板ID=<new_template_id>」），② 真实字段的 canonical 版（含 title/content）。
-        两版同 sheet 同 action 不同字段，现有 _dedupe_nl_intents / _drop_empty_add_shadows
-        都不去（字段签名不同），导致下游 Step3 对该 sheet 写两行 → 重复/冲突。
+        sheet 拆成两版 add——① 稀疏影子（MailTemplate 只写主键，标题/内容空；
+        或只写占位符 <new_xxx_id>），② 真实字段的 canonical 版（含 title/content）。
+        两版同 sheet 同 action，现有 _dedupe_nl_intents / _drop_empty_add_shadows
+        都不去（字段签名不同），导致 Step3 对该 sheet 写两行——影子先写盘留
+        空行/占行，canonical 再写撞主键冲突。
 
         判据（保守，防误杀）：
           - 组内字段键先经 _field_canon_map 做中英桥（"模板ID"/"template_id"→同键），
             cli 不可用时退回纯文本归一。
-          - 对组内每对 intent，若「A 的字段键集合是 B 的子集」且「A 的非占位
-            值都在 B 中同键同值出现」→ A 是 B 的稀疏影子（或完全重复），丢弃 A。
-            B 的同键值空也视为一致——B 是 canonical 版本，允许目标列待 Step2 补。
+          - 影子判定：A 的「非空实值」集合是 B 的「非空实值」集合的子集，
+            且每个非空实值在 B 中同键同值（或 B 该键为空/占位符，视为待补）。
+            空串、None、<占位符> 一律忽略——它们是"待补"哨兵，不参与影子判定。
+            这样「{模板ID:30019, 标题:'', 内容:''}」是「{模板ID:<ph>, 标题:'月华…',
+            内容:'…'}」的影子（影子只有主键实值，canonical 有全部实值）。
           - 仅 add 意图参与；set/delete 同 sheet 多条是合法多行定位，绝不互删。
           - 迭代剔除直到无影子；仅同 sheet 组内互比，跨 sheet 绝不互删。
         """
+
+        def _real(v) -> str | None:
+            """返回非空实值（str），空串/None/占位符返回 None（视为待补）。"""
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s:
+                return None
+            if s.startswith("<") and s.endswith(">"):
+                return None
+            return s
+
         if not intents:
             return intents
         kept = list(intents)
@@ -926,31 +1150,54 @@ class ParseAgent:
                     fields = (getattr(kept[i], "extras", None) or {}).get("fields") or {}
                     if not isinstance(fields, dict):
                         fields = {}
+                    # 先删本表不存在的幻觉键（如 MailTemplate 里的「全服邮件ID」），
+                    # 否则影子判定的键集合比较会被幻觉键污染（与 _prune_fields_not_
+                    # in_schema 同口径，这里独立兜底保证本方法可单独使用）。
                     canon = self._field_canon_map(
                         getattr(kept[i], "table_hint", "") or "",
                         getattr(kept[i], "sheet_hint", "") or "")
+                    valid_keys = set(canon.values()) if canon else None
                     norm: dict[str, object] = {}
                     for k, v in fields.items():
                         nk = ParseAgent._field_name_norm(k)
-                        norm[canon.get(nk, nk)] = v
+                        canon_key = canon.get(nk, nk)
+                        if valid_keys is not None and canon_key not in valid_keys:
+                            continue
+                        norm[canon_key] = v
                     entries.append((i, norm))
                 for ai, (ia, fa) in enumerate(entries):
                     for bi, (ib, fb) in enumerate(entries):
                         if ai == bi or ib in drop:
                             continue
-                        ka, kb = set(fa.keys()), set(fb.keys())
-                        if not (ka <= kb):  # a 必须是 b 的子集（含相等）
+                        # 提供的列集合：非空串/非 None 的键（占位符 <ph> 也算
+                        # "提供了该列"，只是值为占位符待解析）。全空键不算。
+                        def _provided(d: dict) -> set:
+                            return {k for k, v in d.items()
+                                    if v is not None and str(v).strip() != ""}
+                        a_keys = _provided(fa)
+                        b_keys = _provided(fb)
+                        if not a_keys:
+                            continue  # a 全空影子，不在这里判（避免误删）
+                        # a 的列集合必须是 b 的真子集（a 严格更稀疏）才判影子，
+                        # 防止 canonical 版被反向误删。
+                        if not (a_keys < b_keys):
                             continue
-                        # a 的每个非占位值都要在 b 中同键同值出现（b 同键值空也视为
-                        # 一致——b 是 canonical 版本，允许目标列待 Step2 补，但不能
-                        # 因此被稀疏影子顶替）
+                        # a 的每个非占位实值都要在 b 中同键同值（b 该键空/占位 =
+                        # 待补，不算冲突）。
                         shadow = True
-                        for k, v in fa.items():
-                            sv = str(v).strip()
-                            if sv.startswith("<") and sv.endswith(">"):
+                        for k, av in fa.items():
+                            if av is None or str(av).strip() == "":
+                                continue
+                            av_s = str(av).strip()
+                            if av_s.startswith("<") and av_s.endswith(">"):
                                 continue
                             bv = fb.get(k)
-                            if bv is None or str(bv).strip() != sv:
+                            if bv is None or str(bv).strip() == "":
+                                continue
+                            bv_s = str(bv).strip()
+                            if bv_s.startswith("<") and bv_s.endswith(">"):
+                                continue
+                            if bv_s != av_s:
                                 shadow = False
                                 break
                         if shadow:

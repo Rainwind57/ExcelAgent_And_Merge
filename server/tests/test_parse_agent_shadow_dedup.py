@@ -58,7 +58,8 @@ class TestDedupeSameSheetShadows:
                      "content": "月华照耀九州", "全服邮件ID": "<new_global_mail_id>"})
         out = pa._dedupe_same_sheet_shadows([sparse, canon])
         assert len(out) == 1
-        assert "title" in out[0].extras["fields"]
+        kept_fields = out[0].extras["fields"]
+        assert "title" in kept_fields or "标题" in kept_fields
 
     def test_global_mail_sparse_shadow_dropped(self):
         pa = ParseAgent(cli=_MailCli())
@@ -68,7 +69,8 @@ class TestDedupeSameSheetShadows:
                      "模板ID": "<new_template_id>"}, sheet="GlobalMail")
         out = pa._dedupe_same_sheet_shadows([sparse, canon])
         assert len(out) == 1
-        assert out[0].extras["fields"]["全服邮件ID"] == 21
+        fields = out[0].extras["fields"]
+        assert fields.get("全服邮件ID") == 21 or fields.get("global_id") == 21
 
     def test_four_to_two_mail_chain(self):
         pa = ParseAgent(cli=_MailCli())

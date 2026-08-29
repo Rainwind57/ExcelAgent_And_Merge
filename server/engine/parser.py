@@ -7,10 +7,9 @@ import openpyxl
 
 # 主要用于Excel文件的读取以及文件的分组
 
-# M7-3: 大表公式/批注读取阈值——超过此大小的文件跳过 read_formulas_and_comments，
-# 走无公式 fallback（大表通常纯数据，无公式列；跳过省 openpyxl 6s/文件开销）。
-# big_data.xlsx(2.5MB) 命中跳过；item/ability(<500KB) 正常读公式/批注。
-_FORMULA_SKIP_THRESHOLD = 500 * 1024
+# M7-3: 大表公式/批注读取优化——不再按文件大小一刀切，改用 zip 快扫
+# _has_formula_part / _has_comments_part 探测：确认无公式且无批注才跳过完整读取，
+# 省 openpyxl 6s/文件开销；有任一者仍走完整读取，保证公式/批注语义不丢。
 
 
 def _fix_calamine_value(v: Any) -> Any:
@@ -120,6 +119,26 @@ def _has_comments_part(file_path: str) -> bool:
         return True
 
 
+def _has_formula_part(file_path: str) -> bool:
+    """zip 字节快扫探测 xlsx 是否含任何公式单元格（<f> 标签）。
+
+    10w 行文件 ~0.05s vs openpyxl 全量 load ~6s，公式标签不可能出现在
+    转义后的文本值里（文本 `&lt;f`），无假阳性。扫描失败保守返回 True
+    （视为有公式，走完整读取，绝不静默漏公式语义）。
+    """
+    try:
+        import zipfile
+        with zipfile.ZipFile(file_path) as zf:
+            for name in zf.namelist():
+                if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                    data = zf.read(name)
+                    if b"<f>" in data or b"<f " in data or b"<f/>" in data:
+                        return True
+            return False
+    except Exception:
+        return True
+
+
 def read_formulas_and_comments(file_path: str) -> Tuple[Dict[str, List[List[Any]]], Dict[str, List[List[Any]]]]:
     """一次加载同时读取公式文本与批注（M7-2 合并加载，3 次→2 次）。
 
@@ -127,15 +146,16 @@ def read_formulas_and_comments(file_path: str) -> Tuple[Dict[str, List[List[Any]
     单遍 iter_rows 即可同时收集两者，避免 read_formulas + read_comments 各加载一次。
     注：批注需 Cell.comment，read_only 不可用，故非流式。
 
-    M7-3: 大表（>= _FORMULA_SKIP_THRESHOLD）跳过公式/批注读取返回空——openpyxl 解析
-    10w 行 XML 需 6s/文件，大表通常纯数据无公式列，跳过后 compare 走无公式 fallback
-    （公式列当普通值列处理）行为正确。小表（item/ability 等 <500KB）正常读取保公式列语义。
+    M7-3: 跳过公式/批注读取的条件由"文件大小"改为"zip 快扫确认无公式/批注"——
+    用 _has_formula_part（<f> 标签，10w 行 ~0.05s）与 _has_comments_part 探测，
+    确认两者都不存在才返回空、走无公式 fallback。这样大表里若真含公式/批注，
+    仍走完整读取保公式列语义，而不是按大小一刀切漏掉真冲突（安全隐患）。
     返回: (formulas, comments)，结构与各自单独函数一致。
 
     优化：先 zip 探测批注部件，无批注时走流式 read_only 读公式（比非流式快），
     批注返回空；流式失败退回非流式（保行为一致）。
     """
-    if os.path.getsize(file_path) >= _FORMULA_SKIP_THRESHOLD:
+    if not _has_formula_part(file_path) and not _has_comments_part(file_path):
         return {}, {}
     # 无批注部件：流式读公式（read_only 快），批注返回空；失败退回非流式
     if not _has_comments_part(file_path):

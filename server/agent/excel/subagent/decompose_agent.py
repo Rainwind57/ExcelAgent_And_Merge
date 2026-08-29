@@ -425,6 +425,26 @@ class DecomposeAgent(LLMSubAgent):
                 self.add_thinking("细分",
                     f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
                 intents = fb
+        # §框架级：段级大候选池单 prompt 超时产空（如 school 段 5 表 schema 过大），
+        # splitter 模板又不覆盖新链型 → 该段整段漏产。这里对裁剪后候选逐表单表
+        # 重拆（单表小 schema 不易超时），把每张真实动作主语表拆出来。仅产空时
+        # 触发，不叠正常路径。限每表 1 次 + 候选 ≤6 防爆。
+        if not intents and candidates:
+            _per_table = candidates[:6]
+            self.add_thinking("细分",
+                f"DecomposeAgent 段级超时产空,逐表单表重拆 {len(_per_table)} 候选")
+            for _cand in _per_table:
+                try:
+                    _rit, _ = self._decompose_single_prompt(
+                        seg, [_cand], fk_block, per_to, column_signal=column_signal)
+                except Exception:  # noqa: BLE001
+                    _rit = []
+                if _rit:
+                    intents.extend(_rit)
+                    self.add_thinking("细分",
+                        f"单表重拆 {getattr(_cand, 'stem', '')} 产 {len(_rit)} 条")
+                if len(intents) >= 20:  # 安全上限，防无限叠
+                    break
         # §速度1：删段级 backfill —— 原每段产空后都跑"缺表对账+单表重拆"串行 LLM，
         # 多段时累计 backfill × N × per_to 串行致墙钟爆（实测 N=10 段 backfill 占大半）。
         # 段级 backfill 职责上移到 ParseAgent._assemble 全局一次对账+一次重拆：
@@ -452,52 +472,93 @@ class DecomposeAgent(LLMSubAgent):
         if not seg or not candidates or len(candidates) <= 3:
             return list(candidates)
         seg_lower = seg.lower()
-        # 1. column_signal hits stem（按命中列数加权）
-        sig_stems: dict[str, int] = {}  # stem -> 命中列数
+        # 1. column_signal hits stem（按命中列数加权）。
+        #    §只统计强信号源（substring/exact/alias）：column_reverse 是列名反向
+        #    索引命中（如「模型」反查 model_prefab 表 9 个含"模型"的列），是弱
+        #    信号，不计入 sig_stems——否则噪声表凭大量弱命中挤掉真正的动作主语
+        #    （school_ability 是 FK 目标，无列信号命中，会被 model_prefab 挤出）。
+        sig_stems: dict[str, int] = {}  # stem -> 强信号命中列数
+        _WEAK_SRC = {"column_reverse", "column_extract"}
         if column_signal is not None:
             for h in getattr(column_signal, "hits", []) or []:
                 stem = getattr(h, "stem", "") or ""
-                if stem:
-                    sig_stems[stem.lower()] = sig_stems.get(stem.lower(), 0) + 1
+                _src = (getattr(h, "source", "") or "").lower()
+                if not stem:
+                    continue
+                if _src in _WEAK_SRC:
+                    continue
+                sig_stems[stem.lower()] = sig_stems.get(stem.lower(), 0) + 1
         # 2. 段文本子串匹配 stem
         text_stems: set[str] = set()
         for c in candidates:
             stem = (getattr(c, "stem", "") or "").lower()
             if stem and stem in seg_lower:
                 text_stems.add(stem)
-        # 3. FK 边端点表
+        # 2b. 高置信度语义命中（alias/substring 级）：locate 已用别名把「门派」
+        # 路由到 school、「神通」路由到 ability，这类 conf≥0.8 的候选是动作主语
+        # 直接命中（或强语义命中），比 stem 英文子串匹配（中文文本必然 miss）可靠。
+        # 计入 direct_hits 供 FK 裁剪与保留，替代纯文本子串的漏判。
+        semantic_stems: set[str] = set()
+        for c in candidates:
+            _lvl = (getattr(c, "level", "") or "").lower()
+            _conf = getattr(c, "confidence", 0.0) or 0.0
+            if _conf >= 0.8 and _lvl not in ("column_extract", "column_reverse",
+                                             "fk_inferred", "fk_expanded"):
+                semantic_stems.add((getattr(c, "stem", "") or "").lower())
+        # 3. FK 边端点表——只保「与段内命中表相关」的端点，不收全局噪声链
+        # （如「战斗模型」命中 combat 后，combat→space 的 FK 会把 space 也拉进来，
+        # 而 space 与动作主语无关）。先算文本/列名/语义命中表，再只收这些命中表
+        # 参与的 FK 边两端。
+        direct_hits = set(sig_stems) | text_stems | semantic_stems
         fk_stems: set[str] = set()
         for e in fk_edges or []:
-            for attr in ("from_stem", "to_stem", "from_table", "to_table"):
-                v = getattr(e, attr, "") or ""
-                if v:
-                    fk_stems.add(v.lower())
-        # 合并命中表
-        hit_stems = set(sig_stems) | text_stems | fk_stems
+            from_stem = (getattr(e, "from_stem", "") or "").lower()
+            to_stem = (getattr(e, "to_stem", "") or "").lower()
+            if not direct_hits:
+                break
+            if from_stem in direct_hits:
+                fk_stems.add(to_stem)
+            if to_stem in direct_hits:
+                fk_stems.add(from_stem)
+        # 无直接命中时，回退保留全部 FK 端点（保链路）
+        if not direct_hits:
+            for e in fk_edges or []:
+                for attr in ("from_stem", "to_stem"):
+                    v = getattr(e, attr, "") or ""
+                    if v:
+                        fk_stems.add(v.lower())
+        # 合并命中表（semantic 高置信命中优先保留）
+        hit_stems = set(sig_stems) | text_stems | fk_stems | semantic_stems
         if not hit_stems:
             return list(candidates)
-        # §P0 候选超量裁剪：>5 表按命中强度取 top 3 + FK 依赖表全保
+        # §P0 候选超量裁剪：>5 表按命中强度取 top N + FK 依赖表全保
         if len(candidates) > 5:
-            # FK 依赖表无条件保留（保链路完整性）
-            fk_cands = [c for c in candidates
-                        if (getattr(c, "stem", "") or "").lower() in fk_stems]
-            # 非FK表按命中强度（列信号命中数 + 段文本子串命中）排序取 top 3
-            non_fk_cands = [c for c in candidates
-                            if (getattr(c, "stem", "") or "").lower() not in fk_stems]
+            # 排序策略（框架级，不绑业务词）：
+            #   - 语义命中（alias 级 conf≥0.8）> 列名信号命中 > FK 一跳目标 > 其他
+            #   - 语义命中里按候选原始置信度排序（action 主语最相关）
+            #   - FK 一跳目标（被语义命中表直接引用的表）次之——这是真正的
+            #     链路必需表（如 school 引用 school_ability），优先于远端传递表
+            #     （school_spirit 引用 spirit 是二跳，spirit 是已有表不需 LLM 拆）
             def _strength(c):
                 _s = (getattr(c, "stem", "") or "").lower()
                 _sig = sig_stems.get(_s, 0)
                 _txt = 1 if _s in text_stems else 0
-                # 弱信号（column_extract 级）降权，防 model_id 跨表共享列拉无关表
+                _sem = 4 if _s in semantic_stems else 0
+                # FK 一跳目标（被语义命中表直接引用）是链路必需节点，权重高于
+                # 语义噪声表（如「模型」alias 命中 model_prefab 但非动作主语）。
+                # 仅对非语义命中的 FK 目标加权（语义命中的 FK 目标已由 _sem 覆盖）。
+                _fk1 = 3 if (_s in fk_stems and _s not in semantic_stems) else 0
                 _lvl = (getattr(c, "level", "") or "").lower()
-                _lvl_w = 0 if _lvl in ("column_extract", "column_reverse") else 1
-                return (_sig * 2 + _txt + _lvl_w, getattr(c, "confidence", 0))
-            non_fk_cands.sort(key=_strength, reverse=True)
-            pruned = fk_cands + non_fk_cands[:max(0, 3 - len(fk_cands))]
+                _lvl_w = 0 if _lvl in ("column_extract", "column_reverse",
+                                        "fk_inferred", "fk_expanded") else 1
+                return (_sem + _fk1 + _sig + _txt + _lvl_w,
+                        getattr(c, "confidence", 0.0) or 0.0)
+            ranked = sorted(candidates, key=_strength, reverse=True)
+            pruned = ranked[:5]
             # 至少保 2 表防误裁
             if len(pruned) < 2:
-                pruned = non_fk_cands[:3] + fk_cands
-            return pruned[:5] if len(pruned) > 5 else pruned
+                pruned = candidates[:3]
+            return pruned
         pruned = [c for c in candidates
                   if (getattr(c, "stem", "") or "").lower() in hit_stems]
         # 裁剪后 <2 表保链路不破：回退原候选
@@ -1675,10 +1736,11 @@ class DecomposeAgent(LLMSubAgent):
                 "\"locator_field\":\"name\",\"locator_value\":\"TEST\","
                 "\"fields\":{},\"produces\":\"\",\"consumes\":{}},"
                 "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbilityLevel\",\"action\":\"delete\","
-                "\"locator_field\":\"school_ability_id\",\"locator_value\":\"<resolved_from_TEST>\","
+                "\"locator_field\":\"school_ability_id\",\"locator_value\":\"3333\","
                 "\"fields\":{},\"produces\":\"\",\"consumes\":{}}]\n"
                 "```\n"
-                "Pattern notes: if an ID is known from existing data, use that ID; otherwise preserve the natural-language locator and let Step2/row resolver confirm it."
+                "Pattern notes: if an ID is known from existing data, use that ID; otherwise preserve the natural-language locator and let Step2/row resolver confirm it. "
+                "Never write <resolved_from_...> placeholders into fields—that is not a real value."
             )
         return "\n\n".join(examples)
 

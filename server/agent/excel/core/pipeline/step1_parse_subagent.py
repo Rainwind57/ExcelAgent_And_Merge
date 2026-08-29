@@ -96,6 +96,22 @@ def _clip(s: str, width: int) -> str:
     return out + "…"
 
 
+def _intent_fields(it: Any) -> list[dict]:
+    """NLIntent → 字段键值对列表 [{col, value, type}]，供前端渲染「字段=值」表格。
+
+    每个字段独立一行，值不截断（前端表格按列宽滚动展示），这样校验环节
+    能看清每个值落在哪个字段、类型/匹配问题出在哪一行哪一列。
+    """
+    out: list[dict] = []
+    fields = (getattr(it, "extras", None) or {}).get("fields")
+    if isinstance(fields, dict) and fields:
+        for k, v in fields.items():
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+            out.append({"col": str(k), "value": "" if v is None else str(v)})
+    return out
+
+
 def _intent_cells(it: Any) -> tuple:
     """NLIntent → 表格四元组 (操作, 表/Sheet, 定位, 关键信息)。"""
     act = _ACTION_CN.get(getattr(it, "action", ""), getattr(it, "action", "?"))
@@ -412,12 +428,17 @@ class Step1ParseSubAgent:
                 # 前端识别该前缀把 detail 解析成数组，渲染成可对齐的 HTML 表格卡片，
                 # 清晰展示"序号/操作/表·Sheet/定位/关键信息"，便于人工校验 Step1
                 # 是否漏意图/错路由（vs 仅文本行不易对齐对照）。
+                # 每行额外带 fields 键值对列表（不截断），前端渲染「字段=值」展开表，
+                # 让校验环节能看清每个值对应哪个字段（匹配/类型问题定位到具体列）。
                 _rows = []
                 for _i, _it in enumerate(intents, start=1):
                     _act, _loc, _locate, _info = _intent_cells(_it)
                     _rows.append({
                         "idx": _i, "action": _act, "loc": _loc,
                         "locate": _locate, "info": _info,
+                        "produces": getattr(_it, "produces_label", None),
+                        "consumes": list(getattr(_it, "consumes_labels", []) or []),
+                        "fields": _intent_fields(_it),
                     })
                 try:
                     self._thinking_sink("__json:intent_list", json.dumps(

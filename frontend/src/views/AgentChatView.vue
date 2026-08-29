@@ -802,7 +802,7 @@ onMounted(() => {
                 <!-- 结构化意图清单表格（Step1 解析结果，人工校验是否漏意图/错路由） -->
                 <div v-if="ts.jsonKind === 'intent_list' && ts.jsonData" class="think-intent-card">
                   <div class="think-intent-title">📋 Step1 解析意图清单（{{ ts.jsonData.total }} 条）</div>
-                  <table class="think-intent-table">
+                    <table class="think-intent-table">
                     <thead>
                       <tr><th>#</th><th>操作</th><th>表/Sheet</th><th>定位</th><th>关键信息</th></tr>
                     </thead>
@@ -816,6 +816,26 @@ onMounted(() => {
                       </tr>
                     </tbody>
                   </table>
+                  <!-- 字段=值 展开表格：每行一个字段键值对，定位匹配/类型问题到具体列 -->
+                  <div v-if="hasFields(ts.jsonData)" class="think-fields-wrap">
+                    <div class="think-fields-title">字段明细（每行 = 一个字段，值不截断）</div>
+                    <div v-for="(r, ri) in ts.jsonData.rows" :key="'f' + ri" class="think-fields-group">
+                      <div v-if="r.fields && r.fields.length" class="think-fields-head">
+                        <span class="ti-idx">{{ r.idx }}</span>
+                        <span class="ti-loc">{{ r.loc }}</span>
+                        <span v-if="r.produces" class="ti-produces">产出&lt;{{ r.produces }}&gt;</span>
+                        <span v-if="r.consumes && r.consumes.length" class="ti-consumes">消费 {{ r.consumes.map(c => '&lt;' + c + '&gt;').join(' ') }}</span>
+                      </div>
+                      <table v-if="r.fields && r.fields.length" class="think-fields-table">
+                        <tbody>
+                          <tr v-for="(f, fi) in r.fields" :key="fi">
+                            <td class="tf-col">{{ f.col }}</td>
+                            <td class="tf-val">{{ f.value === '' ? '（空）' : f.value }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
                 <div v-else class="think-line">
                   <span class="think-phase">{{ stepLabel(ts.phase) }}</span>
@@ -1239,6 +1259,10 @@ onMounted(() => {
 <script>
 export default {
   methods: {
+    hasFields(jsonData) {
+      if (!jsonData || !Array.isArray(jsonData.rows)) return false
+      return jsonData.rows.some(r => r.fields && r.fields.length)
+    },
     stepLabel(name) {
       const map = {
         resolve_table: '定位表格', resolve_sheet: '定位Sheet',
@@ -1822,6 +1846,18 @@ export default {
 .think-intent-table td.ti-act { width: 56px; font-weight: 600; color: var(--primary, #2563eb); }
 .think-intent-table td.ti-loc { width: 22%; }
 .think-intent-table td.ti-locate { width: 22%; }
+.think-fields-wrap { margin-top: 6px; border-top: 1px dashed var(--border, #e5e7eb); padding-top: 6px; }
+.think-fields-title { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary, #374151); margin-bottom: 4px; }
+.think-fields-group { margin: 4px 0; }
+.think-fields-head { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; margin-bottom: 2px; }
+.think-fields-head .ti-idx { flex-shrink: 0; text-align: center; width: 20px; font-weight: 600; color: var(--primary, #2563eb); }
+.think-fields-head .ti-loc { font-weight: 600; }
+.think-fields-head .ti-produces { color: var(--success, #16a34a); }
+.think-fields-head .ti-consumes { color: var(--warning, #d97706); }
+.think-fields-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; table-layout: fixed; }
+.think-fields-table td { border: 1px solid var(--border, #e5e7eb); padding: 2px 6px; vertical-align: top; word-break: break-all; }
+.think-fields-table td.tf-col { width: 32%; background: var(--bg-secondary, #f3f4f6); font-weight: 600; color: var(--text-secondary, #374151); }
+.think-fields-table td.tf-val { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 .tool-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); overflow: hidden; font-size: 0.78rem; }
 .tool-card.tool-ok { border-left: 3px solid var(--success); }
 .tool-card.tool-fail { border-left: 3px solid var(--danger); }
