@@ -53,6 +53,8 @@ def _parse_evolve_chain(text: str) -> list[tuple[str, str]]:
         to_name = m.group("to")
         # 清理可能误捕的"进化链"前缀
         from_name = re.sub(r'.*进化链\s*', '', from_name)
+        from_name = from_name.strip().strip("：:，,、。；; \t\r\n")
+        to_name = to_name.strip().strip("：:，,、。；; \t\r\n")
         if from_name and to_name:
             pairs.append((from_name, to_name))
     return pairs
@@ -354,8 +356,9 @@ _POS_RE = re.compile(
 # 原 regex 仅认"对话内容"前缀，"弹出对话：老人说"等自然表述全部漏匹配 LLM
 # 拆分质量差（task_chain quest_npc 用例 conv 行全 missing）。
 _CONV_RE = re.compile(
-    r'(?:弹出)?对话(?:内容)?(?:\s*[：:])?\s*(?:老人|NPC|他|她)?说?\s*'
-    r'(?:["\'](?P<conv_q>[^"\']+)["\']'
+    r'(?:对话内容|内容)\s*(?:为|是|[：:])?\s*["\'](?P<conv_q1>[^"\']+)["\']'
+    r'|(?:弹出)?对话(?:内容)?(?:\s*[：:])?\s*(?:老人|NPC|他|她)?说?\s*'
+    r'(?:["\'](?P<conv_q2>[^"\']+)["\']'
     r'|(?P<conv_bare>.+?)(?=,?\s*选项|。|；|;|$)'
     r')'
 )
@@ -387,10 +390,16 @@ def _extract_npc_dialogue(text: str) -> Optional[dict]:
     name = nm.group("name").strip().strip("'\"")
     if not name:
         return None
-    cm = _CONV_RE.search(text)
-    if not cm:
+    cm_exact = re.search(
+        r'(?:对话内容|内容)\s*(?:为|是|[：:])?\s*["\'](?P<conv>[^"\']+)["\']',
+        text)
+    cm = _CONV_RE.search(text) if not cm_exact else None
+    if not cm_exact and not cm:
         return None
-    conv = (cm.group("conv_q") or cm.group("conv_bare") or "").strip().rstrip('，,。')
+    if cm_exact:
+        conv = cm_exact.group("conv").strip()
+    else:
+        conv = (cm.group("conv_q1") or cm.group("conv_q2") or cm.group("conv_bare") or "").strip().rstrip('，,。')
     if not conv:
         return None
 
@@ -794,22 +803,24 @@ def _build_npc_dialogue_intents(info: dict) -> list[SplitIntent]:
     conv = info.get("conv") or ""
     branch = info.get("branch")  # {"opt_text":"看看","branch_conv":"这只赤炎虎饿了..."}
     intents: list[SplitIntent] = []
-    f0 = {"名字": name, "交互id": "<new_interaction_id>"}
+    f0 = {"编号": "<new_prefab_id>", "实体类型": "WorldNonPlayer",
+          "名字": name, "交互id": "<new_interaction_id>"}
     if info["model_id"]:
-        f0["模型"] = info["model_id"]
+        f0["model_prefab"] = info["model_id"]
     intents.append(SplitIntent(
         text=f"新增NPC {name}", table_hint="entity_prefab", sheet_hint="Base",
         action="add", fields=f0, produces="new_prefab_id",
     ))
     # Interaction 对话效果
-    f1 = {"effect.key": "3006", "effect.data.3006.conv_id": "<new_conv_id>"}
+    f1 = {"编号": "<new_interaction_id>",
+          "effect.key": "3006", "effect.data.3006.conv_id": "<new_conv_id>"}
     intents.append(SplitIntent(
         text=f"新增Interaction对话 {name}", table_hint="interaction",
         sheet_hint="Interaction", action="add", fields=f1,
         produces="new_interaction_id",
     ))
     # 主对话
-    opt_fields = {"对话内容": conv}
+    opt_fields = {"编号": "<new_conv_id>", "对话内容": conv}
     for i, _ in enumerate(opts, 1):
         opt_fields[f"选项{i}"] = f"<option_{i}_id>"
     intents.append(SplitIntent(
@@ -840,7 +851,7 @@ def _build_npc_dialogue_intents(info: dict) -> list[SplitIntent]:
         intents.append(SplitIntent(
             text=f"新增选项{i} {opt_text}", table_hint="interaction",
             sheet_hint="InteractionConvOption", action="add",
-            fields=f, produces=f"option_{i}_id",
+            fields={"编号": f"<option_{i}_id>", **f}, produces=f"option_{i}_id",
         ))
     # 分支对话链：选"看看"跳到新对话 → 新对话 add
     if branch:
@@ -870,27 +881,34 @@ def _build_npc_dialogue_intents(info: dict) -> list[SplitIntent]:
         reward_conv_text = f"{name}递给你一份奖励，请收好。"
         intents.append(SplitIntent(
             text=f"新增奖励对话 {name}", table_hint="interaction", sheet_hint="InteractionConv",
-            action="add", fields={"对话内容": reward_conv_text, "选项1": "<option_reward_end_id>"},
+            action="add", fields={"编号": "<new_reward_conv_id>",
+                                  "对话内容": reward_conv_text,
+                                  "选项1": "<option_3_id>"},
             produces="new_reward_conv_id",
         ))
-        thanks_fields = {"选项内容": f"多谢{name}",
+        thanks_fields = {"编号": "<option_3_id>",
+                         "选项内容": "多谢",
                          "option_function.function_type": "1",
                          "option_function.data.1.reward_id": reward_id}
         intents.append(SplitIntent(
-            text="新增选项 多谢", table_hint="interaction", sheet_hint="InteractionConvOption",
-            action="add", fields=thanks_fields, produces="option_reward_end_id",
+            text="新增选项3 多谢", table_hint="interaction", sheet_hint="InteractionConvOption",
+            action="add", fields=thanks_fields, produces="option_3_id",
         ))
     # spawn
     if info["space_id"]:
-        f4 = {"场景ID": info["space_id"], "实体名字": name,
+        f4 = {"刷新ID": "<new_spawn_id>", "场景ID": info["space_id"], "实体名字": name,
               "实体Prefab ID": "<new_prefab_id>", "最大生成数量": "1"}
         if info["pos"]:
             x, y, z = info["pos"]
-            f4["候选坐标"] = f"{x},{y},{z}"
+            coords = []
+            for n in (x, y, z):
+                f = float(n)
+                coords.append(int(f) if f.is_integer() else f)
+            f4["候选坐标"] = [coords]
         intents.append(SplitIntent(
             text=f"刷新 {name}", table_hint="spawn_world_entity",
             sheet_hint="SpawnWorldEntity", action="add", fields=f4,
-            produces="spawn_id",
+            produces="new_spawn_id",
         ))
     # 任务链（混合指令：NPC + 对话 + 任务 + 刷怪）
     quest = info.get("quest")
@@ -1232,6 +1250,8 @@ def _build_pet_intents(text: str) -> list[SplitIntent]:
     # 进化
     evolve_m = re.search(r'进化为pet_id\s*(?P<eid>\d+)', text)
     cost_m = re.search(r'消耗道具item_id\s*(?P<cid>\d+)\s*数量\s*(?P<cnum>\d+)', text)
+    natural_evolve_pairs = _parse_evolve_chain(text) if not evolve_m else []
+    evolve_level_m = re.search(r'进化等级\s*(?:为|是)?\s*(?P<v>\d+)', text)
 
     intents: list[SplitIntent] = []
     # 1) Pet
@@ -1264,6 +1284,39 @@ def _build_pet_intents(text: str) -> list[SplitIntent]:
             text=f"灵兽进化路径 {name}", table_hint="pet_evolve",
             sheet_hint="PetEvolveData", action="add", fields=f2,
         ))
+    elif natural_evolve_pairs:
+        produced_by_name = {name: "new_pet_id"}
+        for from_name, to_name in natural_evolve_pairs:
+            if from_name and from_name not in produced_by_name:
+                label = f"new_pet_{len(produced_by_name) + 1}_id"
+                produced_by_name[from_name] = label
+                intents.append(SplitIntent(
+                    text=f"新增灵兽 {from_name}", table_hint="pet", sheet_hint="Pet",
+                    action="add", fields={"name": from_name}, produces=label,
+                ))
+            if to_name and to_name not in produced_by_name:
+                label = f"new_pet_{len(produced_by_name) + 1}_id"
+                produced_by_name[to_name] = label
+                intents.append(SplitIntent(
+                    text=f"新增灵兽 {to_name}", table_hint="pet", sheet_hint="Pet",
+                    action="add", fields={"name": to_name}, produces=label,
+                ))
+            from_label = produced_by_name.get(from_name) or "new_pet_id"
+            to_label = produced_by_name.get(to_name) or "new_pet_id"
+            f2: dict[str, str] = {
+                "pet_id": f"<{from_label}>",
+                "evolved_pet_id": f"<{to_label}>",
+            }
+            if evolve_level_m:
+                f2["level"] = evolve_level_m.group("v")
+            if cost_m:
+                f2["cost_item_id"] = cost_m.group("cid")
+                f2["cost_item_num"] = cost_m.group("cnum")
+            intents.append(SplitIntent(
+                text=f"灵兽进化路径 {from_name}->{to_name}",
+                table_hint="pet_evolve", sheet_hint="PetEvolveData",
+                action="add", fields=f2,
+            ))
     return intents
 
 

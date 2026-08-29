@@ -527,7 +527,11 @@ class DecomposeAgent(LLMSubAgent):
                 sp = CrossTableIntentSplitter()
                 sp_intents = sp.split(text)
                 if sp_intents:
-                    all_fb.extend(sp_intents)
+                    # Template fallback is a deterministic full-chain answer for known
+                    # cross-table patterns. Do not mix in ColumnExtractor candidate
+                    # fallback afterwards; shared columns such as model_id/coords can
+                    # otherwise hallucinate weakly related tables into executable tasks.
+                    return sp_intents
         except Exception:  # noqa: BLE001
             logger.warning("DecomposeAgent splitter_baseline 模板失败",
                            exc_info=True)
@@ -563,41 +567,110 @@ class DecomposeAgent(LLMSubAgent):
             _WEAK_LEVELS = {"column_extract", "column_reverse"}
             SI = _SplitIntent()
             import re as _re
+            try:
+                from ..parser.multi_intent_splitter import _detect_action as _detect_fb_action
+                _fb_action = _detect_fb_action(text)
+            except Exception:
+                _fb_action = "add"
+            if _fb_action not in {"add", "set", "delete", "get"}:
+                _fb_action = "add"
+
+            def _stem_mentioned(_stem: str) -> bool:
+                hay = (text or "").lower()
+                s = (_stem or "").lower()
+                if not s:
+                    return False
+                return s in hay or s.replace("_", "") in hay.replace("_", "")
+
+            candidate_stems = {
+                (getattr(c, "stem", "") or "").lower() for c in candidates
+            }
+            for _stem in sorted(self._all_table_stems()):
+                if _stem not in candidate_stems and _stem_mentioned(_stem):
+                    candidates = list(candidates) + [CandidateTable(
+                        stem=_stem,
+                        sheet=self._default_sheet_for(_stem),
+                        confidence=0.95,
+                        level="explicit_table_name",
+                        matched_term=_stem,
+                    )]
+                    candidate_stems.add(_stem)
+
+            _loc_field = None
+            _loc_value = None
+            _loc_m = _re.search(
+                r"(?P<field>[A-Za-z_]*id|[A-Za-z_]+_id)\s*(?:为|是|=)?\s*(?P<value>\d+)",
+                text, _re.IGNORECASE)
+            if _loc_m:
+                _loc_field = _loc_m.group("field")
+                _loc_value = _loc_m.group("value")
+            _set_value = None
+            if _fb_action == "set":
+                _set_m = _re.search(
+                    r"(?:改成|改为|设置成|设置为|设为|更新为)\s*['\"](?P<v>[^'\"]+)['\"]",
+                    text)
+                if _set_m:
+                    _set_value = _set_m.group("v")
+
             for cand in candidates:
                 stem = getattr(cand, "stem", "") or ""
                 if not stem or stem.lower() in existing_stems:
+                    continue
+                if _fb_action in {"set", "delete", "get"} and not _stem_mentioned(stem):
                     continue
                 _lvl = (getattr(cand, "level", "") or "").lower()
                 if _lvl in _WEAK_LEVELS and stem.lower() not in _producer_stems:
                     continue
                 fields: dict = {}
-                for h in sig_by_stem.get(stem, []):
-                    col = getattr(h, "column", "") or ""
-                    if not col:
-                        continue
-                    # 从 text 扫 "col 值" 或 "col=值" 模式。
-                    # §P1 防 A 类碎片污染：原正则 [\d\u4e00-\u9fff]+ 裸匹配中文连续段
-                    # （如"叫焚天赤龙"被当 reward_id 值灌入 str 列写盘成功但碎片污染行）。
-                    # 现只提纯数字 / 数字+字母 token（编号/ID/概率/数量等标量特征），
-                    # 整段中文叙述留给模板或 LLM 产，baseline 不裸提中文值。
-                    # §框架级（字段对应错）：值必须**紧邻**列名（≤6 个非数字字符内），
-                    # 否则会跨整段抓到远处无关数字（如"坐标"抓到别处的 BOSS 坐标）。
-                    # 通用判据（值形态 + 邻接），不绑业务词/表/测例。
-                    _pat = _re.compile(
-                        rf"{_re.escape(col)}[^\d]{{0,6}}?(\d+(?:\.\d+)?%?)",
-                        _re.IGNORECASE)
-                    _m = _pat.search(text)
-                    if _m:
-                        fields[col] = _m.group(1)
+                if _fb_action == "set" and _set_value:
+                    if "名字" in text:
+                        fields["名字"] = _set_value
+                    elif "名称" in text:
+                        fields["名称"] = _set_value
+                if _fb_action == "add":
+                    for h in sig_by_stem.get(stem, []):
+                        col = getattr(h, "column", "") or ""
+                        if not col:
+                            continue
+                        # 从 text 扫 "col 值" 或 "col=值" 模式。
+                        # §P1 防 A 类碎片污染：原正则 [\d\u4e00-\u9fff]+ 裸匹配中文连续段
+                        # （如"叫焚天赤龙"被当 reward_id 值灌入 str 列写盘成功但碎片污染行）。
+                        # 现只提纯数字 / 数字+字母 token（编号/ID/概率/数量等标量特征），
+                        # 整段中文叙述留给模板或 LLM 产，baseline 不裸提中文值。
+                        # §框架级（字段对应错）：值必须**紧邻**列名（≤6 个非数字字符内），
+                        # 否则会跨整段抓到远处无关数字（如"坐标"抓到别处的 BOSS 坐标）。
+                        # 通用判据（值形态 + 邻接），不绑业务词/表/测例。
+                        _pat = _re.compile(
+                            rf"{_re.escape(col)}[^\d]{{0,6}}?(\d+(?:\.\d+)?%?)",
+                            _re.IGNORECASE)
+                        _m = _pat.search(text)
+                        if _m:
+                            fields[col] = _m.group(1)
+                cand_loc_field = _loc_field
+                if cand_loc_field:
+                    for e in fk_edges or []:
+                        if ((getattr(e, "from_stem", "") or "").lower() == stem.lower()
+                                and (getattr(e, "to_column", "") or "").lower() == cand_loc_field.lower()):
+                            cand_loc_field = getattr(e, "from_column", "") or cand_loc_field
+                            break
+                # fields 全空 且已有模板产出时，不再追加候选空壳。
+                # 模板已经覆盖了确定性链路；此时继续按 FK producer 补空 intent
+                # 会把弱相关候选表（item/space/reward 等）臆造成写入任务。
+                if not fields and existing_stems:
+                    continue
+                if _fb_action == "set" and not fields:
+                    continue
                 # fields 全空 且 非 FK 被依赖前置 → noise 候选，不产空壳 intent
-                if not fields and stem.lower() not in _producer_stems:
+                if _fb_action == "add" and not fields and stem.lower() not in _producer_stems:
                     continue
                 all_fb.append(SI(
                     text=text, table_hint=stem,
                     sheet_hint=getattr(cand, "sheet", "") or "",
-                    action="add",
+                    action=_fb_action,
                     fields=fields,
-                    produces=f"new_{stem}_id" if stem else None,
+                    locator_field=cand_loc_field,
+                    locator_value=_loc_value,
+                    produces=(f"new_{stem}_id" if _fb_action == "add" and stem else None),
                 ))
         return all_fb
 
@@ -1001,6 +1074,36 @@ class DecomposeAgent(LLMSubAgent):
                 self._table_index_cache = {}
         return {str(k).lower() for k in (self._table_index_cache or {}).keys()}
 
+    def _default_sheet_for(self, stem: str) -> str:
+        """Return a conservative business sheet for explicit table-name fallback."""
+        if not self._cli or not stem:
+            return ""
+        if not hasattr(self, "_table_index_cache") or not self._table_index_cache:
+            try:
+                self._table_index_cache = {p.stem: p
+                                           for p in self._cli.list_tables()}
+            except Exception:  # noqa: BLE001
+                self._table_index_cache = {}
+        p = (self._table_index_cache or {}).get(stem)
+        if p is None:
+            p = (self._table_index_cache or {}).get(stem.lower())
+        if p is None:
+            return ""
+        try:
+            sheets = self._cli.get_sheets(p) or []
+        except Exception:  # noqa: BLE001
+            return ""
+        biz = [s for s in sheets if s and "说明" not in s and "CONFIG" not in s.upper()]
+        if not biz:
+            return ""
+        if len(biz) == 1:
+            return biz[0]
+        norm_stem = stem.replace("_", "").lower()
+        for s in biz:
+            if s.replace("_", "").lower() == norm_stem:
+                return s
+        return biz[0]
+
     def _col_type_for(self, stem: str, sheet: str, col: str) -> str:
         """§P1-3.1 灌值按列类型判：查 stem/sheet 的 col 列类型（row2 规范名）。
 
@@ -1339,14 +1442,7 @@ class DecomposeAgent(LLMSubAgent):
                 "表示用户提到的列名在这些表/sheet 出现。优先从信号命中的表选目标表，"
                 "但要结合 schema 与指令语义判断——若信号表与指令意图不符，按指令为准。\n\n"
             )
-        few_shot = ""
-        try:
-            _fs_fn = getattr(self.parser, "_build_few_shot_block", None) \
-                if getattr(self, "parser", None) else None
-            if callable(_fs_fn):
-                few_shot = _fs_fn(text) or ""
-        except Exception:
-            few_shot = ""
+        few_shot = self._build_few_shot_block(text, schema_block)
         few_shot_section = f"{few_shot}\n\n" if few_shot else ""
         # 填表规则注入：rules/fill/*.md 用户手打知识（强约束，拼进 prompt）
         fill_rules = ""
@@ -1477,6 +1573,105 @@ class DecomposeAgent(LLMSubAgent):
             )
         )
 
+    def _build_few_shot_block(self, text: str, schema_block: str) -> str:
+        """Build compact, domain-pattern examples for the LLM.
+
+        These examples are intentionally schematic: they teach decomposition shape,
+        placeholder discipline, and batch handling without naming current test-case
+        entities. Real column names must still come from the schema block.
+        """
+        text_l = (text or "").lower()
+        schema_l = (schema_block or "").lower()
+        examples: list[str] = [
+            (
+                "### few-shot: two-table forward reference\n"
+                "Input: 新增邮件模板，标题'开服公告'，内容'欢迎'，并发全服邮件 global_id 7，奖励包 10001。\n"
+                "Output:\n"
+                "```json\n"
+                "[{\"table\":\"mail\",\"sheet\":\"MailTemplate\",\"action\":\"add\","
+                "\"fields\":{\"template_id\":\"<new_template_id>\",\"title\":\"开服公告\",\"content\":\"欢迎\"},"
+                "\"produces\":\"new_template_id\",\"consumes\":{}},"
+                "{\"table\":\"mail\",\"sheet\":\"GlobalMail\",\"action\":\"add\","
+                "\"fields\":{\"global_id\":7,\"template_id\":\"<new_template_id>\",\"reward_id\":10001},"
+                "\"produces\":\"\",\"consumes\":{\"template_id\":\"new_template_id\"}}]\n"
+                "```"
+            )
+        ]
+        if "tips" in text_l or "tips/" in schema_l:
+            examples.append(
+                "### few-shot: homogeneous batch rows\n"
+                "Input: 配三条提示文案：第一条'背包已满' key 用 BAG_FULL 类型 tips；第二条'金币不足' key 用 GOLD_LACK 类型 tips。\n"
+                "Output:\n"
+                "```json\n"
+                "[{\"table\":\"tips\",\"sheet\":\"tips\",\"action\":\"add\","
+                "\"fields\":{\"value\":\"背包已满\",\"key\":\"BAG_FULL\",\"type\":\"tips\"},"
+                "\"produces\":\"\",\"consumes\":{}},"
+                "{\"table\":\"tips\",\"sheet\":\"tips\",\"action\":\"add\","
+                "\"fields\":{\"value\":\"金币不足\",\"key\":\"GOLD_LACK\",\"type\":\"tips\"},"
+                "\"produces\":\"\",\"consumes\":{}}]\n"
+                "```"
+            )
+        if "activity" in text_l or "activity/" in schema_l:
+            examples.append(
+                "### few-shot: single activity row\n"
+                "Input: 开限时活动'试炼'，活动编号 3001，活动类型 1，描述'每日可参与'，开始时间 2026-01-01 00:00:00，结束时间 2026-01-07 23:59:59。\n"
+                "Output:\n"
+                "```json\n"
+                "[{\"table\":\"activity\",\"sheet\":\"Activity\",\"action\":\"add\","
+                "\"fields\":{\"id\":3001,\"activity_type\":1,\"name\":\"试炼\",\"desc\":\"每日可参与\","
+                "\"start_time\":\"2026-01-01 00:00:00\",\"end_time\":\"2026-01-07 23:59:59\"},"
+                "\"produces\":\"\",\"consumes\":{}}]\n"
+                "```"
+            )
+        if "school" in text_l or "门派" in text or "神通" in text or "school/" in schema_l:
+            examples.append(
+                "### few-shot: school parent-child chain\n"
+                "Input: 新建门派'示例门派'，门派编号 9，门派类型 1，模型 1001，战斗模型 1002；配两个神通，技能编号 901、902；每个神通再配等级行；灵根映射到天赋 600001、600002。\n"
+                "Output:\n"
+                "```json\n"
+                "[{\"table\":\"school\",\"sheet\":\"School\",\"action\":\"add\","
+                "\"fields\":{\"school\":\"<new_school_id>\",\"name\":\"示例门派\","
+                "\"school_ability_id[0]\":\"<new_ability1_id>\",\"school_ability_id[1]\":\"<new_ability2_id>\"},"
+                "\"produces\":\"new_school_id\",\"consumes\":{\"school_ability_id[0]\":\"new_ability1_id\","
+                "\"school_ability_id[1]\":\"new_ability2_id\"}},"
+                "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbility\",\"action\":\"add\","
+                "\"fields\":{\"school_ability_id\":\"<new_ability1_id>\",\"name\":\"神通一\"},"
+                "\"produces\":\"new_ability1_id\",\"consumes\":{}},"
+                "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbilityLevel\",\"action\":\"add\","
+                "\"fields\":{\"id\":\"<new_ability1_level_id>\",\"school_ability_id\":\"<new_ability1_id>\","
+                "\"level\":0,\"common_spell_id\":901},"
+                "\"produces\":\"new_ability1_level_id\",\"consumes\":{\"school_ability_id\":\"new_ability1_id\"}},"
+                "{\"table\":\"school_spirit\",\"sheet\":\"SchoolSpirit\",\"action\":\"add\","
+                "\"fields\":{\"school_id\":\"<new_school_id>\",\"school_ability_id\":\"<new_ability1_id>\","
+                "\"spirit_buffs[0]\":600001},"
+                "\"produces\":\"\",\"consumes\":{\"school_id\":\"new_school_id\","
+                "\"school_ability_id\":\"new_ability1_id\"}}]\n"
+                "```\n"
+                "Pattern notes: one repeated ability creates one SchoolAbility row plus one SchoolAbilityLevel row; "
+                "each spirit/talent mapping is its own row; never collapse repeated rows into arrays unless the schema column itself is an array column."
+            )
+            examples.append(
+                "### few-shot: modify/delete by natural-language row identity\n"
+                "Input: 把门派'剑修'的战斗模型改成 1075；把神通'驭风'的描述改成'新描述'；下架神通'TEST'并清掉对应等级数据。\n"
+                "Output:\n"
+                "```json\n"
+                "[{\"table\":\"school\",\"sheet\":\"School\",\"action\":\"set\","
+                "\"locator_field\":\"name\",\"locator_value\":\"剑修\","
+                "\"fields\":{\"combat_model_id\":1075},\"produces\":\"\",\"consumes\":{}},"
+                "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbility\",\"action\":\"set\","
+                "\"locator_field\":\"name\",\"locator_value\":\"驭风\","
+                "\"fields\":{\"desc\":\"新描述\"},\"produces\":\"\",\"consumes\":{}},"
+                "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbility\",\"action\":\"delete\","
+                "\"locator_field\":\"name\",\"locator_value\":\"TEST\","
+                "\"fields\":{},\"produces\":\"\",\"consumes\":{}},"
+                "{\"table\":\"school_ability\",\"sheet\":\"SchoolAbilityLevel\",\"action\":\"delete\","
+                "\"locator_field\":\"school_ability_id\",\"locator_value\":\"<resolved_from_TEST>\","
+                "\"fields\":{},\"produces\":\"\",\"consumes\":{}}]\n"
+                "```\n"
+                "Pattern notes: if an ID is known from existing data, use that ID; otherwise preserve the natural-language locator and let Step2/row resolver confirm it."
+            )
+        return "\n\n".join(examples)
+
     def _build_column_signal_block(self, column_signal) -> str:
         """构列名信号块：把 ColumnExtractor 产出格式化为 LLM 可读文本。
 
@@ -1533,6 +1728,10 @@ class DecomposeAgent(LLMSubAgent):
         if md:
             try:
                 d = json.loads(md.group(1))
+                for key in ("intents", "operations", "items", "tasks"):
+                    wrapped = d.get(key) if isinstance(d, dict) else None
+                    if isinstance(wrapped, list):
+                        return wrapped
                 if isinstance(d, dict):
                     return [d]
             except ValueError:

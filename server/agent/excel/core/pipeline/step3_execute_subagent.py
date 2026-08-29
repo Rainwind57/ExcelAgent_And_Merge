@@ -89,6 +89,21 @@ class Step3ExecuteSubAgent:
         _cnt_before = self._services.peek_llm_total() if self._services is not None else 0
         all_failures: list = []
 
+        def _record_failure(f: dict, *, default_type: str = "execute_fail",
+                            default_message: str = "Execute failed",
+                            hard: bool = False) -> None:
+            if not isinstance(f, dict):
+                return
+            all_failures.append(f)
+            errors.append(StepError(
+                step_id=STEP3_EXECUTE,
+                error_type=f.get("type", default_type),
+                message=f.get("root_cause") or f.get("message") or default_message,
+                table=f.get("table"),
+                sheet=f.get("sheet"), column=f.get("col"),
+                suggestion=f.get("suggestion"),
+                is_hard=hard))
+
         s1 = ctx.get_result("step1_parse")
         s2 = ctx.get_result("step2_validate")
         # 优先用 Step2 校验后的；无 Step2 则用 Step1 原始
@@ -106,6 +121,58 @@ class Step3ExecuteSubAgent:
                 metrics={"dur_ms": int((time.time() - t0) * 1000),
                          "intents": 0},
                 artifacts={"subtasks": [], "results": []})
+
+        if self._services is None:
+            _failures = []
+            for i, it in enumerate(intents):
+                _fail = {
+                    "type": "execute_service_missing",
+                    "table": getattr(it, "table_hint", "") or "",
+                    "sheet": getattr(it, "sheet_hint", "") or "",
+                    "col": "",
+                    "root_cause": "Step3 has no ExcelAgentServices; cannot dispatch intent",
+                    "attempted_strategies": "",
+                    "suggestion": "Inject ExcelAgentServices or run through TableAgent.run_v2",
+                    "status": "failed",
+                    "user_reply": None,
+                }
+                _failures.append(_fail)
+                sub_tasks.append({
+                    "index": i + 1,
+                    "intent_action": getattr(it, "action", ""),
+                    "ok": False,
+                    "needs_confirm": False,
+                    "message": _fail["root_cause"],
+                    "steps": [],
+                    "result_rows": [],
+                    "table_stem": _fail["table"],
+                    "table_sheet": _fail["sheet"],
+                    "needs_user_fill": [],
+                    "partial": False,
+                })
+                errors.append(StepError(
+                    step_id=STEP3_EXECUTE,
+                    error_type="execute_service_missing",
+                    message=_fail["root_cause"],
+                    table=_fail["table"] or None,
+                    sheet=_fail["sheet"] or None,
+                    suggestion=_fail["suggestion"],
+                    is_hard=True))
+            return StepResult(
+                step_id=STEP3_EXECUTE, ok=False,
+                errors=errors, warnings=warnings,
+                metrics={
+                    "dur_ms": int((time.time() - t0) * 1000),
+                    "intents": len(intents),
+                    "subtasks_ok": 0,
+                    "subtasks_fail": len(sub_tasks),
+                    "subtasks_pending": 0,
+                    "llm_calls": 0,
+                },
+                artifacts={
+                    "subtasks": sub_tasks, "results": all_result_rows,
+                    "steps": all_steps, "failures": _failures,
+                })
 
         # §P0-2 V2 跨表占位符链：接入 OperationOrchestrator 的拓扑排序 + produced 累积 +
         # 占位符替换。原 V2 逐条 run_single 无 produced dict，跨表 add 链（quest→spawn_quest_entity
@@ -177,6 +244,40 @@ class Step3ExecuteSubAgent:
                     except Exception:
                         logger.debug("Step3 _capture_produced 失败", exc_info=True)
                     if sub_res is None:
+                        _rc = "Step3 dispatcher returned no result"
+                        _fail = {
+                            "type": "execute_empty_result",
+                            "table": getattr(it, "table_hint", "") or "",
+                            "sheet": getattr(it, "sheet_hint", "") or "",
+                            "col": "",
+                            "root_cause": _rc,
+                            "attempted_strategies": "direct_dispatch",
+                            "suggestion": "Check TableAgent._run_single dispatch path",
+                            "status": "failed",
+                            "user_reply": None,
+                        }
+                        all_failures.append(_fail)
+                        sub_tasks.append({
+                            "index": i + 1,
+                            "intent_action": getattr(it, "action", ""),
+                            "ok": False,
+                            "needs_confirm": False,
+                            "message": _rc,
+                            "steps": [],
+                            "result_rows": [],
+                            "table_stem": _fail["table"],
+                            "table_sheet": _fail["sheet"],
+                            "needs_user_fill": [],
+                            "partial": False,
+                        })
+                        errors.append(StepError(
+                            step_id=STEP3_EXECUTE,
+                            error_type="execute_empty_result",
+                            message=_rc,
+                            table=_fail["table"] or None,
+                            sheet=_fail["sheet"] or None,
+                            suggestion=_fail["suggestion"],
+                            is_hard=False))
                         continue
                     # §中危 8 修复：把 Step2 校验遗留的 intent.failures（soft tips）
                     # transfer 到 sub_res.failures，让 all_failures 聚合 + Step4 汇总
@@ -321,7 +422,6 @@ class Step3ExecuteSubAgent:
         finally:
             pass  # no_llm 作用域在 _run_single 内部 finally 还原，无需外层清理
 
-        ok = not any(e.is_hard for e in errors)
         # §中危 7 修复：所有子任务执行失败（无成功 + 无 needs_confirm 待定）→ hard error。
         # 原 Step3 全 soft，hard 语义形同空设（仅 Step1 parse_empty hard）。
         # 全失败时 Step3 无可执行结果，后续无意义；但 orchestrator _final 仍跑 Step4 汇总。
@@ -336,6 +436,7 @@ class Step3ExecuteSubAgent:
                     message="全部子任务执行失败",
                     root_cause=f"{len(sub_tasks)} 个子任务均失败",
                     is_hard=True))
+        ok = not any(e.is_hard for e in errors)
         return StepResult(
             step_id=STEP3_EXECUTE, ok=ok,
             errors=errors, warnings=warnings,
