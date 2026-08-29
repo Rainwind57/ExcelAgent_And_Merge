@@ -329,6 +329,7 @@ async def agent_reply(payload: dict = Body(...)):
         return {"ok": False, "message": "无等待回复的会话"}
     # UX Pack: COL_NOT_FOUND 批量 ask 回传 mode=batch_field + columns[] + delete_all
     _columns = payload.get("columns")
+    _fields = payload.get("fields")
     q.put({
         "mode": payload.get("mode", "skip"),
         "fix_payload": payload.get("fix_payload", {}),
@@ -338,6 +339,7 @@ async def agent_reply(payload: dict = Body(...)):
         "custom_id": payload.get("custom_id"),
         # 批量 COL_NOT_FOUND ask card:按行单独填真实列名/勾选+删除/全部删除
         "columns": _columns if isinstance(_columns, list) else None,
+        "fields": _fields if isinstance(_fields, list) else None,
         "delete_all": bool(payload.get("delete_all", False)),
     })
     return {"ok": True, "replied": True}

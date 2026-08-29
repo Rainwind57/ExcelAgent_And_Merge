@@ -262,6 +262,7 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
           tm.askUserReply = ''    // 要求 C：记录用户提交了什么
           tm.askBatchFill = {}   // UX Pack: 批量 COL_NOT_FOUND 按行真实列名填值
           tm.askBatchDelete = {} // UX Pack: 批量 COL_NOT_FOUND 按行勾选删除
+          tm.askFullFields = normalizeAskEditableFields(evt)
           await nextTick(); scrollToBottom()
         }
       }
@@ -536,10 +537,22 @@ async function replyAskColNotFoundBatch(agentMsg, opts = {}) {
   }
   agentMsg.askUserReply = `批量处理 ${cols.length} 列：${nFill} 改名、${nDelete} 删`
   agentMsg.askCollapsed = true
+  const fieldsForReply = (agentMsg.askFullFields || [])
+    .filter(f => {
+      if (!String(f.col || '').trim()) return false
+      if (opts.delete_all === true && f.invalid) return false
+      return !f.delete
+    })
+    .map(f => ({
+      col: String(f.col || '').trim(),
+      value: f.value ?? '',
+      delete: false,
+    }))
   const body = {
     session_id: sessionId.value,
     mode: 'batch_field',
     columns: cols,
+    fields: fieldsForReply,
     delete_all: opts.delete_all === true,
   }
   try {
@@ -551,6 +564,34 @@ async function replyAskColNotFoundBatch(agentMsg, opts = {}) {
   } catch (e) {
     // 静默
   }
+}
+
+function normalizeAskEditableFields(ask) {
+  const rows = Array.isArray(ask?.editable_fields) ? ask.editable_fields : []
+  return rows.map((f, idx) => ({
+    id: `${Date.now()}_${idx}_${Math.random()}`,
+    col: String(f.col || ''),
+    value: f.value == null ? '' : String(f.value),
+    suggested: f.suggested || '',
+    invalid: !!f.invalid,
+    delete: false,
+  }))
+}
+
+function addAskFullFieldRow(agentMsg) {
+  if (!Array.isArray(agentMsg.askFullFields)) agentMsg.askFullFields = []
+  agentMsg.askFullFields.push({
+    id: `${Date.now()}_${Math.random()}`,
+    col: '',
+    value: '',
+    suggested: '',
+    invalid: false,
+    delete: false,
+  })
+}
+
+function applyAskFieldSuggestion(row) {
+  if (row && row.suggested) row.col = row.suggested
 }
 
 function fmtCountdown(sec) {
@@ -1128,6 +1169,39 @@ onMounted(() => {
                     </div>
                   </div>
                 </div>
+                <div v-if="msg.askFullFields && msg.askFullFields.length" class="ask-full-fields">
+                  <div class="ask-full-fields-head">
+                    <span>字段明细</span>
+                    <button type="button" class="mini-btn" @click="addAskFullFieldRow(msg)">加字段</button>
+                  </div>
+                  <div class="ask-full-field-table">
+                    <div class="ask-full-field-row ask-full-field-row--head">
+                      <span>列名</span>
+                      <span>值</span>
+                      <span>操作</span>
+                    </div>
+                    <div
+                      v-for="row in msg.askFullFields"
+                      :key="row.id"
+                      class="ask-full-field-row"
+                      :class="{ 'ask-full-field-row--invalid': row.invalid }"
+                    >
+                      <div class="ask-full-field-col">
+                        <input v-model="row.col" type="text" class="ask-input ask-input--field-col">
+                        <button
+                          v-if="row.suggested"
+                          type="button"
+                          class="mini-btn mini-btn--ghost"
+                          @click="applyAskFieldSuggestion(row)"
+                        >用 {{ row.suggested }}</button>
+                      </div>
+                      <textarea v-model="row.value" class="ask-input ask-input--field-value"></textarea>
+                      <label class="ask-batch-delete-label">
+                        <input type="checkbox" v-model="row.delete" class="ask-batch-delete-cb"> 删除
+                      </label>
+                    </div>
+                  </div>
+                </div>
                 <div class="ask-actions">
                   <button class="confirm-btn confirm-yes" @click="replyAskColNotFoundBatch(msg, {})">提交修正</button>
                   <button class="confirm-btn confirm-warn" @click="replyAskColNotFoundBatch(msg, { delete_all: true })">全部删除</button>
@@ -1541,8 +1615,24 @@ export default {
 .ask-input--batch:disabled { opacity: 0.4; }
 .ask-batch-delete-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
 .ask-batch-delete-cb { margin: 0; }
+.ask-full-fields { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.ask-full-fields-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; color: var(--text-primary); font-size: 0.88rem; font-weight: 600; }
+.ask-full-field-table { display: flex; flex-direction: column; gap: 6px; }
+.ask-full-field-row { display: grid; grid-template-columns: minmax(140px, 0.8fr) minmax(180px, 1.4fr) auto; gap: 8px; align-items: start; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input, rgba(255,255,255,0.04)); }
+.ask-full-field-row--head { padding: 0 6px; border: 0; background: transparent; color: var(--text-muted); font-size: 0.78rem; font-weight: 600; }
+.ask-full-field-row--invalid { border-color: var(--warning, #f59e0b); }
+.ask-full-field-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ask-input--field-col { width: 100%; min-width: 0; min-height: 0; padding: 4px 8px; font-size: 0.88rem; }
+.ask-input--field-value { width: 100%; min-height: 38px; resize: vertical; white-space: pre-wrap; word-break: break-word; padding: 4px 8px; font-size: 0.88rem; }
+.mini-btn { border: 1px solid var(--border); background: var(--bg-hover); color: var(--text-primary); border-radius: 6px; padding: 3px 8px; font-size: 0.78rem; cursor: pointer; }
+.mini-btn--ghost { align-self: flex-start; color: var(--primary, #2563eb); background: transparent; }
 .confirm-warn { background: rgba(255, 165, 0, 0.85); color: #fff; }
 .confirm-warn:hover { background: rgba(255, 165, 0, 1); }
+
+@media (max-width: 720px) {
+  .ask-full-field-row { grid-template-columns: 1fr; }
+  .ask-full-field-row--head { display: none; }
+}
 
 .failures-card { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: rgba(220, 53, 69, 0.06); }
 .failures-icon { color: var(--accent); font-weight: 600; margin-bottom: 6px; }

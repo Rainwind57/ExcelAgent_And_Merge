@@ -2202,6 +2202,23 @@ class ValidatorAgent(LLMSubAgent):
             _batch_rows.append({
                 "col": _col, "suggested": _guess, "suggestion": _sug,
             })
+        _fields = (getattr(intent, "extras", None) or {}).get("fields")
+        _editable_fields = []
+        if isinstance(_fields, dict):
+            _bad_cols = {str(x.get("col", "")) for x in _batch_rows if x.get("col")}
+            for _col, _val in _fields.items():
+                _col_s = str(_col)
+                _suggested = ""
+                for _b in _batch_rows:
+                    if str(_b.get("col", "")) == _col_s:
+                        _suggested = _b.get("suggested", "") or ""
+                        break
+                _editable_fields.append({
+                    "col": _col_s,
+                    "value": _val,
+                    "suggested": _suggested,
+                    "invalid": _col_s in _bad_cols,
+                })
 
         def _auto_columns() -> list:
             _auto = []
@@ -2238,6 +2255,7 @@ class ValidatorAgent(LLMSubAgent):
             "snip": (getattr(intent, "raw", "") or "")[:120],
             "mode_hint": "col_not_found_batch",
             "batch_columns": _batch_rows,
+            "editable_fields": _editable_fields,
             "user_friendly": {
                 "reason": (f"指令里提出的 {len(_batch_rows)} 个列名落不了地，"
                            f"可以从「该表真实列名」里挑一个填进去、或勾选删掉这列。"),
@@ -2250,10 +2268,11 @@ class ValidatorAgent(LLMSubAgent):
             logger.warning("_ask_col_not_found_batch cb 失败", exc_info=True)
             return {"mode": "skip"}
         _mode = _reply.get("mode") or ""
-        if _mode == "batch_field" and _reply.get("columns"):
+        if _mode == "batch_field" and (_reply.get("columns") or _reply.get("fields")):
             self._apply_batch_to_intent(
                 intent, _reply["columns"],
-                delete_all=bool(_reply.get("delete_all", False)))
+                delete_all=bool(_reply.get("delete_all", False)),
+                fields_reply=_reply.get("fields"))
         elif _mode == "skip":
             self._mark_intent_skipped(intent)
         elif _reply.get("accept_suggest"):
@@ -2264,12 +2283,15 @@ class ValidatorAgent(LLMSubAgent):
         return _reply
 
     def _apply_batch_to_intent(self, intent, columns_reply: list,
-                                delete_all: bool = False) -> None:
+                                delete_all: bool = False,
+                                fields_reply: list | None = None) -> None:
         """按 batch reply 改写 intent fields：删除 col / 改名 col→fill_value。
 
         - delete_all=True → 全部 COL_NOT_FOUND 列从 fields.pop
         - 行级 delete=True → 该列 pop
         - 行级 fill_value 非空且不等于原 col → 改名（保留原值，键名换为真实列名）
+        - fields_reply=[{col,value,delete}] → 全字段可编辑表格回写；col 为空且
+          delete=false 时追加字段，适配前端手动补列。
         """
         try:
             _fields = (getattr(intent, "extras", None) or {}).get("fields")
@@ -2288,6 +2310,19 @@ class ValidatorAgent(LLMSubAgent):
                         _fields[_fv] = _fields.pop(_bc, None)
                     else:
                         _fields.pop(_bc, None)
+            if fields_reply is not None:
+                _next: dict = {}
+                for _entry in (fields_reply or []):
+                    if not isinstance(_entry, dict):
+                        continue
+                    if bool(_entry.get("delete")):
+                        continue
+                    _col = str(_entry.get("col", "") or "").strip()
+                    if not _col:
+                        continue
+                    _next[_col] = _entry.get("value", "")
+                _fields.clear()
+                _fields.update(_next)
         except Exception:
             logger.warning("_apply_batch_to_intent 失败", exc_info=True)
 

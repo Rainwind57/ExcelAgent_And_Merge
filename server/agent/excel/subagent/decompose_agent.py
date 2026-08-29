@@ -931,7 +931,7 @@ class DecomposeAgent(LLMSubAgent):
         #（combat 段产 entity_prefab/interaction），原"本段候选"窄白名单会丢跨段合法
         # 产出（实测 arr_len=5 kept=[]）。全表池保跨段真实表，∪候选保候选内 alias
         #（如 fake 测试 stem / locator 部分 alias）。cli None 时降为候选（原行为）。
-        valid_stems = self._all_table_stems() | {c.stem.lower() for c in candidates}
+        valid_stems = {c.stem.lower() for c in candidates if getattr(c, "stem", "")}
         # §观测C：记录被 _filter_intents 丢弃的表（哪些 stem 跨组/非候选被丢）
         _before = [str(getattr(it, "table_hint", "") or "") for it in intents]
         filtered = self._filter_intents(intents, candidates, valid_stems,
@@ -1050,7 +1050,7 @@ class DecomposeAgent(LLMSubAgent):
                           for x in arr if isinstance(x, dict)]
             intents, dropped = self._to_split_intents(arr, text)
             # §A2 同 single_prompt：valid_stems = 全表池 ∪ 本段候选（防跨段合法产出被丢）
-            valid_stems = self._all_table_stems() | {c.stem.lower() for c in candidates}
+            valid_stems = {c.stem.lower() for c in candidates if getattr(c, "stem", "")}
             _before = [str(getattr(it, "table_hint", "") or "") for it in intents]
             filtered = self._filter_intents(intents, candidates, valid_stems,
                                              path=f"并发({cand.stem})")
@@ -1566,6 +1566,11 @@ class DecomposeAgent(LLMSubAgent):
             "引用方在 consumes 里精确写目标那一行的唯一标签。标签重名会被当成同一行→"
             "引用串到错行或形成假环。允许前向引用(先声明的行引用后声明的行),"
             "系统会按依赖自动排序、被引用行先建。\n"
+            "- ⚠【批量父项 + 子配置展开】当指令先列出多个同类父项，随后用“每个/各自/"
+            "按顺序/分别”给这些父项配置同一类子表字段时，必须为每个父项各产一条子表"
+            "intent，并把序列值按父项顺序一一对应。不要只给第一个父项产子配置，也不要把"
+            "多个父项的子配置合并成一条。若父项有 produces 标签，子配置的 FK 字段必须"
+            "消费对应父项的标签。\n"
             "- set/delete 操作：用 locator_field+locator_value 标注定位行（如「删除活动名称为春节活动的行」→ "
             "locator_field=\"活动名称\", locator_value=\"春节活动\"），fields 仅放需修改的列（delete 可空）\n"
             "- ⚠【set/delete 单表硬约束】一个动作子句只定位**一张**目标表。若多张候选表"

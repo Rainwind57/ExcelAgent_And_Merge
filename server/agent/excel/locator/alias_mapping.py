@@ -71,6 +71,7 @@ class AliasMapping:
         mapping: {alias: file_path}，file_path 为相对 workspace 的路径（如 pet.xlsx）
     """
     mapping: dict[str, str] = field(default_factory=dict)
+    multi_mapping: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def autogenerate(cls, resources_dir: Path | None = None) -> "AliasMapping":
@@ -95,11 +96,15 @@ class AliasMapping:
             if stem not in stem_to_path:
                 stem_to_path[stem] = str(p.relative_to(res)).replace("\\", "/")
         mapping: dict[str, str] = {}
+        multi_mapping: dict[str, list[str]] = {}
         for stem, domain in stem2domain.items():
             fp = stem_to_path.get(stem)
             if fp:
+                multi_mapping.setdefault(domain, [])
+                if fp not in multi_mapping[domain]:
+                    multi_mapping[domain].append(fp)
                 mapping[domain] = fp
-        return cls(mapping=mapping)
+        return cls(mapping=mapping, multi_mapping=multi_mapping)
 
     @classmethod
     def load(cls) -> "AliasMapping":
@@ -121,7 +126,12 @@ class AliasMapping:
         json_map = {str(k): str(v) for k, v in raw.items() if v}
         merged = dict(base.mapping)
         merged.update(json_map)  # json 覆盖 autogen
-        return cls(mapping=merged)
+        multi = {k: list(v) for k, v in (base.multi_mapping or {}).items()}
+        for alias, fp in json_map.items():
+            vals = multi.setdefault(alias, [])
+            if fp not in vals:
+                vals.insert(0, fp)
+        return cls(mapping=merged, multi_mapping=multi)
 
     def save(self) -> None:
         """持久化到 alias_mapping.json。"""
@@ -154,15 +164,31 @@ class AliasMapping:
         if not text:
             return []
         hits: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         for alias, fp in self.mapping.items():
             if alias and alias in text:
-                hits.append((alias, fp))
+                key = (alias, fp)
+                if key not in seen:
+                    hits.append(key)
+                    seen.add(key)
+                for alt_fp in self.multi_mapping.get(alias, []) or []:
+                    alt_key = (alias, alt_fp)
+                    if alt_key not in seen:
+                        hits.append(alt_key)
+                        seen.add(alt_key)
         hits.sort(key=lambda x: len(x[0]), reverse=True)
         return hits
 
     def files_for_stem(self, stem: str) -> list[str]:
         """返回所有指向指定 stem（文件名无后缀）的别名。"""
-        return [a for a, fp in self.mapping.items() if Path(fp).stem == stem]
+        out: list[str] = []
+        seen: set[str] = set()
+        for a, fp in self.mapping.items():
+            fps = [fp] + list(self.multi_mapping.get(a, []) or [])
+            if any(Path(x).stem == stem for x in fps) and a not in seen:
+                out.append(a)
+                seen.add(a)
+        return out
 
 
 if __name__ == "__main__":

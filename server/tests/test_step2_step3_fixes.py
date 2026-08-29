@@ -111,6 +111,49 @@ def test_resolve_fk_name_to_id_rejects_ambiguous_short_enum_prefix():
     assert agent._resolve_fk_name_to_id("金木灵根", exclude_stem="school_spirit") is None
 
 
+def test_apply_batch_to_intent_supports_full_field_edit():
+    v = _make_validator()
+    intent = types.SimpleNamespace(extras={
+        "fields": {
+            "bad_name": "old",
+            "desc": "old desc",
+            "unused": "drop me",
+        }
+    })
+
+    v._apply_batch_to_intent(
+        intent,
+        columns_reply=[],
+        fields_reply=[
+            {"col": "name", "value": "new name", "delete": False},
+            {"col": "desc", "value": "new desc", "delete": False},
+            {"col": "unused", "value": "drop me", "delete": True},
+            {"col": "level", "value": 1, "delete": False},
+        ],
+    )
+
+    assert intent.extras["fields"] == {
+        "name": "new name",
+        "desc": "new desc",
+        "level": 1,
+    }
+
+
+def test_apply_batch_to_intent_keeps_legacy_column_remap():
+    v = _make_validator()
+    intent = types.SimpleNamespace(extras={"fields": {"bad_name": "value", "drop": "x"}})
+
+    v._apply_batch_to_intent(
+        intent,
+        columns_reply=[
+            {"col": "bad_name", "fill_value": "name", "delete": False},
+            {"col": "drop", "fill_value": "", "delete": True},
+        ],
+    )
+
+    assert intent.extras["fields"] == {"name": "value"}
+
+
 # ── 1. Step3 partial 归正 ────────────────────────────────────────────
 
 def test_do_append_partial_success_restores_ok_true():
@@ -221,4 +264,27 @@ def test_filter_intents_keeps_real_table_outside_candidates():
     assert "reward" in kept_stems, "候选内表应保留"
     assert "interaction" not in kept_stems, "候选外默认丢弃（keep_alias 默认关）"
     assert "不存在的幻觉表" not in kept_stems, "不存在的表丢弃"
+
+
+def test_filter_intents_drops_real_but_off_schema_table():
+    """LLM 只能产当前 prompt 注入 schema 的候选表。
+
+    表真实存在但不在本次 candidates 里，仍属于 off-schema 输出；缺表应由 locator
+    召回或 backfill 处理，不能在 Step1 接受模型凭记忆产出的表。
+    """
+    from agent.excel.subagent.decompose_agent import DecomposeAgent
+
+    da = DecomposeAgent(parser=None, thinking_sink=lambda p, d: None, cli=None)
+    candidates = [types.SimpleNamespace(stem="building")]
+    intents = [
+        types.SimpleNamespace(table_hint="building", sheet_hint="Building",
+                              extras={"fields": {"id": 1}}),
+        types.SimpleNamespace(table_hint="school", sheet_hint="School",
+                              extras={"fields": {"name": "X"}}),
+    ]
+
+    kept = da._filter_intents(
+        intents, candidates, {"building"}, path="single-table retry")
+
+    assert [getattr(it, "table_hint", "") for it in kept] == ["building"]
 
