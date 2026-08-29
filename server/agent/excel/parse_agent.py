@@ -391,6 +391,12 @@ class ParseAgent:
         # §3.1 step 6a: SplitIntent → NLIntent 适配（SubTask 超集）
         nl_intents = self._dedupe_nl_intents(
             [self._split_to_nl(si, text) for si in split_intents])
+        # 同一 sheet 的稀疏/空壳影子 intent 去重（月华邮件类 4 条→2 条）：
+        # 大候选池单 prompt 退化时，同一 sheet 会同时产"仅占位符的空壳 add"与
+        # "真实字段 add"两版。按 (action,stem,sheet) 分组，组内丢弃「字段更少且
+        # 字段集是他人子集」的影子（保留字段最全的 canonical），再叠 _drop_empty_
+        # add_shadows 的空壳守卫。仅同 sheet 组内互比，不同 sheet/不同定位值绝不误杀。
+        nl_intents = self._dedupe_same_sheet_shadows(nl_intents)
         # §P1 缺陷A 修复：灌值守卫 choke point 化。_assemble 是 DecomposeAgent LLM 路径
         # 的汇合点，所有 SplitIntent→NLIntent 在此统一过 _scrub_narrative_scalar 一道闸，
         # 兜住 LLM 退化把长叙述灌进数字/布尔列的 intent（清空灌值字段，不丢整条）。
@@ -571,6 +577,119 @@ class ParseAgent:
         return nl_intents
 
     # ── 内部 ───────────────────────────────────────────────────
+
+    def _field_canon_map(self, stem: str, sheet: str) -> dict[str, str]:
+        """字段键 → 规范键映射（中文显示名/英文规范名统一到同一规范键）。
+
+        用真实表头（row1 显示名 + row2 规范名）做桥：同一列的中文键「模板ID」和
+        英文键「template_id」都归一映射到「templateid」。cli 不可用/读不到表头时
+        返回空（调用方退回纯文本 _field_name_norm 归一，不做中英桥）。
+        """
+        m: dict[str, str] = {}
+        if self._cli is None:
+            return m
+        try:
+            headers = self._headers_for(stem, sheet) or []
+            types = self._type_row_for(stem, sheet) or []
+        except Exception:
+            return m
+        for h, t in zip(headers, types):
+            h = str(h or "").strip()
+            t = str(t or "").strip()
+            # row2 规范名剥类型后缀（template_id:int → template_id），否则 canon
+            # 键会带 "int"/"string" 后缀，与 LLM 产出的裸列名（template_id）对不上。
+            t_base = t.split(":", 1)[0].strip() if t else ""
+            if not h and not t_base:
+                continue
+            # 规范键取 row2 基础规范名（剥类型）；row2 缺失退回 row1 显示名。
+            canon = ParseAgent._field_name_norm(t_base or h)
+            if not canon:
+                continue
+            for src in (h, t_base, t):
+                if src:
+                    m[ParseAgent._field_name_norm(src)] = canon
+        return m
+
+    def _dedupe_same_sheet_shadows(self, intents: list[NLIntent]) -> list[NLIntent]:
+        """同一 (action,stem,sheet) 组内去稀疏影子 intent（Step1 确定性修复）。
+
+        场景：LLM 单 prompt 面对大候选池/同 workbook 多 sheet 时，会把同一目标
+        sheet 拆成两版 add——① 仅含占位符的稀疏影子（如 MailTemplate 只写
+        「模板ID=<new_template_id>」），② 真实字段的 canonical 版（含 title/content）。
+        两版同 sheet 同 action 不同字段，现有 _dedupe_nl_intents / _drop_empty_add_shadows
+        都不去（字段签名不同），导致下游 Step3 对该 sheet 写两行 → 重复/冲突。
+
+        判据（保守，防误杀）：
+          - 组内字段键先经 _field_canon_map 做中英桥（"模板ID"/"template_id"→同键），
+            cli 不可用时退回纯文本归一。
+          - 对组内每对 intent，若「A 的字段键集合是 B 的子集」且「A 的非占位
+            值都在 B 中同键同值出现」→ A 是 B 的稀疏影子（或完全重复），丢弃 A。
+            B 的同键值空也视为一致——B 是 canonical 版本，允许目标列待 Step2 补。
+          - 仅 add 意图参与；set/delete 同 sheet 多条是合法多行定位，绝不互删。
+          - 迭代剔除直到无影子；仅同 sheet 组内互比，跨 sheet 绝不互删。
+        """
+        if not intents:
+            return intents
+        kept = list(intents)
+        changed = True
+        while changed:
+            changed = False
+            # 分组（组内比较）
+            groups: dict[tuple, list[int]] = {}
+            for i, it in enumerate(kept):
+                key = (
+                    getattr(it, "action", None),
+                    (getattr(it, "table_hint", "") or "").strip().lower(),
+                    (getattr(it, "sheet_hint", "") or "").strip().lower(),
+                )
+                groups.setdefault(key, []).append(i)
+            drop: set[int] = set()
+            for key, idxs in groups.items():
+                if len(idxs) < 2:
+                    continue
+                # 仅 add 参与同 sheet 影子去重：set/delete 同 sheet 多条是
+                # 不同行定位的合法多意图（BuildingInteract idle/collect、
+                # 多行 modify），绝不互删。
+                if key and key[0] not in ("add", None):
+                    continue
+                entries = []
+                for i in idxs:
+                    fields = (getattr(kept[i], "extras", None) or {}).get("fields") or {}
+                    if not isinstance(fields, dict):
+                        fields = {}
+                    canon = self._field_canon_map(
+                        getattr(kept[i], "table_hint", "") or "",
+                        getattr(kept[i], "sheet_hint", "") or "")
+                    norm: dict[str, object] = {}
+                    for k, v in fields.items():
+                        nk = ParseAgent._field_name_norm(k)
+                        norm[canon.get(nk, nk)] = v
+                    entries.append((i, norm))
+                for ai, (ia, fa) in enumerate(entries):
+                    for bi, (ib, fb) in enumerate(entries):
+                        if ai == bi or ib in drop:
+                            continue
+                        ka, kb = set(fa.keys()), set(fb.keys())
+                        if not (ka <= kb):  # a 必须是 b 的子集（含相等）
+                            continue
+                        # a 的每个非占位值都要在 b 中同键同值出现（b 同键值空也视为
+                        # 一致——b 是 canonical 版本，允许目标列待 Step2 补，但不能
+                        # 因此被稀疏影子顶替）
+                        shadow = True
+                        for k, v in fa.items():
+                            sv = str(v).strip()
+                            if sv.startswith("<") and sv.endswith(">"):
+                                continue
+                            bv = fb.get(k)
+                            if bv is None or str(bv).strip() != sv:
+                                shadow = False
+                                break
+                        if shadow:
+                            drop.add(ia)
+                            changed = True
+            if drop:
+                kept = [it for i, it in enumerate(kept) if i not in drop]
+        return kept
 
     @staticmethod
     def _dedupe_nl_intents(intents: list[NLIntent]) -> list[NLIntent]:

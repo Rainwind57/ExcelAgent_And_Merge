@@ -5,6 +5,25 @@
 
 ---
 
+## 数据引用总则（先读）
+
+本文档所有性能数字均来自仓库 / 桌面历史版本目录里的**归档评测报告**，每条括注证据文件相对路径（相对 `C:\Users\wuzhixian\Desktop\`）。两条铁律：
+
+1. **同集 before/after 才可比**：merge 有"快照版（snapshot）"与"svn 版（real svn）"两套数据源，规模与 merge-base 反查机制不同，**不允许跨版本横比**。
+   - 快照版：`test/` 07-30 压测 + `project/` 07-28 全链基线，merge-base 靠 `_meta.json` 反查，表规模 3000 行 / 818 行。
+   - svn 版：`pre/` 08-11 R3 路由层基准 + R6 引擎层，merge-base 靠真实 `svn log --stop-on-copy`，74 表含 monster 10w 行。
+2. **数字只引证据，不重测不臆造**：凡无法验证处标 `[未验证]` 或注明"设计目标"。
+
+主要证据文件（全文引用缩写）：
+- `pre/server/tests/reports/archive/merge_router_bench_20260811_110900_R3.md` —— 简称 **【R3 基准】**
+- `pre/server/tests/reports/archive/merge_eval_20260810_120722_nogit_before .md` + `..._120814_nogit_after .md` —— 简称 **【R6 大表 before/after】**（注意文件名带尾随空格）
+- `pre/server/tests/reports/archive/merge_eval_20260810_115535_nogit.md` + `..._161007_nogit.md` —— 简称 **【R6 小种子】**
+- `test/server/tests/reports/stress_merge_20260730_181128.{txt,json}` —— 简称 **【M-snap 压测】**
+- `project/server/tests/_bench_results/baseline_large.json` —— 简称 **【L-0728 全链基线】**
+- 完整索引见 `Desktop\性能优化指标整合文档.md` §五。
+
+---
+
 # 第 0 章：先搞懂三个基础概念
 
 读正文前，先理解三个贯穿全文的词。
@@ -89,6 +108,8 @@ SVN 里切分支的本质是 `svn copy 原路径 新路径`。这条命令会在
 ## 2.1 为什么需要 SVN
 
 三方合并需要一个"有历史记录"的仓库来存 base。SVN 天生记录 `copyfrom`，所以用它来模拟真实的并行开发场景。
+
+> **版本演进说明**：merge 引擎经历过两代数据源——早期"快照版"（`merge/demo/` 文件夹 + `_meta.json` 反查 merge-base，无需 svn 工具）与现今"svn 版"（真实 `svnadmin create` 仓库 + `svn log --stop-on-copy` 反查）。当前仓库 `merge_branch.py:11-13` 注释明确"不再依赖文件夹模拟快照（该方式已下线）"。本章只讲现行 svn 版；快照版性能数据见【M-snap 压测】/【L-0728 全链基线】，仅作演进基线，不与 svn 版横比。
 
 ## 2.2 种子数据（随项目版本控制，约 41MB）
 
@@ -308,6 +329,8 @@ for fname in other_files:
 
 为什么快：归一化从"每次比较重算两次"→ 每格只算一次；比较从 Python 三层循环 → numpy C 层广播。纯数据大表 **10-50 倍**。
 
+> **量化佐证（来自【L-0728 全链基线】）**：07-28 `baseline_large.json` 里 `merge_multibranch` 对 3 分支 818 行仅 `compare_time 16.3s`，但 10 万行单表 compare 曾预计"数分钟"（`note_10w_timeout`）。M7 记录 `list.index()` O(n²) 让 10w 行直接卡死（`jj/合并引导问题排查报告.md` M7 项）。A→D 的递进把"10w 行卡死/数分钟"压到 R6 实测 **compare ~3.9s**（见第 8 章总表）。
+
 ### 版本 E：公式/批注回退（正确性兜底）
 
 问题：numpy 向量化只处理"值"，但公式单元格的判定（公式文本是否一致、引用值是否变化、批注三方 diff）是结构化逻辑，向量化做不了。
@@ -397,6 +420,8 @@ Excel 的公式单元格里存的是公式文本（如 `=B2+C2`），**计算结
 - 结果：openpyxl 改表保存 → 缓存清零 → 编表读到空 → 输出 0/空
 
 实测：原始 `match_dan.xlsx` 365 个公式缓存全在，openpyxl save 后归零（0/365）。
+
+> **量化佐证**：R9-A1 公式守门落地后 `needs_manual_fix` audit 覆盖率 100%（on/hold 模式）、off 静默率 100%、31 测试零回归（`优化全过程.md` R9-A1 节）。公式检测快判 zip 扫 `<f>` 标签：10w 行 ~0.05s vs openpyxl 全量读 ~6s（约 120x）；公式只在 ~6.7% 的表出现，无公式表零开销跳过。
 
 ## 6.2 校验时机：写回时，不是 compare 时
 
@@ -535,6 +560,8 @@ soffice --headless --norestore -env:UserInstallation=file:///profile \
 
 **预取**：compare 返回后，后台预取"冲突最多的前 5 个 sheet"的 AI 建议填缓存——用户点开时已经是热的。
 
+> **量化佐证（【R3 基准】#10/#11）**：AI 预取仅当 AgentService 已初始化才预取 + 只取冲突最多前 5 sheet + 在途去重；`_suggest_cache` LRU 2000 / TTL 1h 防长驻服务内存膨胀。批量 LLM 把 N 次逐格往返（每格 15-45s）合并为 1 次调用，冲突格子多的场景从"逐格点都等一次 LLM"降到"一次 30-60s 全回来"。
+
 **超时**：LLM 调用无显式 timeout（依赖底层默认），失败 try/except 回退规则。
 
 ## 7.7 作者归并（减少假冲突的另一招）
@@ -553,6 +580,8 @@ soffice --headless --norestore -env:UserInstallation=file:///profile \
 
 解决：优先用 `python-calamine`（Rust 写的解析器），10w 行 **0.05s**，快 100 倍。
 
+> **量化佐证（【R3 基准】#8）**：`_dir_sheet_sets` 222 次文件打开从 17.5s → 0.8s（openpyxl 0.3-0.5s/文件 → calamine 0.1ms/文件），是 subdir_compare 2.33x 的主因。
+
 细节：
 - calamine 只读值（等价于 data_only），不读公式/批注（所以只用于 compare 阶段读数据，写回不用它）
 - `_fix_calamine_value` 把 float 整数值转 int，保证主键 `"1"` vs `"1.0"` 匹配一致
@@ -560,17 +589,25 @@ soffice --headless --norestore -env:UserInstallation=file:///profile \
 
 ## 8.2 性能数据总表
 
-| 优化项 | 收益 |
-|---|---|
-| calamine Rust 读引擎 | 222 次打开 17.5s → **0.8s** |
-| svn info 批量预填 | ~190s → **0.2s** |
-| subdir_compare | 21.8s → 9.3s（**2.33x**） |
-| ProcessPool 表级并行 | **2.0x**（8 表 × 450k 格：3.69s → 1.84s） |
-| 目录缓存预热 | `/dirs` 128.3ms → **0ms**（LRU/TTL 30s） |
-| 未变更表跳过 | 74 表跳过 **64 表（86%）** |
-| 10w 行大表 | compare ~3.9s + apply ~6.3s ≈ **10.4s** |
-| sparse 内存 | GB 级 → **MB 级** |
-| numpy 向量化 | 纯数据大表 **10-50×** |
+| 优化项 | 收益（before → after） | 证据 |
+|---|---|---|
+| calamine Rust 读引擎 | 222 次打开 17.5s → **0.8s** | 【R3 基准】收益归因 #8 |
+| svn info 批量预填 | ~190s → **0.2s**（148 次 subprocess → 1 次） | 【R3 基准】#7 |
+| subdir_compare | 21785ms → 9342ms（**2.33x**） | 【R3 基准】monkeypatch A/B |
+| branch_compare | 99524ms → 89513ms（**1.11x**） | 【R3 基准】 |
+| ProcessPool 表级并行 | **2.0x**（8 表 × 450k 格：3.69s → 1.84s） | R6 samples；ThreadPool 仅 0.96x |
+| 目录缓存预热 | `/dirs` 128.3ms → **0ms**（LRU/TTL 30s） | 【R3 基准】 |
+| 未变更表跳过 | 74 表跳过 **64 表（86%）**，branch 54.2s → 49.3s | R6 #33 demo_svn |
+| 假冲突消除（语义归一） | 假冲突率 0.5 → **0.0**（seed id=2，"100" vs 100.0） | R6 #24 demo_svn |
+| 假 source_deleted | 69 → **0** | 【R3 基准】#9 |
+| 10w 行大表 | compare ~3.9s + apply ~6.3s ≈ **10.4s** | 【R6 大表 after】 |
+| sparse 内存 | GB 级 → **MB 级** | 【R6 大表】免深拷贝 |
+| numpy 向量化 | 纯数据大表 **10-50×** | compare 版本 D 设计 + M7 消除 O(n²) |
+
+> **口径提醒**：
+> - "10w 行大表 10.4s"来自【R6 大表 after】`merge_eval` 进程内引擎层（compare 3943ms + apply 6336ms），**不含路由层 svn 反查**；svn 版 `branch_compare` 74 表全量 89.5s 里 ~88s 在引擎层 compare loop（【R3 基准】注意事项）。
+> - 快照版（3000 行）07-30 压测 branch/subdir 均 ~18s（【M-snap 压测】），与 svn 版数字**不可横比**（数据源、规模、merge-base 机制都不同）。
+> - 引擎层 10w 行 R6 before→after 为 10355.7 → 10409.2ms（±0.5% 持平），因 #24 语义归一在此 S-H 种子无命中场景；"假冲突 0.5→0"实绩来自 svn demo_svn 的 dev1/dev2 id=2 种子（见【R6 小种子】解读）。
 
 ## 8.3 并行方案（`parallel_compare.py`）
 
@@ -605,21 +642,274 @@ zip 解包 → lxml 改目标 sheet 的 XML → 重打包
 
 **lxml 是 C 实现**：25MB 的 sheet XML 序列化从 3.4s → 1s。
 
+> **量化佐证（【R6 大表】）**：10w 行 4 sheet 大表 apply(fast_xml) 6376.6ms（before）→ 6335.8ms（after），快路径本身只处理十几格改动、秒级完成，且**不触碰公式单元格**（天然保护公式缓存）。
+
 ---
 
-# 第 9 章：答辩讲解建议（按页组织）
+# 第 9 章：PPT 每页组织方案（按页设计，含形式与内容）
 
-| 页 | 内容 | 讲解重点 |
+> 目标：把 Merge 萃取内容落到 PPT（`技术分享-Agent与三方合并.pptx.md` 第 4 章），每页给**内容要点 + 形式（文本 / 表格 / 代码 / 图）+ 性能数据引用**。Marp 约定：`---` 分页，`##` 为页标题，`|` 为表格，` ``` ` 为代码/流程图块。
+> 全篇 12 页，遵循"每页只讲一件事"原则，数据页配证据标注。
+
+---
+
+## 9.0 全页清单（速览）
+
+| 页 | 标题 | 形式 | 核心数据 |
+|---|---|---|---|
+| P1 | Merge 三方合并模型 | 图 + 文本 | — |
+| P2 | Merge 总体框架 7 步 | 图 + 文本 | — |
+| P3 | 两条合并链路 | 表格 | — |
+| P4 | merge-base 定位（重点） | 图 + 表格 | — |
+| P5 | 比对算法 5 版本迭代 | 表格 + 文本 | numpy 10-50× |
+| P6 | 语义相等归一 | 代码 + 文本 | 假冲突 0.5→0 |
+| P7 | ID 重映射 + 引用完整性 | 图 + 文本 | — |
+| P8 | 公式缓存保护 | 图 + 文本 | 365 缓存归零实证 |
+| P9 | AI 建议 + 置信度 | 表格 | 批量 N 往返→1 次 |
+| P10 | 大表性能数据总表 | 表格 | subdir 2.33x 等 |
+| P11 | 性能总览（svn 版 vs 快照版） | 表格 | 见 P10/P11 |
+| P12 | 答辩话术速记 | 文本 | — |
+
+---
+
+## P1｜Merge 三方合并模型
+
+**形式**：图形（ASCII 树）+ 3 行文本。
+
+**内容**：
+
+```text
+          merge-base（公共祖先，SVN copyfrom 反查）
+          /        \
+      ours       theirs（两个分支最新版本）
+          \        /
+         merge result
+```
+
+**文本**：
+- merge-base 反查：`svn log --stop-on-copy` 定位 copyfrom-rev，替代手工 fork 快照
+- 两种流程：跨分支（absorb/merge_back）+ 同分支子目录合回（subdir）
+- 数据源：真实 SVN 工作副本 `merge/svn/demo_svn/wc`（74 表含 monster 10w 行），快照版已下线
+
+---
+
+## P2｜Merge 总体框架 7 步
+
+**形式**：流程图（编号箭头）+ 一句话说明。
+
+**内容**：
+
+```text
+① 选分支 → ② 定位 merge-base → ③ 拉三份数据 → ④ compare 比对
+        → ⑤ 冲突解决 → ⑥ 引用校验 → ⑦ 写回
+```
+
+**文本**：base 用 `svn export` 按历史版本导出；source/target 从工作副本直接拷；compare 主键对齐逐格语义判等；大表走 fast_apply 快路径。
+
+---
+
+## P3｜两条合并链路
+
+**形式**：表格。
+
+| 链路 | 干什么 | 入口 | merge-base 方式 |
+|---|---|---|---|
+| 跨分支合并 | dev 分支改动合进另一分支/trunk | `/api/merge/branch/compare` + `/apply` | 双方 copyfrom 链 LCA 交叉 |
+| 目录合并 | trunk 下子目录合回父级 | `/api/merge/subdir/compare` + `/apply` | 子目录 copyfrom-rev 定为 base |
+| （旧）三阶段 | 多生产者分三次汇总 | `merge_stages.py`（deprecated） | 保留兼容 |
+
+**文本**：两条链路**共享同一套 `compare_sheet` 比对算法**，只有"选分支、定 base"不同，核心 diff 逻辑不重复实现。
+
+---
+
+## P4｜merge-base 定位（重点）
+
+**形式**：图形（copyfrom 链）+ 表格（三种出生点）+ 降级链列表。
+
+**内容**：
+
+```text
+trunk@r1 → 分支A@r5 → 分支B（B 从 A 复制）
+链：B → copyfrom A@r5；A → copyfrom trunk@r1
+LCA：两边都指向 trunk → base = trunk@min(r1, r2)
+```
+
+**表格（分支出生点三情况）**：
+
+| 情况 | copyfrom-path | 标记 |
 |---|---|---|
-| 1 | Merge 总体框架 7 步流程 | 一张流程图讲全，先讲"三方合并"概念 |
-| 2 | 环境准备：SVN 仓库 + 种子数据 | 目录树图 + 6 步脚本链 + 冲突锚点 |
-| 3 | 两条链路方法总览 | absorb/merge_back + subdir 差异 |
-| 4 | merge-base 定位 | copyfrom 反查 + 降级链（重点讲清楚） |
-| 5 | 比对算法 5 版本迭代 | 版本 A→E 递进链，突出 numpy 10-50× |
-| 6 | ID 重映射 + 引用完整性 | split/conflict + 分支标记动机 |
-| 7 | 公式缓存保护 | save 前后快照 + LibreOffice 重算 |
-| 8 | AI 建议 + 置信度 | 两条链路 + 置信度区间表 |
-| 9 | 大表性能方案 | 性能数据总表 |
+| 正常切分支 | 如 /trunk@r1 | inferred=false |
+| 纯新建（手工 mkdir+add） | 路径自身 | inferred=true |
+| svn 挂了 / r1 首提交 | 无 | ok:false |
+
+**文本**：降级链 ① LCA 交叉 → ② 子目录场景 → ③ 单侧 inferred → ④ 单侧 fork 兜底 → ⑤ 报错要手工传 `merge_base_override`。原则：**找不到就报错，绝不瞎猜 base**。
+
+---
+
+## P5｜比对算法 5 版本迭代
+
+**形式**：表格 + 一句话递进链。
+
+| 版本 | 方法 | 换掉的瓶颈 | 效果 |
+|---|---|---|---|
+| A | 原始三重循环 | 基线 | 10w×100 列 ≈500 亿次 → 卡死 |
+| B | `id()` 哈希预建行索引 | `list.index` O(n) 线性扫 | 找行 O(n)→O(1) |
+| C | sparse 稀疏化 | 无差异行物化 100 格 dict | 内存 GB→MB |
+| D | numpy 向量化 | 逐格调 `_semantic_key` | 纯数据大表 10-50× |
+| E | 公式/批注回退逐格循环 | 向量化不懂公式/批注 | 正确性兜底 |
+
+**文本**：递进链 A 能跑 → B 提找行 → C 降内存 → D 提计算 → E 保正确。量化佐证：10w 行从"卡死/数分钟"（【L-0728 全链基线】note_10w_timeout）压到 R6 实测 compare ~3.9s。
+
+---
+
+## P6｜语义相等归一（核心算法）
+
+**形式**：代码块 + 3 个判等示例 + 数据。
+
+**内容**：
+
+```python
+def _semantic_key(v):
+    if v is None: return ('none', '')
+    if isinstance(v, bool): return ('bool', v)   # 避免 True==1 误判
+    if isinstance(v, (int, float)): return ('num', float(v))
+    s = str(v).strip()
+    if s == '': return ('none', '')
+    try: return ('num', float(s))
+    except: return ('str', s)
+```
+
+**文本**：`"100"` vs `100`、`"a "` vs `"a"`、`0.1` vs `"0.10"` → 判相等。**只用于判等，不改原值**。量化：假冲突率 0.5 → 0.0（svn demo_svn seed id=2，【R6 小种子】解读）。
+
+---
+
+## P7｜ID 重映射 + 引用完整性
+
+**形式**：图形（撞车场景）+ 分支标记映射表。
+
+**内容**：
+
+```text
+分支 A 新增 id=99（A 的灵兽）
+分支 B 新增 id=99（B 的道具）  ← 撞车
+split（默认）：拆两条独立行，后到者 max+1
+conflict：视为同一行冲突，交人工
+```
+
+**文本**：映射表带分支标记 `(file, old_pk) → new_pk`，非裸 `old_pk → new_pk`。动机：A 的 99 没变，不能因 B 的 99 重映射而误改 A 内部外键引用。`ref_integrity` 同步外键后扫悬空引用（dangling ref）。
+
+---
+
+## P8｜公式缓存保护
+
+**形式**：图形（save 前后快照）+ 实证数字。
+
+**内容**：
+
+```text
+① snapshot_before（data_only 读缓存值）
+② openpyxl save（可能清缓存）
+③ validate_and_fix（对比 lost/changed）
+④ lost → LibreOffice 重算 → 二次校验 → 仍空则 needs_manual_fix
+```
+
+**文本**：
+- 实证：`match_dan.xlsx` 365 个公式缓存 openpyxl save 后归零（0/365）
+- 快判：zip 扫 `<f>` 标签，10w 行 ~0.05s vs openpyxl 全量读 ~6s（~120x）
+- 落地：R9-A1 公式守门 audit 覆盖率 100% / 31 测试零回归
+
+---
+
+## P9｜AI 建议 + 置信度
+
+**形式**：表格（两条链路）+ 表格（置信度区间）。
+
+**内容**：
+
+| 名称 | 是什么 | 谁来做 |
+|---|---|---|
+| AI 建议 | 真调 LLM 给建议 | `suggest_merge` 链路 |
+| ⭐推荐 | 规则版多数表决 | `recommend_version`，零 LLM |
+
+**置信度区间**：
+
+| 区间 | 依据 |
+|---|---|
+| 0.85-0.95 | rev 差 ≥2 + 值域合理 + 列语义明确 |
+| 0.65-0.80 | rev 相邻 / 单一依据 |
+| 0.40-0.55 | 值异常 / 语义模糊 |
+| 0.30-0.40 | 完全无法判断 |
+| 禁止 1.0 | LLM 不许说百分百确定 |
+
+**文本**：批量接口把 N 次逐格往返（每格 15-45s）压成 1 次（30-60s）；缓存 LRU 2000/TTL 1h；预取冲突最多前 5 sheet。
+
+---
+
+## P10｜大表性能数据总表
+
+**形式**：表格（每行带证据）。
+
+| 优化项 | 收益（before → after） | 证据 |
+|---|---|---|
+| calamine Rust 读引擎 | 222 次打开 17.5s → 0.8s | 【R3 基准】#8 |
+| svn info 批量预填 | ~190s → 0.2s（148→1 次 subprocess） | 【R3 基准】#7 |
+| subdir_compare | 21785ms → 9342ms（2.33x） | 【R3 基准】 |
+| branch_compare | 99524ms → 89513ms（1.11x） | 【R3 基准】 |
+| ProcessPool 并行 | 2.0x（3.69s→1.84s，8 表） | R6 samples |
+| 未变更表跳过 | 74 表跳过 64（86%） | R6 #33 |
+| 10w 行大表 | compare ~3.9s + apply ~6.3s ≈ 10.4s | 【R6 大表】 |
+| numpy 向量化 | 10-50× | 版本 D |
+| sparse 内存 | GB → MB | 版本 C |
+
+**文本**：口径——引擎层 vs 路由层不同范围；快照版（3000 行 ~18s）不可与 svn 版横比。
+
+---
+
+## P11｜性能总览：svn 版 vs 快照版（隔离对比）
+
+**形式**：双列表格。
+
+| 维度 | 快照版（snapshot） | svn 版（real svn） |
+|---|---|---|
+| 数据源 | `merge/demo/` 文件夹 | `merge/svn/demo_svn/{repo,wc}` |
+| merge-base | `_meta.json` 反查 | `svn log --stop-on-copy` |
+| 规模 | 3000 行 / 818 行 | 74 表含 monster 10w 行 |
+| 代表指标 | subdir ~17854ms（07-30） | subdir 9342ms（08-11 R3） |
+| 结论 | 正确但小表耗时偏高 | 路由层 + 引擎层双优化后 2.33x |
+
+**文本**：铁律——**两版数字不可横比**（数据源、规模、merge-base 机制都不同）。所有提升% 必须同集 before→after。
+
+---
+
+## P12｜答辩话术速记
+
+**形式**：纯文本（bullet）。
+
+- 开场：一句话讲清"三方合并"——base 是共同起点，没 base 分不清谁改了
+- 重点页（P4 merge-base）：copyfrom 是 SVN 客观记录，切分支必留，比 mergeinfo 可靠
+- 亮点页（P5 五版本迭代）：每版换一个瓶颈，递进链体现工程方法论
+- 数据页（P10/P11）：先讲"同集才可比"，再给 subdir 2.33x、假冲突 0.5→0
+- 收尾边界：公式跨行/跨表复杂场景靠 LibreOffice 兜底，非全自动
+
+---
+
+## 9.x 与现有 PPT 第 4 章的映射
+
+现有 `技术分享-Agent与三方合并.pptx.md` 第 4 章 4.1-4.8 是**内容分区**（非页面级），本方案 P1-P12 是**答辩页面级**。映射关系：
+
+| 现有节 | 对应方案页 |
+|---|---|
+| 4.1 三方合并模型 | P1 |
+| 4.2 行匹配与差异分类 | P5（比对算法）+ P6（语义归一） |
+| 4.3 语义相等归一 | P6 |
+| 4.4 列策略自动合并 | P9（推荐/表决） |
+| 4.5 冲突推荐与多数表决 | P9 |
+| 4.6 ID 冲突重映射 | P7 |
+| 4.7 公式与引用处理 | P8 |
+| 4.8 高级合并特性 | P7（批注 diff）+ P8（漏行） |
+| 5.x 性能优化（Merge 侧） | P10 + P11 |
+
+> 落地建议：把现有第 4 章 + 第 5 章 Merge 侧页面，按 P1-P12 重组；Agent 侧性能（5.1-5.4）保留在 Agent 章节不动。
 
 ---
 

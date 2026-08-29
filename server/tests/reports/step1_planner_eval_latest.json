@@ -3,512 +3,200 @@
   "model": "netease-codemaker/deepseek-v4-flash",
   "results": [
     {
-      "name": "新门派·太虚剑宗全套配置（中文策划口吻，4表 add + 门派神通树 + 灵根映射 + 天赋二层 + 邮件公告）",
-      "input": "新增一个门派叫'太虚剑宗'，门派编号 9，门派类型 1，大世界模型 1027，战斗模型 1074，先配四个神通：第一个神通'太虚剑意'，描述'以虚御实，剑出无痕，每回合自动凝成太虚剑气，剑气越多，追斩伤害越高'，配两套心法，心法一叫'剑意·蓄'，描述'开局即得剑气，快速进入节奏'，心法二叫'剑意·绝'，描述'击杀敌方时额外获得剑气'；第二个神通'裂空斩'，描述'撕开空间，对单体打出三段斩击，每段威力递增'，心法一叫'裂空·碎'，描述'暴击概率逐段提升'，心法二叫'裂空·连'，描述'释放后不进入休息'；第三个神通'万剑归宗'，描述'驱使剑气齐射多个敌人，命中越多剑气越多'，心法一叫'归宗·雨'，描述'覆盖范围扩大'，心法二叫'归宗·化劲'，描述'暴击转化为稳定伤害'；第四个神通'无相护体'，描述'以无相罡气护身，受击时概率格挡并反击'，心法一叫'无相·觉'，描述'面对高速敌人格挡概率提升'，心法二叫'无相·传'，描述'释放时人宠共同护体'。这四个神通每级消耗灵石 0，一级升一级要人物 1 级，技能编号按顺序 901、902、903、904。再把神通和灵根绑定：太虚剑意绑金灵根给天赋 600001，裂空斩绑木灵根给天赋 600002，万剑归宗绑水灵根给天赋 600002，无相护体绑火灵根给天赋 600001。门派天赋盘配一个：天赋主键 9011，名字'破军'，功法描述'伤害提升20%'，图标'Icon_120_shentong_1.png'，门派 9，层级 1，所在列 1；它的下层天赋 9021，名字'贪狼'，功法描述'伤害提升30%'，图标'Icon_120_shentong_2.png'，门派 9，层级 2，所在列 1，上一层功法所在列填'1'。再补两条天赋等级：破军 1 级描述'伤害提升20%'被动 600003，破军 2 级描述'伤害提升40%'被动 600003。最后给新门派发一封开宗立派的全服邮件：邮件模板标题'太虚剑宗开宗立派'，内容'太虚剑宗今日开宗，广纳天下英才，共证剑道'，全服邮件 global_id 20，邮件类型 1，发送人'系统'，发送时间 2026-09-01 00:00:00，不带奖励。",
-      "dur_s": 511.3,
+      "name": "限时活动·九霄论剑（中文策划口吻，activity 单表 add + 日期段）",
+      "input": "开一个限时活动叫'九霄论剑'，活动编号 3060，活动描述'九霄之上，群雄论剑，活动期间内每日可参与一次剑试'，开始时间 2026-11-01 00:00:00，结束时间 2026-11-15 23:59:59。",
+      "dur_s": 37.5,
       "loc_err": "",
       "parse_err": "",
       "locator": {
         "candidates": [
-          "school",
-          "ability",
-          "spirit",
-          "school_spirit",
-          "spell",
-          "hero",
-          "reward",
+          "activity",
+          "id_mgr",
           "mail",
-          "combat",
-          "model_prefab",
-          "map",
-          "residence_putuan",
-          "hero_level",
-          "item",
-          "school_talent"
+          "interaction"
         ],
-        "fk_edges": 10,
-        "is_cross_table": true
+        "fk_edges": 0,
+        "is_cross_table": false
       },
-      "n_expected": 19,
-      "n_actual": 15,
+      "n_expected": 1,
+      "n_actual": 1,
       "actual": [
         {
           "action": "add",
-          "table": "school",
-          "sheet": "School",
-          "fields": {},
-          "produces": "new_school_id"
-        },
-        {
-          "action": "add",
-          "table": "school_ability",
-          "sheet": "SchoolAbilityLevel",
+          "table": "activity",
+          "sheet": "Activity",
           "fields": {
-            "升级消耗灵石数量": 0,
-            "升级条件：人物到达x级": 1,
-            "技能id": 901
+            "活动id": 3060,
+            "活动类型": 3,
+            "活动名称": "九霄论剑",
+            "活动描述": "九霄之上，群雄论剑，活动期间内每日可参与一次剑试",
+            "活动开始时间": "2026-11-01 00:00:00",
+            "活动结束时间": "2026-11-15 23:59:59"
           }
-        },
-        {
-          "action": "add",
-          "table": "school_ability",
-          "sheet": "SchoolAbilityLevel",
-          "fields": {
-            "升级消耗灵石数量": 0,
-            "升级条件：人物到达x级": 1,
-            "技能id": 902
-          }
-        },
-        {
-          "action": "add",
-          "table": "school_ability",
-          "sheet": "SchoolAbilityLevel",
-          "fields": {
-            "升级消耗灵石数量": 0,
-            "升级条件：人物到达x级": 1,
-            "技能id": 903
-          }
-        },
-        {
-          "action": "add",
-          "table": "school_ability",
-          "sheet": "SchoolAbilityLevel",
-          "fields": {
-            "升级消耗灵石数量": 0,
-            "升级条件：人物到达x级": 1,
-            "技能id": 904
-          }
-        },
-        {
-          "action": "add",
-          "table": "school_spirit",
-          "sheet": "SchoolSpirit",
-          "fields": {
-            "神通id": "<new_school_spirit_id>",
-            "灵根id": "",
-            "获得天赋（buff）": "600001"
-          },
-          "produces": "new_school_spirit_id"
-        },
-        {
-          "action": "add",
-          "table": "school_spirit",
-          "sheet": "SchoolSpirit",
-          "fields": {
-            "神通id": "<new_school_spirit_id>",
-            "灵根id": "",
-            "获得天赋（buff）": "600002"
-          },
-          "produces": "new_school_spirit_id"
-        },
-        {
-          "action": "add",
-          "table": "school_spirit",
-          "sheet": "SchoolSpirit",
-          "fields": {
-            "神通id": "<new_school_spirit_id>",
-            "灵根id": "",
-            "获得天赋（buff）": "600002"
-          },
-          "produces": "new_school_spirit_id"
-        },
-        {
-          "action": "add",
-          "table": "school_spirit",
-          "sheet": "SchoolSpirit",
-          "fields": {
-            "神通id": "<new_school_spirit_id>",
-            "灵根id": "",
-            "获得天赋（buff）": "600001"
-          },
-          "produces": "new_school_spirit_id"
-        },
-        {
-          "action": "add",
-          "table": "school_talent",
-          "sheet": "SchoolTalent",
-          "fields": {
-            "功法描述": "伤害提升20%",
-            "图标": "Icon_120_shentong_1.png",
-            "所在列": 1,
-            "主键": 9011,
-            "名称": "破军",
-            "门派id": 9,
-            "层级": 1
-          }
-        },
-        {
-          "action": "add",
-          "table": "school_talent",
-          "sheet": "SchoolTalent",
-          "fields": {
-            "主键": "9021",
-            "名称": "贪狼",
-            "功法描述": "伤害提升30%",
-            "图标": "Icon_120_shentong_2.png",
-            "门派id": "9",
-            "层级": "2",
-            "所在列": "1",
-            "上一层功法所在列": "1"
-          }
-        },
-        {
-          "action": "add",
-          "table": "school_talent",
-          "sheet": "SchoolTalentLevel",
-          "fields": {
-            "主键": "<new_school_talent_level_lv1_id>",
-            "等级": 1,
-            "功法描述": "伤害提升20%",
-            "被动效果buff_id": 600003
-          },
-          "produces": "new_school_talent_level_lv1_id"
-        },
-        {
-          "action": "add",
-          "table": "school_talent",
-          "sheet": "SchoolTalentLevel",
-          "fields": {
-            "主键": "<new_school_talent_level_lv2_id>",
-            "等级": 2,
-            "功法描述": "伤害提升40%",
-            "被动效果buff_id": 600003
-          },
-          "produces": "new_school_talent_level_lv2_id"
-        },
-        {
-          "action": "add",
-          "table": "mail",
-          "sheet": "MailTemplate",
-          "fields": {
-            "模板ID": "<new_mail_template_id>",
-            "标题": "太虚剑宗开宗立派",
-            "内容": "太虚剑宗今日开宗，广纳天下英才，共证剑道"
-          },
-          "produces": "new_mail_template_id"
-        },
-        {
-          "action": "add",
-          "table": "mail",
-          "sheet": "GlobalMail",
-          "fields": {
-            "全服邮件ID": 20,
-            "邮件类型": 1,
-            "发送人": "系统",
-            "发送时间": "2026-09-01 00:00:00",
-            "模板ID": "<new_mail_template_id>"
-          },
-          "produces": "new_global_mail_id"
         }
       ],
       "rows": [
         {
-          "exp": "school/school/add",
-          "act": "school/school/add",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "exp_keys": 9,
-          "keys_found": 0,
-          "keys_value_ok": 0,
-          "extra_keys": [],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolability/add",
-          "act": "school_ability/schoolabilitylevel/add",
-          "table_ok": true,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 8,
-          "keys_found": 0,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "升级消耗灵石数量",
-            "升级条件：人物到达x级",
-            "技能id"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolabilitylevel/add",
-          "act": "school_ability/schoolabilitylevel/add",
+          "exp": "activity/activity/add",
+          "act": "activity/activity/add",
           "table_ok": true,
           "sheet_ok": true,
           "action_ok": true,
           "exp_keys": 6,
-          "keys_found": 3,
-          "keys_value_ok": 2,
+          "keys_found": 6,
+          "keys_value_ok": 5,
           "extra_keys": [],
           "ph_total": 0,
           "ph_ok": 0,
           "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolability/add",
-          "act": "school_ability/schoolabilitylevel/add",
-          "table_ok": true,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 8,
-          "keys_found": 0,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "升级消耗灵石数量",
-            "升级条件：人物到达x级",
-            "技能id"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolabilitylevel/add",
-          "act": "school_ability/schoolabilitylevel/add",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "exp_keys": 6,
-          "keys_found": 3,
-          "keys_value_ok": 2,
-          "extra_keys": [],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolability/add",
-          "act": "school_talent/schooltalent/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 8,
-          "keys_found": 2,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "图标",
-            "所在列",
-            "主键",
-            "门派id",
-            "层级"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolabilitylevel/add",
-          "act": "school_spirit/schoolspirit/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 6,
-          "keys_found": 2,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "获得天赋（buff）"
-          ],
-          "ph_total": 2,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolability/add",
-          "act": "school_talent/schooltalent/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 8,
-          "keys_found": 2,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "主键",
-            "图标",
-            "门派id",
-            "层级",
-            "所在列",
-            "上一层功法所在列"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_ability/schoolabilitylevel/add",
-          "act": "school_spirit/schoolspirit/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 6,
-          "keys_found": 2,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "获得天赋（buff）"
-          ],
-          "ph_total": 2,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_spirit/schoolspirit/add",
-          "act": "school_spirit/schoolspirit/add",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "exp_keys": 4,
-          "keys_found": 3,
-          "keys_value_ok": 0,
-          "extra_keys": [],
-          "ph_total": 1,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_spirit/schoolspirit/add",
-          "act": "school_spirit/schoolspirit/add",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "exp_keys": 4,
-          "keys_found": 3,
-          "keys_value_ok": 0,
-          "extra_keys": [],
-          "ph_total": 1,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_spirit/schoolspirit/add",
-          "act": "school_talent/schooltalentlevel/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 4,
-          "keys_found": 0,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "主键",
-            "等级",
-            "功法描述",
-            "被动效果buff_id"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_spirit/schoolspirit/add",
-          "act": "school_talent/schooltalentlevel/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 4,
-          "keys_found": 0,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "主键",
-            "等级",
-            "功法描述",
-            "被动效果buff_id"
-          ],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_talent/schooltalent/add",
-          "act": "mail/mailtemplate/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 7,
-          "keys_found": 1,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "标题",
-            "内容"
-          ],
-          "ph_total": 1,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_talent/schooltalent/add",
-          "act": "mail/globalmail/add",
-          "table_ok": false,
-          "sheet_ok": false,
-          "action_ok": true,
-          "exp_keys": 8,
-          "keys_found": 1,
-          "keys_value_ok": 0,
-          "extra_keys": [
-            "邮件类型",
-            "发送人",
-            "发送时间",
-            "模板ID"
-          ],
-          "ph_total": 1,
-          "ph_ok": 0,
-          "full_match": false
-        },
-        {
-          "exp": "school_talent/SchoolTalentLevel/add",
-          "act": "〈缺失〉",
-          "unmatched": true
-        },
-        {
-          "exp": "school_talent/SchoolTalentLevel/add",
-          "act": "〈缺失〉",
-          "unmatched": true
-        },
-        {
-          "exp": "mail/MailTemplate/add",
-          "act": "〈缺失〉",
-          "unmatched": true
-        },
-        {
-          "exp": "mail/GlobalMail/add",
-          "act": "〈缺失〉",
-          "unmatched": true
         }
       ],
       "metrics": {
         "full_match": 0,
-        "table_hit": 7,
-        "sheet_hit": 5,
-        "action_hit": 15,
-        "keys_found": 22,
-        "keys_ok": 4,
-        "keys_exp": 96,
-        "extra_key_ops": 10,
-        "ph_total": 8,
+        "table_hit": 1,
+        "sheet_hit": 1,
+        "action_hit": 1,
+        "keys_found": 6,
+        "keys_ok": 5,
+        "keys_exp": 6,
+        "extra_key_ops": 0,
+        "ph_total": 0,
         "ph_ok": 0,
-        "ph_unresolved": 8,
+        "ph_unresolved": 0,
         "ph_resolved_total": 0,
         "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "门派神通微调·两个门派各改一处（中文策划口吻，school 2表 modify + row_key 定位）",
+      "input": "剑修的战斗模型换成 1075，然后把'驭风'这条神通的描述改成'每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势'。",
+      "dur_s": 105.4,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "ability",
+          "combat",
+          "model_prefab",
+          "exclusive_state",
+          "spell",
+          "school",
+          "assistant_level",
+          "item_recipe"
+        ],
+        "fk_edges": 1,
+        "is_cross_table": true
+      },
+      "n_expected": 2,
+      "n_actual": 4,
+      "actual": [
+        {
+          "action": "set",
+          "table": "combat",
+          "sheet": "combat_data",
+          "fields": {
+            "战斗模式": 1075
+          },
+          "locator_field": "战斗类型",
+          "locator_value": "剑修"
+        },
+        {
+          "action": "set",
+          "table": "ability",
+          "sheet": "Ability",
+          "fields": {
+            "神通描述": "每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势"
+          },
+          "locator_field": "名称",
+          "locator_value": "驭风"
+        },
+        {
+          "action": "set",
+          "table": "school",
+          "sheet": "School",
+          "fields": {
+            "combat_model_id": 1075
+          },
+          "locator_field": "name",
+          "locator_value": "剑修"
+        },
+        {
+          "action": "set",
+          "table": "school_ability",
+          "sheet": "SchoolAbility",
+          "fields": {
+            "desc": "每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势"
+          },
+          "locator_field": "name",
+          "locator_value": "驭风"
+        }
+      ],
+      "rows": [
+        {
+          "exp": "school/school/set",
+          "act": "school/school/set",
+          "table_ok": true,
+          "sheet_ok": true,
+          "action_ok": true,
+          "locator_ok": false,
+          "exp_keys": 1,
+          "keys_found": 1,
+          "keys_value_ok": 1,
+          "extra_keys": [],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": true
+        },
+        {
+          "exp": "school_ability/schoolability/set",
+          "act": "school_ability/schoolability/set",
+          "table_ok": true,
+          "sheet_ok": true,
+          "action_ok": true,
+          "locator_ok": false,
+          "exp_keys": 1,
+          "keys_found": 1,
+          "keys_value_ok": 1,
+          "extra_keys": [],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": true
+        }
+      ],
+      "metrics": {
+        "full_match": 2,
+        "table_hit": 2,
+        "sheet_hit": 2,
+        "action_hit": 2,
+        "keys_found": 2,
+        "keys_ok": 2,
+        "keys_exp": 2,
+        "extra_key_ops": 0,
+        "ph_total": 0,
+        "ph_ok": 0,
+        "ph_unresolved": 0,
+        "ph_resolved_total": 0,
+        "loc_total": 2,
         "loc_ok": 0
       }
     }
   ],
   "summary": {
-    "cases": 1,
-    "expected": 19,
-    "actual": 15,
-    "table_hit": 7,
-    "sheet_hit": 5,
-    "action_hit": 15,
-    "full": 0,
-    "keys_exp": 96,
-    "keys_found": 22,
-    "keys_ok": 4,
-    "ph_total": 8,
+    "cases": 2,
+    "expected": 3,
+    "actual": 5,
+    "table_hit": 3,
+    "sheet_hit": 3,
+    "action_hit": 3,
+    "full": 2,
+    "keys_exp": 8,
+    "keys_found": 8,
+    "keys_ok": 7,
+    "ph_total": 0,
     "ph_ok": 0,
-    "ph_unresolved": 8,
-    "loc_total": 0,
+    "ph_unresolved": 0,
+    "loc_total": 2,
     "loc_ok": 0
   }
 }
