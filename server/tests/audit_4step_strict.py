@@ -50,9 +50,46 @@ CASES = [
 ]
 
 
-def audit(case: dict, sandbox: Path) -> dict:
-    from agent.excel.cli.real_cli import RealCodeMakerCLI
+def _load_cases_file(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError(f"cases file must be a JSON list: {path}")
+    cases: list[dict] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        text = item.get("input") or item.get("text") or ""
+        if not text:
+            continue
+        meta = item.get("_meta") or {}
+        cases.append({
+            "name": meta.get("name") or item.get("name") or f"case_{i}",
+            "text": text,
+            "expected_count": len(item.get("expected_answer") or []),
+        })
+    return cases
+
+
+def _build_parser(mode: str, sandbox: Path):
     from agent.excel.parser.codemaker_parser import CodemakerNLParser
+    if mode != "deepseek":
+        return CodemakerNLParser(directory=str(sandbox), enable_skill=True)
+    from smoke_step1_deepseek import _DeepSeekClient, _SmokeParser
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY is required for --mode deepseek")
+    client = _DeepSeekClient(
+        api_key=api_key,
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+    )
+    parser = _SmokeParser(client=client, model=client.model)
+    parser.directory = str(sandbox)
+    return parser
+
+
+def audit(case: dict, sandbox: Path, mode: str = "codemaker") -> dict:
+    from agent.excel.cli.real_cli import RealCodeMakerCLI
     from agent.excel.core.agent import TableAgent
     from agent.excel.core.pipeline import (
         ExcelAgentPipeline, ExcelAgentServices,
@@ -62,7 +99,7 @@ def audit(case: dict, sandbox: Path) -> dict:
     )
 
     cli = RealCodeMakerCLI(workspace=sandbox)
-    parser = CodemakerNLParser(directory=str(sandbox), enable_skill=True)
+    parser = _build_parser(mode, sandbox)
     agent = TableAgent(cli=cli, parser=parser, enable_skill=True,
                        enable_verify_repair_loop=False,
                        enable_skill_tools_recovery=False)
@@ -125,18 +162,21 @@ def audit(case: dict, sandbox: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
+    ap.add_argument("--cases-file", default="")
+    ap.add_argument("--mode", choices=["codemaker", "deepseek"], default="codemaker")
     args = ap.parse_args()
+    cases = _load_cases_file(Path(args.cases_file)) if args.cases_file else CASES
     idxs = ([int(x) for x in args.only.split(",") if x.strip()]
-            if args.only else list(range(len(CASES))))
+            if args.only else list(range(len(cases))))
     for ci in idxs:
-        case = CASES[ci]
+        case = cases[ci]
         tmp = Path(tempfile.mkdtemp(prefix="audit4step_"))
         try:
             shutil.copytree(RES, tmp / "resources")
             print("=" * 100)
             print(f"### CASE {ci}: {case['name']}")
             print("input:", case["text"][:120] + "...")
-            r = audit(case, tmp / "resources")
+            r = audit(case, tmp / "resources", args.mode)
 
             print("\n--- Step1 产出的 intent JSON ---")
             for it in r["step1_intents"]:

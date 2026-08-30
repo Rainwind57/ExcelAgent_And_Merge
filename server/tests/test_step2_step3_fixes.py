@@ -186,6 +186,120 @@ def test_do_append_partial_success_restores_ok_true():
         assert any(n == "append_row" for n in _names), "应有 append_row 步骤"
 
 
+def test_resolved_duplicate_target_column_does_not_count_as_partial_failure():
+    failed_by_index = {
+        2: ("activity_type", "old value could not be coerced"),
+        4: ("reward_id", "bad id"),
+    }
+    values = {2: 1, 3: "春节活动"}
+
+    unresolved = TableAgent._unresolved_failed_fields(failed_by_index, values)
+
+    assert unresolved == [(4, "reward_id", "bad id")]
+
+
+def test_step3_marks_partial_subtask_failed():
+    from agent.excel.core.pipeline.contracts import (
+        STEP1_PARSE, STEP3_EXECUTE, StepContext, StepResult)
+    from agent.excel.core.pipeline.step3_execute_subagent import Step3ExecuteSubAgent
+
+    intent = NLIntent(action="add", table_hint="activity", sheet_hint="Activity",
+                      raw="新增活动",
+                      extras={"fields": {"活动类型": "限时", "活动名称": "九霄论剑"}})
+
+    class Services:
+        def peek_llm_total(self):
+            return 0
+
+        def run_single(self, *_args, **_kwargs):
+            return types.SimpleNamespace(
+                ok=True,
+                partial=True,
+                needs_confirm=False,
+                message="部分字段跳过",
+                steps=[{"name": "coerce_value", "ok": False, "message": "活动类型无法转码"}],
+                result_rows=[{"col_name": "活动名称", "new_value": "九霄论剑"}],
+                table_stem="activity",
+                table_sheet="Activity",
+                needs_user_fill=[],
+                failures=[],
+            )
+
+    ctx = StepContext(session_id="s", user_text="新增活动")
+    ctx.set_result(STEP1_PARSE, StepResult(
+        step_id=STEP1_PARSE, ok=True, artifacts={"intents": [intent]}))
+
+    result = Step3ExecuteSubAgent(services=Services()).execute(ctx)
+
+    assert result.step_id == STEP3_EXECUTE
+    assert result.ok is False
+    assert result.metrics["subtasks_fail"] == 1
+    assert result.metrics["subtasks_partial"] == 1
+    assert result.artifacts["subtasks"][0]["ok"] is False
+    assert any(f.get("type") == "partial_write" for f in result.artifacts["failures"])
+
+
+def test_step2_marks_enum_invalid_as_hard_before_execute():
+    from agent.excel.core.pipeline.contracts import (
+        STEP1_PARSE, STEP2_VALIDATE, StepContext, StepResult)
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    intent = NLIntent(action="add", table_hint="activity", sheet_hint="Activity",
+                      raw="新增活动",
+                      extras={"fields": {"活动类型": "限时", "活动名称": "九霄论剑"}})
+
+    class Services:
+        def wire_sinks(self, res):
+            return res
+
+        def validate_intents(self, intents, res, *_args, **_kwargs):
+            res.failures.append({
+                "type": "validation_tip",
+                "table": "activity",
+                "sheet": "Activity",
+                "col": "activity_type",
+                "root_cause": "enum_invalid: 枚举: ['1', '2']",
+            })
+            return intents
+
+    ctx = StepContext(session_id="s", user_text="新增活动")
+    ctx.set_result(STEP1_PARSE, StepResult(
+        step_id=STEP1_PARSE, ok=True, artifacts={"intents": [intent]}))
+
+    result = Step2ValidateSubAgent(services=Services()).execute(ctx)
+
+    assert result.step_id == STEP2_VALIDATE
+    assert result.ok is False
+    assert any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
+
+
+def test_step2_marks_enum_invalid_intent_failure_as_hard():
+    from agent.excel.core.pipeline.contracts import (
+        STEP1_PARSE, STEP2_VALIDATE, StepContext, StepResult)
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    intent = NLIntent(action="add", table_hint="activity", sheet_hint="Activity",
+                      raw="新增活动",
+                      extras={"fields": {"活动类型": "限时", "活动名称": "九霄论剑"}})
+    intent.failures.append({
+        "type": "validation_tip",
+        "issue_type": "enum_invalid",
+        "table": "activity",
+        "sheet": "Activity",
+        "col": "activity_type",
+        "root_cause": "enum_invalid: 枚举: ['1', '2']",
+    })
+    ctx = StepContext(session_id="s", user_text="新增活动")
+    ctx.set_result(STEP1_PARSE, StepResult(
+        step_id=STEP1_PARSE, ok=True, artifacts={"intents": [intent]}))
+
+    result = Step2ValidateSubAgent(services=None).execute(ctx)
+
+    assert result.step_id == STEP2_VALIDATE
+    assert result.ok is False
+    assert any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
+
+
 def test_do_append_pk_conflict_stays_failed():
     """对照：真主键冲突（100601 已占用且非误塞）→ 提前 return，ok 不被归正。"""
     with TemporaryDirectory() as tmp:

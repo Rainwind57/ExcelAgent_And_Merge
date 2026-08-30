@@ -2886,7 +2886,12 @@ class TableAgent:
                     res.add("locate_row", False,
                             f"未找到 {intent.locator_value}(mode={match_mode})")
                     return self._trigger_cross_table_search_pause(res, path, sheet, loc_match, intent, sug)
-            if row_match.ambiguous:
+            # §删除不可逆：多行同名时禁止"替用户挑一行"。原流程先调
+            # _resolve_row_ambiguity 让 LLM 仲裁 → 返回 ambiguous=False → 绕过下方
+            # 的歧义分支，静默删掉 LLM 猜的那一行（5 行同名删 1 行且用户无感，
+            # 剩余同名行还在）。改为：delete 保留歧义态，交下方候选确认/勾选删除。
+            # get/set 非破坏性动作保留原仲裁（查错行可切候选，无数据损失）。
+            if row_match.ambiguous and intent.action != "delete":
                 row_match = self._resolve_row_ambiguity(intent, row_match, path, sheet)
         row = row_match.row
         row_note = self._row_confidence_note(row_match)
@@ -2900,6 +2905,8 @@ class TableAgent:
         # 3a. 多字段写入（LLM 提供 fields）
         fields = intent.extras.get("fields")
         if isinstance(fields, dict) and fields:
+            # §已修正旧值剔除：Step2 交互修正后残留的同列旧值不再参与写盘
+            fields = self._drop_resolved_stale_fields(intent, fields, res)
             # 点分键翻译：effect.* 走专用，其余点分键取末段作列名匹配键
             # G11: 别名优先，原 key 在 column_aliases 有配置则保留原 key（精确命中）
             # 原则9（R8）：type_aliases 补全 splitter 点分规范键
@@ -3241,7 +3248,12 @@ class TableAgent:
                     res.add("locate_row", False,
                             f"未找到 {intent.locator_value}(mode={match_mode})")
                     return self._trigger_cross_table_search_pause(res, path, sheet, loc_match, intent, sug)
-            if row_match.ambiguous:
+            # §删除不可逆：多行同名时禁止"替用户挑一行"。原流程先调
+            # _resolve_row_ambiguity 让 LLM 仲裁 → 返回 ambiguous=False → 绕过下方
+            # 的歧义分支，静默删掉 LLM 猜的那一行（5 行同名删 1 行且用户无感，
+            # 剩余同名行还在）。改为：delete 保留歧义态，交下方候选确认/勾选删除。
+            # get/set 非破坏性动作保留原仲裁（查错行可切候选，无数据损失）。
+            if row_match.ambiguous and intent.action != "delete":
                 row_match = self._resolve_row_ambiguity(intent, row_match, path, sheet)
         row = row_match.row
         row_note = self._row_confidence_note(row_match)
@@ -3268,7 +3280,12 @@ class TableAgent:
             # 降序删选中行（单次交互，不走 confirm_token 二次往返）。env=0 / 非交互场景
             # 保持 needs_confirm + ambig_delete token（删全部候选，token 支持子集由前端拼），
             # 兼容现有确认按钮前端，不回归。边界独立于旧 verify/repair 路径。
-            if _ask_cb is not None and os.getenv("CODEMAKER_AMBIG_DELETE_ASK", "0") == "1":
+            # _dry_run_flag：预演/预览路径的 ask_cb 是"自动接受建议"的假回调，不会
+            # 返回 selected_rows，若放行会被当"用户未勾选"→ 静默走删全部候选，预演
+            # 语义失真。预演场景直接回落 needs_confirm（只读不删）。
+            if (_ask_cb is not None
+                    and not getattr(self, "_dry_run_flag", False)
+                    and os.getenv("CODEMAKER_AMBIG_DELETE_ASK", "0") == "1"):
                 _cand_rows = [
                     {"row": _r, "value": _v,
                      "summary": self._row_summary(path, sheet, _r,
@@ -3949,6 +3966,72 @@ class TableAgent:
             res.message = "读取失败"
         return res
 
+    @staticmethod
+    def _unresolved_failed_fields(failed_by_index: dict[int, tuple[str, str]],
+                                  values: dict[int, any]) -> list[tuple[int, str, str]]:
+        return [
+            (idx, col, err)
+            for idx, (col, err) in (failed_by_index or {}).items()
+            if idx not in (values or {})
+        ]
+
+    @staticmethod
+    def _norm_field_key(k: str) -> str:
+        """字段名规范化：去类型后缀/空格/下划线/连字符 + 小写（供同列判等）。"""
+        return re.sub(r"[\s_\-]", "", str(k).split(":")[0]).strip().lower()
+
+    def _drop_resolved_stale_fields(self, intent, fields: dict, res) -> dict:
+        """剔除 Step2 修正后仍残留在 fields 里的旧值（修复「已修正仍报失败」）。
+
+        Step2 ask / 自动推断把 fields[col] 改写为新值后，原解析产出的同列字段可能
+        以另一形态键（中文表头 / 英文规范名）残留旧值，或修正键与残留键并存。
+        Step3 再次 coerce 该旧值必然硬失败（如 int 列的「节日」）→ 行已按新值写
+        成功，steps 却留下 coerce_value 失败 + coerce_failed，Step3 据此标 partial，
+        Step4 汇总报「1 项失败未解决」（实际已解决）。命中台账 (列名, 旧值) 即剔除，
+        并以成功态记录「原值已在 Step2 改为 X」，不再污染失败态。
+        """
+        resolved = (getattr(intent, "extras", None) or {}).get("user_resolved_fields")
+        if not isinstance(fields, dict) or not isinstance(resolved, dict) or not resolved:
+            return fields
+        by_key = {}
+        for _c, _r in resolved.items():
+            if isinstance(_r, dict):
+                by_key[self._norm_field_key(_c)] = _r
+        if not by_key:
+            return fields
+        vals_now: dict[str, int] = {}
+        for _v in fields.values():
+            vals_now[str(_v).strip()] = vals_now.get(str(_v).strip(), 0) + 1
+        kept: dict = {}
+        for _k, _v in fields.items():
+            _vs = str(_v).strip()
+            _r = by_key.get(self._norm_field_key(_k))
+            _stale = False
+            if _r is not None and _vs and _vs == str(_r.get("old", "")).strip():
+                # 同键（或规范化同列）上的旧值残留
+                _stale = True
+            else:
+                # 异键残留：fields 里同时存在"被改掉的旧值"与"修正后的新值"
+                for _r2 in by_key.values():
+                    _old = str(_r2.get("old", "")).strip()
+                    _new = str(_r2.get("new", "")).strip()
+                    if _old and _new and _old != _new and _vs == _old \
+                            and vals_now.get(_new, 0) > 0:
+                        _stale = True
+                        _r = _r2
+                        break
+            if not _stale:
+                kept[_k] = _v
+                continue
+            _src = "用户修正" if (_r or {}).get("source") != "auto" else "自动推断"
+            try:
+                res.add("coerce_value", True,
+                        f"列[{_k}]原值「{_v}」已在 Step2 经{_src}改为"
+                        f"「{(_r or {}).get('new', '')}」，跳过旧值残留")
+            except Exception:
+                logger.debug("记录已修正旧值跳过说明失败", exc_info=True)
+        return kept if kept else fields
+
     def _run_add(self, intent: NLIntent, path: Path, sheet: str, res: AgentResult) -> AgentResult:
         """执行"新增"操作：从自然语言中提取列值 → 追加新行。
 
@@ -3967,6 +4050,8 @@ class TableAgent:
         fields = intent.extras.get("fields")
         _narr_skipped: list[str] = []  # §叙述值跳过兜底（共享，分支内外都可见）
         if isinstance(fields, dict) and fields:
+            # §已修正旧值剔除：Step2 交互修正后残留的同列旧值不再参与写盘
+            fields = self._drop_resolved_stale_fields(intent, fields, res)
             # D10: 写前枚举预转换（int 列+非 int 值命中枚举→转 int，减少硬错误）
             fields = self._precoerce_enum_fields(fields, stem, sheet)
             # effect.* 点分键 → 真实表头翻译（splitter 产出的 effect.key/effect.data.N.*）
@@ -3979,6 +4064,7 @@ class TableAgent:
                 self._type_aliases(path, sheet, headers))
             values: dict[int, any] = {}
             failed: list[str] = []
+            failed_by_index: dict[int, tuple[str, str]] = {}
             _auto_cols: list[str] = []  # 快赢3:<auto> 批量收敛,循环后一次性 add
             for col_name, val in fields.items():
                 # §P0 数字索引键兜底：col_name 为纯数字 = LLM 退化把列序号当键
@@ -4097,15 +4183,13 @@ class TableAgent:
                                             continue
                         except Exception:
                             logger.warning("Step5 AI 字段映射修正失败，降级走原失败路径", exc_info=True)
-                    res.add("coerce_value", False, error)
-                    failed.append(col_name)
+                    failed_by_index[m.index] = (str(col_name), str(error))
                     continue
                 # ID 列段校验（越界 → 跳过该字段）
                 if self._is_id_column(m.column) and coerced is not None:
                     ok, reason = self._validate_id_scope(stem, sheet, m.column, coerced)
                     if not ok:
-                        res.add("id_scope", False, reason)
-                        failed.append(col_name)
+                        failed_by_index[m.index] = (str(col_name), str(reason))
                         continue
                 values[m.index] = coerced
             # 快赢3:<auto> 列批量收敛为一次 add(避免逐列刷屏)
@@ -4113,11 +4197,17 @@ class TableAgent:
                 res.add("coerce_value", True,
                         f"以下列标 <auto>（用户未提及，留空）：{_auto_cols}")
             if values:
+                unresolved_failed = self._unresolved_failed_fields(failed_by_index, values)
+                for _idx, _col, _err in unresolved_failed:
+                    res.add("coerce_value", False, _err)
+                failed = [col for _idx, col, _err in unresolved_failed]
                 res.add("add_values", True, f"提取到 {len(values)} 个列值: {values}")
                 if failed:
                     res.add("coerce_failed", True,
                             f"{len(failed)}个字段类型转换失败被跳过: {failed}")
                 return self._do_append(path, sheet, values, res)
+            for _col, _err in failed_by_index.values():
+                res.add("coerce_value", False, _err)
             res.add("add_values", False, "fields 中所有列名均无法匹配表头或类型转换失败")
             res.message = "无法匹配任何目标列或类型转换全部失败"
             return res

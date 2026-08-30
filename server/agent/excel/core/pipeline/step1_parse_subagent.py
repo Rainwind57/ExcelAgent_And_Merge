@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import time
+from collections import Counter
 from typing import Any
 
 from ...parse_agent import ParseAgent
 from .contracts import STEP1_PARSE, StepContext, StepError, StepHardError, StepResult
+from .semantic_plan import compile_semantic_plan_to_intents
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +254,453 @@ def _intent_to_json(it: Any) -> dict:
     return d
 
 
+_PLACEHOLDER_RE = re.compile(r"<\s*([^>]+?)\s*>")
+
+
+def _intent_produces(it: Any) -> str:
+    label = getattr(it, "produces_label", None)
+    if not label and getattr(it, "extras", None):
+        label = (it.extras or {}).get("produces")
+    return str(label or "").strip().strip("<>").strip()
+
+
+def _intent_fields_map(it: Any) -> dict:
+    fields = (getattr(it, "extras", None) or {}).get("fields")
+    return fields if isinstance(fields, dict) else {}
+
+
+def _collect_placeholder_refs(value: Any) -> set[str]:
+    refs: set[str] = set()
+    if isinstance(value, str):
+        for m in _PLACEHOLDER_RE.finditer(value):
+            label = m.group(1).strip()
+            if label and label.lower() != "auto":
+                refs.add(label)
+    elif isinstance(value, dict):
+        for nested in value.values():
+            refs.update(_collect_placeholder_refs(nested))
+    elif isinstance(value, (list, tuple, set)):
+        for nested in value:
+            refs.update(_collect_placeholder_refs(nested))
+    return refs
+
+
+def _has_real_field_value(fields: dict) -> bool:
+    for value in fields.values():
+        if value is None:
+            continue
+        s = str(value).strip()
+        if not s:
+            continue
+        if s.startswith("<") and s.endswith(">"):
+            continue
+        return True
+    return False
+
+
+def _intent_evidence_values(it: Any) -> list[str]:
+    values: list[str] = []
+    fields = _intent_fields_map(it)
+    for value in fields.values():
+        if isinstance(value, (str, int, float)):
+            s = str(value).strip()
+            if len(s) >= 4 and not (s.startswith("<") and s.endswith(">")):
+                values.append(s)
+    for value in (
+        getattr(it, "locator_value", None),
+        getattr(it, "value", None),
+    ):
+        if isinstance(value, (str, int, float)):
+            s = str(value).strip()
+            if len(s) >= 4:
+                values.append(s)
+    return values
+
+
+def _normalise_label(value: Any) -> str:
+    return str(value or "").strip().strip("<>").strip()
+
+
+def _build_step1_plan_graph(intents: list) -> dict:
+    nodes: list[dict] = []
+    label_to_idx: dict[str, int] = {}
+    produced_labels: set[str] = set()
+    for idx, it in enumerate(intents or [], start=1):
+        fields = _intent_fields_map(it)
+        produces = _intent_produces(it)
+        if produces:
+            produced_labels.add(produces)
+            label_to_idx.setdefault(produces, idx)
+        real_fields = [
+            col for col, value in fields.items()
+            if value is not None
+            and str(value).strip()
+            and not (str(value).strip().startswith("<")
+                     and str(value).strip().endswith(">"))
+        ]
+        nodes.append({
+            "idx": idx,
+            "action": getattr(it, "action", "") or "",
+            "table": getattr(it, "table_hint", "") or "",
+            "sheet": getattr(it, "sheet_hint", "") or "",
+            "produces": produces,
+            "consumes": [
+                _normalise_label(x)
+                for x in (getattr(it, "consumes_labels", None) or [])
+                if _normalise_label(x)
+            ],
+            "field_count": len(fields),
+            "real_field_count": len(real_fields),
+        })
+
+    edges: list[dict] = []
+    unresolved_refs: list[dict] = []
+    by_key: dict[tuple, dict] = {}
+    adjacency: dict[str, set[str]] = {label: set() for label in produced_labels}
+
+    def add_ref(src_idx: int, src_label: str, dep: str, via: str) -> None:
+        if not dep or dep == src_label:
+            return
+        dst_idx = label_to_idx.get(dep)
+        if dst_idx is None:
+            unresolved_refs.append({
+                "idx": src_idx,
+                "label": dep,
+                "via": via,
+            })
+            return
+        key = (src_idx, dst_idx, dep)
+        existing = by_key.get(key)
+        if existing is not None:
+            vias = existing.setdefault("via", [])
+            if via not in vias:
+                vias.append(via)
+            return
+        edge = {
+            "from_idx": src_idx,
+            "to_idx": dst_idx,
+            "label": dep,
+            "via": [via],
+        }
+        by_key[key] = edge
+        edges.append(edge)
+        if src_label:
+            adjacency.setdefault(src_label, set()).add(dep)
+
+    for idx, it in enumerate(intents or [], start=1):
+        own = _intent_produces(it)
+        fields = _intent_fields_map(it)
+        for col, value in fields.items():
+            for dep in sorted(_collect_placeholder_refs(value)):
+                add_ref(idx, own, dep, f"field:{col}")
+        for dep in sorted({
+            _normalise_label(x)
+            for x in (getattr(it, "consumes_labels", None) or [])
+            if _normalise_label(x)
+        }):
+            add_ref(idx, own, dep, "consumes")
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    stack: list[str] = []
+    cycles: set[tuple[str, ...]] = set()
+
+    def dfs(label: str) -> None:
+        if label in visiting:
+            try:
+                start = stack.index(label)
+                cycles.add(tuple(stack[start:] + [label]))
+            except ValueError:
+                pass
+            return
+        if label in visited:
+            return
+        visiting.add(label)
+        stack.append(label)
+        for dep in sorted(adjacency.get(label, set())):
+            dfs(dep)
+        stack.pop()
+        visiting.remove(label)
+        visited.add(label)
+
+    for label in sorted(adjacency):
+        dfs(label)
+
+    cycle_rows = []
+    for cyc in sorted(cycles):
+        cycle_rows.append({
+            "labels": list(cyc),
+            "idxs": [label_to_idx.get(x) for x in cyc if label_to_idx.get(x)],
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "unresolved_refs": unresolved_refs,
+        "cycles": cycle_rows,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "unresolved_ref_count": len(unresolved_refs),
+        "cycle_count": len(cycle_rows),
+    }
+
+
+def _semantic_value_kind(value: Any) -> str:
+    if value is None:
+        return "empty"
+    text = str(value).strip()
+    if not text:
+        return "empty"
+    refs = _collect_placeholder_refs(value)
+    if refs:
+        return "reference"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "literal"
+
+
+def _build_step1_semantic_plan(intents: list, plan_graph: dict | None = None) -> dict:
+    if plan_graph is None:
+        plan_graph = _build_step1_plan_graph(intents)
+    produced_to_idx = {
+        str(node.get("produces") or ""): node.get("idx")
+        for node in plan_graph.get("nodes", []) or []
+        if node.get("produces")
+    }
+    entities: list[dict] = []
+    refs: list[dict] = []
+    for idx, it in enumerate(intents or [], start=1):
+        fields = _intent_fields_map(it)
+        own = _intent_produces(it)
+        attrs = []
+        entity_refs = []
+        for col, value in fields.items():
+            attr = {
+                "name": str(col),
+                "value": _jsonable(value),
+                "kind": _semantic_value_kind(value),
+            }
+            labels = sorted(_collect_placeholder_refs(value))
+            dep_labels = [label for label in labels if label != own]
+            if labels:
+                if dep_labels:
+                    attr["refs"] = dep_labels
+                if own in labels:
+                    attr["produces_ref"] = own
+            attrs.append(attr)
+            for label in dep_labels:
+                ref = {
+                    "from_entity": idx,
+                    "field": str(col),
+                    "label": label,
+                    "to_entity": produced_to_idx.get(label),
+                    "status": "resolved" if label in produced_to_idx else "unresolved",
+                }
+                refs.append(ref)
+                entity_refs.append(ref)
+        for label in sorted({
+            _normalise_label(x)
+            for x in (getattr(it, "consumes_labels", None) or [])
+            if _normalise_label(x)
+        }):
+            if any(r["label"] == label for r in entity_refs):
+                continue
+            if label == own:
+                continue
+            ref = {
+                "from_entity": idx,
+                "field": None,
+                "label": label,
+                "to_entity": produced_to_idx.get(label),
+                "status": "resolved" if label in produced_to_idx else "unresolved",
+            }
+            refs.append(ref)
+            entity_refs.append(ref)
+        entities.append({
+            "entity_id": idx,
+            "operation": getattr(it, "action", "") or "",
+            "target": {
+                "table": getattr(it, "table_hint", "") or "",
+                "sheet": getattr(it, "sheet_hint", "") or "",
+            },
+            "locator": {
+                "field": getattr(it, "locator_field", None),
+                "value": _jsonable(getattr(it, "locator_value", None)),
+                "fields": list(getattr(it, "locator_fields", None) or []),
+                "values": [
+                    _jsonable(x) for x in (getattr(it, "locator_values", None) or [])
+                ],
+            },
+            "attributes": attrs,
+            "produces": own,
+            "references": entity_refs,
+            "raw": getattr(it, "raw", "") or "",
+        })
+    relations = [
+        {
+            "from_entity": edge.get("from_idx"),
+            "to_entity": edge.get("to_idx"),
+            "label": edge.get("label"),
+            "via": list(edge.get("via") or []),
+        }
+        for edge in plan_graph.get("edges", []) or []
+    ]
+    return {
+        "version": 1,
+        "entities": entities,
+        "relations": relations,
+        "refs": refs,
+        "entity_count": len(entities),
+        "relation_count": len(relations),
+        "unresolved_ref_count": sum(1 for r in refs if r.get("status") == "unresolved"),
+    }
+
+
+def _step1_quality_report(intents: list, plan_graph: dict | None = None) -> dict:
+    produced = [_intent_produces(it) for it in intents or []]
+    produced = [p for p in produced if p]
+    produced_counts = Counter(produced)
+    produced_set = set(produced_counts)
+    issues: list[dict] = []
+
+    for label, count in sorted(produced_counts.items()):
+        if count > 1:
+            issues.append({
+                "type": "duplicate_produces",
+                "label": label,
+                "count": count,
+                "severity": "hard",
+            })
+
+    for idx, it in enumerate(intents or [], start=1):
+        table = getattr(it, "table_hint", "") or ""
+        sheet = getattr(it, "sheet_hint", "") or ""
+        fields = _intent_fields_map(it)
+        field_refs = _collect_placeholder_refs(fields)
+        consumes = {
+            str(x).strip().strip("<>").strip()
+            for x in (getattr(it, "consumes_labels", None) or [])
+            if str(x).strip()
+        }
+        own = _intent_produces(it)
+        if getattr(it, "action", "") == "add" and not _has_real_field_value(fields):
+            issues.append({
+                "type": "empty_add",
+                "idx": idx,
+                "table": table,
+                "sheet": sheet,
+                "severity": "hard",
+            })
+        for label in sorted(field_refs):
+            if label == own:
+                continue
+            if label not in produced_set:
+                issues.append({
+                    "type": "unresolved_placeholder",
+                    "idx": idx,
+                    "table": table,
+                    "sheet": sheet,
+                    "label": label,
+                    "severity": "hard",
+                })
+        non_id_refs: set[str] = set()
+        for col, value in fields.items():
+            if str(col).strip().lower().replace("_", "") == "id":
+                continue
+            non_id_refs.update(_collect_placeholder_refs(value))
+        for col, value in fields.items():
+            if str(col).strip().lower().replace("_", "") != "id":
+                continue
+            id_refs = _collect_placeholder_refs(value)
+            if not id_refs:
+                continue
+            for label in sorted(id_refs & produced_set):
+                if label != own and label in non_id_refs:
+                    issues.append({
+                        "type": "foreign_placeholder_primary_key",
+                        "idx": idx,
+                        "table": table,
+                        "sheet": sheet,
+                        "label": label,
+                        "severity": "hard",
+                    })
+        dangling = consumes - field_refs
+        for label in sorted(dangling):
+            issues.append({
+                "type": "dangling_consumes",
+                "idx": idx,
+                "table": table,
+                "sheet": sheet,
+                "label": label,
+                "severity": "soft",
+            })
+
+    if plan_graph is None:
+        plan_graph = _build_step1_plan_graph(intents)
+    for cyc in plan_graph.get("cycles", []) or []:
+        issues.append({
+            "type": "producer_dependency_cycle",
+            "labels": list(cyc.get("labels") or []),
+            "idxs": list(cyc.get("idxs") or []),
+            "severity": "hard",
+        })
+
+    hard_count = sum(1 for x in issues if x.get("severity") == "hard")
+    return {
+        "ok": hard_count == 0,
+        "hard_count": hard_count,
+        "issue_count": len(issues),
+        "issues": issues,
+        "produces": sorted(produced_set),
+        "placeholder_count": sum(len(_collect_placeholder_refs(_intent_fields_map(it)))
+                                 for it in intents or []),
+        "plan_nodes": plan_graph.get("node_count", 0),
+        "plan_edges": plan_graph.get("edge_count", 0),
+        "plan_cycles": plan_graph.get("cycle_count", 0),
+        "plan_unresolved_refs": plan_graph.get("unresolved_ref_count", 0),
+    }
+
+
+_SEGMENT_ACTION_RE = re.compile(
+    r"(?:"
+    r"\u65b0\u589e|\u589e\u52a0|\u6dfb\u52a0|"
+    r"\u4fee\u6539|\u6539\u6210|\u6539\u4e3a|"
+    r"\u5220\u9664|\u53bb\u6389|\u79fb\u9664|\u6e05\u9664|"
+    r"\u67e5\u770b|\u67e5\u8be2|"
+    r"\u914d\u4e00\u4e2a|\u5efa\u4e00\u4e2a|\u9020\u4e00\u4e2a"
+    r")"
+)
+_SEGMENT_ENUM_PREFIX_RE = re.compile(
+    r"^\s*(?:\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03"
+    r"\u516b\u4e5d\u5341\d]+\u6761|[\u4e00\u4e8c\u4e09\u56db"
+    r"\u4e94\u516d\u4e03\u516b\u4e5d\u5341\d]+[、.．])"
+)
+_SEGMENT_STRUCTURED_MARKER_RE = re.compile(
+    r"(?:\d|=|：|:|key|type|id|ID|"
+    r"\u7f16\u53f7|\u7c7b\u578b|\u65f6\u95f4|\u540d\u79f0)"
+)
+
+
+def _is_low_signal_uncovered_segment(seg_text: str, idx: int, total: int) -> bool:
+    text = str(seg_text or "").strip()
+    if not text:
+        return True
+    if _SEGMENT_ACTION_RE.search(text):
+        return False
+    if _SEGMENT_ENUM_PREFIX_RE.search(text):
+        has_row_markers = bool(re.search(
+            r"(?:key|type|id|ID|\u7f16\u53f7|\u7c7b\u578b|=|:|：|\d)",
+            text))
+        return not has_row_markers
+    if idx == 0 and total > 1 and not _SEGMENT_STRUCTURED_MARKER_RE.search(text):
+        return True
+    return False
+
+
 class Step1ParseSubAgent:
     """Step1：输入分析、匹配表格、指令初形成。"""
 
@@ -281,6 +732,7 @@ class Step1ParseSubAgent:
         warnings: list[str] = []
         intents: list = []
         segments: list = []
+        suppressed_segment_no_intent = 0
         # §中危 4 修复：execute 前后读 counter 差值 = 本步 LLM 调用数（替代硬编码 0）。
         # Step1 的 decompose/locate LLM 经 parser._llm_counter 累计（共享 counter），
         # 差值法隔离出本步调用，避免 Step3 metrics 被本步累计污染。
@@ -343,23 +795,29 @@ class Step1ParseSubAgent:
                     seg_text = (getattr(seg, "text", seg)
                                 if not isinstance(seg, str) else seg).strip()
                     # 双向包含：段文本在 raw 内 或 raw 在段文本内（段被 LLM 扩写）
-                    if seg_text and (seg_text in raw or raw in seg_text):
+                    field_covered = any(
+                        v in seg_text for v in _intent_evidence_values(it)
+                    )
+                    if seg_text and (seg_text in raw or raw in seg_text or field_covered):
                         covered.add(i)
                         seg_intent_count[i] = seg_intent_count.get(i, 0) + 1
-            # 动作数校验：段含的动作词数应 ≤ 产意图数
             import re as _re
+            # 动作数校验：段含的动作词数应 ≤ 产意图数
             _action_re = _re.compile(r'(?:新增|增加|添加|修改|改成|改为|删除|去掉|移除|清除|查看|查询|配一个|建一个|造一个|给一个)')
             for i, seg in enumerate(segments):
                 seg_text = (getattr(seg, "text", seg)
                             if not isinstance(seg, str) else seg).strip()
                 if i not in covered:
+                    if _is_low_signal_uncovered_segment(seg_text, i, len(segments)):
+                        suppressed_segment_no_intent += 1
+                        continue
                     errors.append(StepError(
                         step_id=STEP1_PARSE, error_type="segment_no_intent",
                         message=f"第{i+1}段「{(seg_text or '')[:20]}」未能解析出意图",
                         is_hard=False, segment_idx=i))
                     continue
                 # 段内动作数 vs 产意图数
-                n_actions = len(_action_re.findall(seg_text))
+                n_actions = len(_SEGMENT_ACTION_RE.findall(seg_text))
                 n_intents = seg_intent_count.get(i, 0)
                 if n_actions > 1 and n_intents < n_actions:
                     errors.append(StepError(
@@ -402,6 +860,25 @@ class Step1ParseSubAgent:
                 _it.extras["locator_candidates"] = list(_cand_stems)
             except Exception:
                 pass
+        plan_graph = _build_step1_plan_graph(intents)
+        semantic_plan = _build_step1_semantic_plan(intents, plan_graph)
+        _, semantic_compile_report = compile_semantic_plan_to_intents(semantic_plan)
+        quality = _step1_quality_report(intents, plan_graph)
+        if quality.get("issue_count"):
+            warnings.append(
+                "Step1 quality issues: "
+                f"{quality.get('hard_count', 0)} hard / "
+                f"{quality.get('issue_count', 0)} total")
+        strict_quality = os.getenv("CODEMAKER_STEP1_QUALITY_GATE", "0").lower() in (
+            "1", "true", "yes", "on")
+        if strict_quality and quality.get("hard_count"):
+            errors.append(StepError(
+                step_id=STEP1_PARSE,
+                error_type="step1_quality_gate",
+                message="Step1 output has unresolved structural issues",
+                root_cause=json.dumps(quality.get("issues", [])[:8], ensure_ascii=False),
+                suggestion="Fix Step1 references before Step2/Step3 execution",
+                is_hard=True))
         # 本步 LLM 调用数（差值法）
         _llm_calls = 0
         try:
@@ -446,7 +923,7 @@ class Step1ParseSubAgent:
                         ensure_ascii=False))
                 except Exception:  # noqa: BLE001
                     pass
-        ok = bool(intents)
+        ok = bool(intents) and not (strict_quality and quality.get("hard_count"))
         return StepResult(
             step_id=STEP1_PARSE, ok=ok,
             errors=errors, warnings=warnings,
@@ -455,9 +932,23 @@ class Step1ParseSubAgent:
                 "segments": len(segments),
                 "intents": len(intents),
                 "llm_calls": _llm_calls,
+                "step1_quality_hard": quality.get("hard_count", 0),
+                "step1_quality_issues": quality.get("issue_count", 0),
+                "step1_plan_nodes": plan_graph.get("node_count", 0),
+                "step1_plan_edges": plan_graph.get("edge_count", 0),
+                "step1_plan_cycles": plan_graph.get("cycle_count", 0),
+                "semantic_entities": semantic_plan.get("entity_count", 0),
+                "semantic_relations": semantic_plan.get("relation_count", 0),
+                "semantic_unresolved_refs": semantic_plan.get("unresolved_ref_count", 0),
+                "semantic_compile_issues": semantic_compile_report.get("issue_count", 0),
+                "suppressed_segment_no_intent": suppressed_segment_no_intent,
             },
             artifacts={"intents": intents, "segments": segments,
-                       "locator_results": locator_results})
+                       "locator_results": locator_results,
+                       "step1_quality": quality,
+                       "plan_graph": plan_graph,
+                       "semantic_plan": semantic_plan,
+                       "semantic_compile_report": semantic_compile_report})
 
 
 __all__ = ["Step1ParseSubAgent"]

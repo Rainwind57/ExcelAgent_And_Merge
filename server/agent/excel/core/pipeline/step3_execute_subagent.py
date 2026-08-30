@@ -221,6 +221,8 @@ class Step3ExecuteSubAgent:
                         "status": "failed", "user_reply": None,
                     }
                     all_failures.append(_fail)
+                    _is_partial = bool(getattr(sub_res, "partial", False))
+                    _subtask_ok = False if _is_partial else sub_res.ok
                     sub_tasks.append({
                         "index": i + 1, "intent_action": it.action, "ok": False,
                         "needs_confirm": False, "message": _rc,
@@ -298,12 +300,14 @@ class Step3ExecuteSubAgent:
                     all_steps.extend(sub_res.steps or [])
                     if sub_res.result_rows:
                         all_result_rows.extend(sub_res.result_rows)
+                    _is_partial = bool(getattr(sub_res, "partial", False))
+                    _subtask_ok = False if _is_partial else sub_res.ok
                     sub_tasks.append({
                         # §低危修复：对齐 legacy 多任务路径 sub_tasks 形状（index/
                         # needs_user_fill/partial），前端分段渲染依赖。
                         "index": i + 1,
                         "intent_action": it.action,
-                        "ok": sub_res.ok,
+                        "ok": _subtask_ok,
                         "needs_confirm": getattr(sub_res, "needs_confirm", False),
                         "message": sub_res.message,
                         "steps": sub_res.steps or [],
@@ -311,7 +315,7 @@ class Step3ExecuteSubAgent:
                         "table_stem": sub_res.table_stem,
                         "table_sheet": sub_res.table_sheet,
                         "needs_user_fill": list(getattr(sub_res, "needs_user_fill", [])),
-                        "partial": getattr(sub_res, "partial", False),
+                        "partial": _is_partial,
                     })
                     if getattr(sub_res, "partial", False):
                         failed_steps = [

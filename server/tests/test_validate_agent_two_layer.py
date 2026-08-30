@@ -286,7 +286,8 @@ class TestIssueTypeEnum:
                    expected="float", suggestion="改值", value="abc")
         d = iss.to_dict()
         assert d == {"col": "成长率", "issue_type": "type_mismatch",
-                    "expected": "float", "suggestion": "改值", "value": "abc"}
+                     "expected": "float", "suggestion": "改值", "value": "abc",
+                     "suggested_combo": ""}
 
     def test_validation_result_holds_issues(self):
         """ValidationResult.issues 字段承载 Issue 列表。"""

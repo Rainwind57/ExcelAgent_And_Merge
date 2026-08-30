@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import copy
 import time
 from typing import Any, Optional
 
@@ -77,6 +78,50 @@ class Step2ValidateSubAgent:
                             table=table, sheet=sheet, is_hard=True))
         return errors
 
+    @staticmethod
+    def _step1_quality_errors(step1_quality: dict | None) -> list[StepError]:
+        if not isinstance(step1_quality, dict):
+            return []
+        issues = step1_quality.get("issues") or []
+        errors: list[StepError] = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("severity") != "hard":
+                continue
+            issue_type = str(issue.get("type") or "step1_quality").strip()
+            errors.append(StepError(
+                step_id=STEP2_VALIDATE,
+                error_type=f"step1_{issue_type}",
+                message="Step1 produced structurally unsafe intent JSON",
+                root_cause=str(issue),
+                table=issue.get("table"),
+                sheet=issue.get("sheet"),
+                column=issue.get("column") or issue.get("col"),
+                suggestion="Fix Step1 reference graph before validation/execution",
+                is_hard=True))
+        return errors
+
+    @staticmethod
+    def _semantic_compile_errors(report: dict | None) -> list[StepError]:
+        if not isinstance(report, dict):
+            return []
+        errors: list[StepError] = []
+        for issue in report.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("severity") != "hard":
+                continue
+            issue_type = str(issue.get("type") or "semantic_compile").strip()
+            errors.append(StepError(
+                step_id=STEP2_VALIDATE,
+                error_type=f"semantic_{issue_type}",
+                message="Semantic plan could not be safely compiled",
+                root_cause=str(issue),
+                suggestion="Fix semantic plan structure before validation/execution",
+                is_hard=True))
+        return errors
+
     def execute(self, ctx: StepContext) -> StepResult:
         """Step2 执行：对 Step1 产出的 intents 跑 validate_two_layer。
 
@@ -90,6 +135,25 @@ class Step2ValidateSubAgent:
         warnings: list[str] = []
         s1 = ctx.get_result("step1_parse")
         intents = (s1.artifacts.get("intents") if s1 and s1.ok else None) or []
+        _HARD_TYPES: set[str] = {
+            "unique_violation",
+            "type_mismatch",
+            "col_not_found",
+            "enum_invalid",
+        }
+
+        def _is_hard_validation_issue(error_type: str = "",
+                                      issue_type: str = "",
+                                      root: str = "") -> bool:
+            vals = {
+                str(error_type or "").strip().lower(),
+                str(issue_type or "").strip().lower(),
+            }
+            root_l = str(root or "").strip().lower()
+            return bool(vals & _HARD_TYPES) or any(
+                root_l == t or root_l.startswith(f"{t}:")
+                for t in _HARD_TYPES
+            )
 
         if not intents:
             # Step1 已 hard 报错，Step2 无需校验
@@ -100,15 +164,22 @@ class Step2ValidateSubAgent:
                          "intents": 0},
                 artifacts={"validated": []})
 
-        validated = intents
-        errors.extend(self._structural_errors(intents))
+        validated = copy.deepcopy(intents)
+        errors.extend(self._structural_errors(validated))
+        step1_quality = s1.artifacts.get("step1_quality") if s1 else None
+        semantic_plan = s1.artifacts.get("semantic_plan") if s1 else None
+        semantic_compile_report = (
+            s1.artifacts.get("semantic_compile_report") if s1 else None
+        )
+        errors.extend(self._step1_quality_errors(step1_quality))
+        errors.extend(self._semantic_compile_errors(semantic_compile_report))
         if self._services is not None:
             try:
                 # 复用 legacy validate_two_layer + ask + 修正
                 # _stream_res 用真实首个 intent 构造（原硬编码 action="get" 伪造语义错误，
                 # 仅用于 _step2_validate_intents 内 add_thinking 标签 + failures 收集载体）。
                 from ..agent import AgentResult
-                _tmp_res = AgentResult(ok=True, intent=intents[0])
+                _tmp_res = AgentResult(ok=True, intent=validated[0])
                 _tmp_res = self._services.wire_sinks(_tmp_res)
                 # locator_result 从 s1.artifacts 读（替代探 _last_locator_result 私态）。
                 # Step1 已显式产出到 artifacts["locator_results"]（全段 list），取首段
@@ -116,7 +187,7 @@ class Step2ValidateSubAgent:
                 _locator_results = (s1.artifacts.get("locator_results") if s1 else None) or []
                 _lr = _locator_results[0] if _locator_results else None
                 validated = self._services.validate_intents(
-                    intents, _tmp_res, ctx.session_id, locator_result=_lr)
+                    validated, _tmp_res, ctx.session_id, locator_result=_lr)
                 # 收集校验产出的 failures，据 issue_type 映射硬/软类别上报。
                 from ...subagent.validator_agent import IssueType
                 # 口径对齐 validator_agent.validate_two_layer 内部真实 gate
@@ -136,11 +207,14 @@ class Step2ValidateSubAgent:
                     IssueType.UNIQUE_VIOLATION.value,
                     IssueType.TYPE_MISMATCH.value,
                     IssueType.COL_NOT_FOUND.value,
+                    IssueType.ENUM_INVALID.value,
                 }
                 for f in (getattr(_tmp_res, "failures", None) or []):
                     if isinstance(f, dict):
                         _itype = f.get("issue_type") or f.get("type", "")
-                        _is_hard = _itype in _HARD_TYPES
+                        _root = f.get("root_cause") or f.get("message") or ""
+                        _is_hard = _is_hard_validation_issue(
+                            f.get("type", "validate_issue"), _itype, _root)
                         errors.append(StepError(
                             step_id=STEP2_VALIDATE,
                             error_type=f.get("type", "validate_issue"),
@@ -175,6 +249,7 @@ class Step2ValidateSubAgent:
                 if key in seen:
                     continue
                 seen.add(key)
+                issue_type = f.get("issue_type") or f.get("type", "")
                 errors.append(StepError(
                     step_id=STEP2_VALIDATE,
                     error_type=key[0],
@@ -182,15 +257,21 @@ class Step2ValidateSubAgent:
                     root_cause=root,
                     table=table, sheet=sheet, column=f.get("col"),
                     suggestion=f.get("suggestion"),
-                    is_hard=False))
+                    is_hard=_is_hard_validation_issue(key[0], issue_type, root)))
 
         ok = not any(e.is_hard for e in errors)
         return StepResult(
             step_id=STEP2_VALIDATE, ok=ok,
             errors=errors, warnings=warnings,
             metrics={"dur_ms": int((time.time() - t0) * 1000),
-                     "intents": len(validated)},
-            artifacts={"validated": validated})
+                     "intents": len(validated),
+                     "step1_quality_hard": (
+                         step1_quality or {}).get("hard_count", 0)
+                     if isinstance(step1_quality, dict) else 0},
+            artifacts={"validated": validated,
+                       "step1_quality": step1_quality,
+                       "semantic_plan": semantic_plan,
+                       "semantic_compile_report": semantic_compile_report})
 
 
 __all__ = ["Step2ValidateSubAgent"]

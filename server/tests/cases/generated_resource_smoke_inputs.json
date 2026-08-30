@@ -1,0 +1,188 @@
+[
+  {
+    "_meta": {
+      "name": "资源烟测·活动单表新增",
+      "expect_subtasks": 1,
+      "design_target": "测试中文策划口吻到 activity.xlsx/Activity 的单表字段抽取，包含数字主键、中文枚举口吻、描述和时间字段。"
+    },
+    "input": "新增一个活动，名称'端午竞渡'，类型节日，活动编号 4010，活动描述'端午竞渡挑战开放，活动期间每日可完成一次竞渡任务'，开始时间 2026-06-01 00:00:00，结束时间 2026-06-07 23:59:59。",
+    "expected_answer": [
+      {
+        "table": "activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "row_content": {
+          "id": 4010,
+          "activity_type": 1,
+          "name": "端午竞渡",
+          "desc": "端午竞渡挑战开放，活动期间每日可完成一次竞渡任务",
+          "start_time": "2026-06-01 00:00:00",
+          "end_time": "2026-06-07 23:59:59"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "资源烟测·邮件模板与全服邮件联动",
+      "expect_subtasks": 2,
+      "design_target": "测试同 workbook 多 sheet 新增、模板主键占位符产生与 GlobalMail.template_id 引用。"
+    },
+    "input": "帮我配一封全服邮件：邮件模板标题'端午福利开启'，内容'端午竞渡开启，登录即可领取节日福利'。全服邮件编号 32，邮件类型 1，发送人'系统'，发送时间 2026-06-01 09:00:00，有效期到 2026-06-08 00:00:00，奖励包 12001。",
+    "expected_answer": [
+      {
+        "table": "mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_template_id",
+        "row_content": {
+          "template_id": "<new_template_id>",
+          "title": "端午福利开启",
+          "content": "端午竞渡开启，登录即可领取节日福利"
+        }
+      },
+      {
+        "table": "mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "row_content": {
+          "global_id": 32,
+          "mail_type": 1,
+          "template_id": "<new_template_id>",
+          "sender": "系统",
+          "send_time": "2026-06-01 09:00:00",
+          "expire_time": "2026-06-08 00:00:00",
+          "reward_id": 12001
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "资源烟测·提示文案批量新增",
+      "expect_subtasks": 3,
+      "design_target": "测试单表多行新增和重复自然键去重不要误合并不同 key 的相似文案。"
+    },
+    "input": "把三条系统提示补到配置里：第一条原文'当前活动尚未开启'，key 用 TID_TIPS_ACTIVITY_NOT_OPEN，类型 tips；第二条原文'今日奖励已经领取'，key 用 TID_TIPS_REWARD_ALREADY_CLAIMED，类型 tips；第三条原文'背包空间不足，请先整理背包'，key 用 TID_TIPS_BAG_FULL，类型 tips。",
+    "expected_answer": [
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "当前活动尚未开启",
+          "key": "TID_TIPS_ACTIVITY_NOT_OPEN",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "今日奖励已经领取",
+          "key": "TID_TIPS_REWARD_ALREADY_CLAIMED",
+          "type": "tips"
+        }
+      },
+      {
+        "table": "tips.xlsx",
+        "sheet": "tips",
+        "operation": "add",
+        "row_content": {
+          "value": "背包空间不足，请先整理背包",
+          "key": "TID_TIPS_BAG_FULL",
+          "type": "tips"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "资源烟测·法宝基础与等级联动",
+      "expect_subtasks": 3,
+      "design_target": "测试 fabao.xlsx 多 sheet 新增、Fabao 产生主键、FabaoLevel 多行通过 fabao_id 引用新法宝。"
+    },
+    "input": "新增一个法宝叫'青玉莲灯'，法宝编号 5101，图标 Fabao_QingyuLiandeng.png，描述'莲灯护体，持续回复气血'，激活消耗道具 2001 数量 3。再给这个法宝配两条等级：1级技能 7001 技能等级 1，2级技能 7001 技能等级 2。",
+    "expected_answer": [
+      {
+        "table": "fabao.xlsx",
+        "sheet": "Fabao",
+        "operation": "add",
+        "produces": "new_fabao_id",
+        "row_content": {
+          "id": 5101,
+          "name": "青玉莲灯",
+          "icon": "Fabao_QingyuLiandeng.png",
+          "desc": "莲灯护体，持续回复气血",
+          "costs[0]": [2001, 3]
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoLevel",
+        "operation": "add",
+        "row_content": {
+          "fabao_id": 5101,
+          "level": 1,
+          "spell_id": 7001,
+          "spell_level": 1
+        }
+      },
+      {
+        "table": "fabao.xlsx",
+        "sheet": "FabaoLevel",
+        "operation": "add",
+        "row_content": {
+          "fabao_id": 5101,
+          "level": 2,
+          "spell_id": 7001,
+          "spell_level": 2
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "资源烟测·交互对话与选项",
+      "expect_subtasks": 3,
+      "design_target": "测试 interaction.xlsx 内对话主表和选项表的多 sheet 联动，以及 option_function.data.1.conv_id 对新对话的回指。"
+    },
+    "input": "新增一段交互对话，对话编号 8801，内容'少侠，是否参加端午竞渡？'。给它两个选项：选项编号 880101，文字'参加竞渡'，功能类型 1，跳到对话 8801；选项编号 880102，文字'暂时不了'，功能类型 1，也跳到对话 8801。",
+    "expected_answer": [
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConv",
+        "operation": "add",
+        "row_content": {
+          "conv_id": 8801,
+          "prompt_text": "少侠，是否参加端午竞渡？",
+          "options[0]": 880101,
+          "options[1]": 880102
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": 880101,
+          "option_text": "参加竞渡",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": 8801
+        }
+      },
+      {
+        "table": "interaction.xlsx",
+        "sheet": "InteractionConvOption",
+        "operation": "add",
+        "row_content": {
+          "option_id": 880102,
+          "option_text": "暂时不了",
+          "option_function.function_type": 1,
+          "option_function.data.1.conv_id": 8801
+        }
+      }
+    ]
+  }
+]

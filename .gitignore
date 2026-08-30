@@ -114,3 +114,7 @@ openspec/
 # ============================================================
 bench/
 OPTIMIZATION_METRICS.md
+_dbg_*.py
+_dbg_*.txt
+*.err
+*.out.txt

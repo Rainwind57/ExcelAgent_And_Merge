@@ -1,0 +1,22 @@
+{
+  "//": "Pylance/Pyright 配置：server/tests 下的测试以 server/ 为导入根（from agent.excel...），需把 server 加入 extraPaths 才能解析。",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "server"
+  ],
+  "include": [
+    "server"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.venv",
+    "frontend",
+    "resources",
+    "merge",
+    "doc",
+    "docs",
+    "tools"
+  ]
+}

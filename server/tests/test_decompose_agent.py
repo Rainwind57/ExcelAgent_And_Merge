@@ -117,6 +117,125 @@ def make_agent():
 
 
 # ── 样例1: pet 进化链(2 表, FK 链)──────────────────────────
+def test_parse_json_array_accepts_semantic_plan_payload():
+    da, _parser = make_agent()
+
+    arr = da._parse_json_array("""```json
+{
+  "semantic_plan": {
+    "version": 1,
+    "entities": [
+      {
+        "entity_id": 1,
+        "operation": "add",
+        "target": {"table": "mail", "sheet": "MailTemplate"},
+        "attributes": [
+          {"name": "template_id", "value": "<new_template_id>"},
+          {"name": "title", "value": "open notice"}
+        ],
+        "produces": "new_template_id"
+      }
+    ]
+  }
+}
+```""")
+
+    assert arr == [{
+        "table": "mail",
+        "sheet": "MailTemplate",
+        "action": "add",
+        "fields": {
+            "template_id": "<new_template_id>",
+            "title": "open notice",
+        },
+        "produces": "new_template_id",
+        "consumes": {},
+        "locator_field": "",
+        "locator_value": "",
+        "locator_fields": [],
+        "locator_values": [],
+    }]
+
+
+def test_parse_json_array_semantic_plan_remaps_fields_to_schema(monkeypatch):
+    da, _parser = make_agent()
+
+    def fake_schema_getter(_entity):
+        return ["Template Id", "Title"], ["template_id:int", "title:string"]
+
+    monkeypatch.setattr(da, "_schema_for_semantic_entity", fake_schema_getter)
+
+    arr = da._parse_json_array(json.dumps({
+        "semantic_plan": {
+            "version": 1,
+            "entities": [{
+                "entity_id": 1,
+                "operation": "add",
+                "target": {"table": "mail", "sheet": "MailTemplate"},
+                "attributes": [
+                    {"name": "Template Id", "value": "<new_template_id>"},
+                    {"name": "Title", "value": "open notice"},
+                ],
+                "produces": "new_template_id",
+            }],
+        },
+    }))
+
+    assert arr == [{
+        "table": "mail",
+        "sheet": "MailTemplate",
+        "action": "add",
+        "fields": {
+            "template_id": "<new_template_id>",
+            "title": "open notice",
+        },
+        "produces": "new_template_id",
+        "consumes": {},
+        "locator_field": "",
+        "locator_value": "",
+        "locator_fields": [],
+        "locator_values": [],
+    }]
+
+
+def test_parse_json_array_accepts_unfenced_semantic_plan_payload():
+    da, _parser = make_agent()
+
+    arr = da._parse_json_array(json.dumps({
+        "semantic_plan": {
+            "version": 1,
+            "entities": [{
+                "entity_id": 1,
+                "operation": "add",
+                "target": {"table": "tips", "sheet": "tips"},
+                "attributes": [
+                    {"name": "key", "value": "TID_TEST"},
+                    {"name": "value", "value": "hello"},
+                ],
+            }],
+        },
+    }))
+
+    assert len(arr) == 1
+    assert arr[0]["table"] == "tips"
+    assert arr[0]["fields"] == {"key": "TID_TEST", "value": "hello"}
+
+
+def test_build_prompt_can_request_semantic_plan_output(monkeypatch):
+    da, _parser = make_agent()
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_SEMANTIC_OUTPUT", "1")
+
+    prompt = da._build_prompt(
+        "add one row",
+        "- mail/MailTemplate: template_id | title",
+        "mail.GlobalMail.template_id -> mail.MailTemplate.template_id",
+    )
+
+    assert "Optional semantic_plan output mode" in prompt
+    assert "\"semantic_plan\"" in prompt
+    assert "\"entities\"" in prompt
+
+
 def test_pet_evolve_chain():
     da, parser = make_agent()
     parser.client.set_response("""```json

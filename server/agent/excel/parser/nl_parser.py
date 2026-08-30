@@ -40,18 +40,20 @@ class Issue:
     expected:     期望（如 "int"/"枚举:1,2,3"/"必填"）
     suggestion:   修正建议
     value:        实际值（供前端展示）
+    suggested_combo: 复合主键冲突时的可一键采纳组合值，形如 "列A=1,列B=2"
     """
     col: str = ""
     issue_type: str = ""
     expected: str = ""
     suggestion: str = ""
     value: Any = None
+    suggested_combo: str = ""
 
     def to_dict(self) -> dict:
         return {
             "col": self.col, "issue_type": self.issue_type,
             "expected": self.expected, "suggestion": self.suggestion,
-            "value": self.value,
+            "value": self.value, "suggested_combo": self.suggested_combo,
         }
 
 

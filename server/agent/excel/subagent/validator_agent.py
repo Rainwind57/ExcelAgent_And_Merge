@@ -80,6 +80,139 @@ def _norm_col(c) -> str:
     return _norm_col_name(c or "").lower()
 
 
+_FULL2HALF = {
+    "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
+    "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
+    "，": ",", "、": ",", "．": ".", "。": ".", "％": "%",
+    "；": ";", "：": ":", "／": "/", "｜": "|", "－": "-",
+}
+_SEP_RE = re.compile(r"[,，、/|;；\s]+")
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _derive_suggestion_from_value(value, expected: str = ""):
+    """从「类型不符」的错误输入里派生一个**形式合规**的建议值（纯文本归一化）。
+
+    用户要求：ask 卡片一出现就必须带建议，否则面对空输入框无从下手。多数类型
+    错误其实只是"形式"问题，值里仍带着可救的信息：
+      - 全角符号：`「１，２」`/「200，0，150」→ 半角
+      - 多值串塞进标量列：「200,0,150」→ 取首个数 200（标量列只放得下一个值）
+      - 百分号/单位：「20%」→ 20；「3万」→ 30000
+      - 布尔词：「是」→ 1；「否」→ 0
+
+    只做**形式**归一化，不做业务语义猜测（纯中文塞进 int 列猜不出 → 返回 None，
+    交上层给格式提示）。猜错等于写脏数据，比不给建议更糟。
+
+    Args:
+        value: 用户/LLM 填的错值
+        expected: 该列的期望类型串（如 "int" / "float" / "bool" / "tuple[...]"）
+
+    Returns:
+        建议值（int/float/str）或 None（派生不出）。
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or (s.startswith("<") and s.endswith(">")):
+        return None
+    exp = (expected or "").lower()
+    s2 = "".join(_FULL2HALF.get(ch, ch) for ch in s)
+    s2 = s2.strip("\"'“”‘’ ").strip()
+    if not s2:
+        return None
+    is_bool = "bool" in exp
+    _floatish = any(k in exp for k in ("float", "double", "number", "decimal"))
+    is_num = (not is_bool) and (_floatish or any(
+        k in exp for k in ("int", "long")))
+
+    def _cast(v: float):
+        """按列类型决定返回 int 还是 float。"""
+        if _floatish or v != int(v):
+            return v
+        return int(v)
+
+    if is_bool:
+        low = s2.lower()
+        if low in ("1", "true", "yes", "y", "是", "有", "开", "开启", "启用"):
+            return 1
+        if low in ("0", "false", "no", "n", "否", "无", "关", "关闭", "禁用"):
+            return 0
+        return None
+    if not is_num:
+        # 非数值列（string/未知类型）：只做全角/引号归一，把原值原样给回
+        return s2
+    s3 = s2.rstrip("%").strip()
+    mult = 1
+    for _unit, _factor in (("万", 10000), ("萬", 10000), ("千", 1000),
+                           ("百", 100)):
+        if s3.endswith(_unit):
+            s3 = s3[: -len(_unit)]
+            mult = _factor
+            break
+    if s3[-1:] in ("k", "K"):
+        s3 = s3[:-1]
+        mult = 1000
+    s3 = s3.strip()
+    # ① 纯数字 → 直接用
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", s3 or ""):
+        return _cast(float(s3) * mult)
+    # ② 多值串（逗号/顿号/分号/斜杠/空格分隔）→ 标量列取第一个数字
+    parts = [p for p in _SEP_RE.split(s3) if p]
+    if len(parts) > 1:
+        nums = _NUM_RE.findall(parts[0]) or _NUM_RE.findall(s3)
+        if nums:
+            return _cast(float(nums[0]) * mult)
+    # ③ 兜底：串里第一个数字（如「第3档」→ 3）
+    nums = _NUM_RE.findall(s3)
+    if nums:
+        return _cast(float(nums[0]) * mult)
+    return None
+
+
+def _duplicate_value_cols(result_rows, headers) -> set:
+    """既有数据里「取值存在重复」的列名集合（split(":")[0].strip().lower()）。
+
+    主键/唯一约束列在既有数据里取值必然互不相同；某列一旦出现重复值，就说明它是
+    **可被多行共用的引用列**而非身份列，例如：
+      - school 的 大世界model_id=1027 被 7 个门派共用、战斗model_id=1074 被 2 个共用
+      - school_talent_level 的 buff_id=600003 被同一天赋的 1/2 级共用
+
+    这类列不得参与唯一性校验与主键列识别，否则会把用户**显式给的正确值**误判成
+    「主键冲突」并自动改成建议值（1027→1029、1074→1075），与用户指令直接冲突。
+
+    Args:
+        result_rows: _rows_to_dicts 产出的 list[dict]（键为表头 split(":")[0].strip()）
+        headers: 原始表头（含类型/注释后缀）
+
+    Returns:
+        set[str]，空集合表示未发现重复值列（含无数据场景，判据不可信时不豁免）。
+    """
+    out: set = set()
+    if not result_rows or not headers:
+        return out
+    for h in headers or []:
+        if not h:
+            continue
+        key = str(h).split(":")[0].strip()
+        if not key:
+            continue
+        seen: set = set()
+        for row in result_rows:
+            if not isinstance(row, dict):
+                return out
+            v = row.get(key)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            if s in seen:
+                out.add(key.lower())
+                break
+            seen.add(s)
+    return out
+
+
 def _is_any_placeholder(fields: dict, pk_norm_set: set) -> bool:
     """复合 PK 任一成员列值为占位符/空 → 跳过组合检测（交拓扑回填或留空）。"""
     if not fields or not pk_norm_set:
@@ -263,15 +396,45 @@ class ValidatorAgent(LLMSubAgent):
             return out  # 复合键列未全列填值，交单列/必填逻辑处理
         combo = tuple(str(v).strip() if v is not None else "" for _, _, v in col_vals)
         combo_desc = ",".join(f"{fk}={v}" for _nfk, fk, v in col_vals)
+
+        def _next_free_combo() -> str:
+            """冲突组合的"下一个可用组合"：每个数值列取该列现有最大值+1，
+            非数值列保留原值。让用户有可一键采纳的具体值（原 suggestion 只是一句
+            "疑似重复，请确认"，前端把它当建议值展示，用户无从下手）。"""
+            parts = []
+            for nfk, fk, v in col_vals:
+                nums = []
+                for _k, _vv in (existing_values or {}).items():
+                    if _norm_col(_k) != nfk:
+                        continue
+                    if not isinstance(_vv, (set, list, tuple)):
+                        continue
+                    for _x in _vv:
+                        try:
+                            nums.append(int(_x))
+                        except (ValueError, TypeError):
+                            continue
+                    break
+                if not nums:
+                    parts.append(f"{fk}={v}")
+                    continue
+                _n = max(nums) + 1
+                _used = {int(_x) for _x in nums}
+                while _n in _used:
+                    _n += 1
+                parts.append(f"{fk}={_n}")
+            return ",".join(parts)
         # 严格路径：composite_existing（整行组合值集合，schema_bundle 注入）
         if isinstance(composite_existing, (set, list, tuple)) and composite_existing:
             if combo in set(composite_existing):
+                _sug_combo = _next_free_combo()
                 out.append(Issue(
                     col=",".join(pk_cols),
                     issue_type=IssueType.UNIQUE_VIOLATION.value,
                     expected=f"复合主键组合唯一（{combo_desc}）",
-                    suggestion=f"组合「{combo_desc}」已存在,请改用其他组合或 modify",
+                    suggestion=f"建议改用：{_sug_combo}",
                     value=combo_desc,
+                    suggested_combo=_sug_combo,
                 ))
             return out
         # 退化路径：无 composite_existing，用列级 existing 集合做弱判定（保守报"疑似"
@@ -290,16 +453,83 @@ class ValidatorAgent(LLMSubAgent):
                        for i, (nfk, _fk, _v) in enumerate(col_vals))
         if not hit_each:
             return out
+        _sug_combo = _next_free_combo()
         out.append(Issue(
             col=",".join(pk_cols),
             issue_type=IssueType.UNIQUE_VIOLATION.value,
             expected=f"复合主键组合唯一（{combo_desc}）",
-            suggestion=f"组合「{combo_desc}」疑似重复,请确认该行确为新组合",
+            suggestion=(f"疑似与已有行重复（{combo_desc}），建议改用：{_sug_combo}；"
+                        f"若确认是新组合，直接接受建议或填原值继续"),
             value=combo_desc,
+            suggested_combo=_sug_combo,
         ))
         return out
 
-    def _check_business_required_pre_add(self, intent, headers, fields, raw) -> list:
+    @staticmethod
+    def _never_filled_cols(headers: list, existing_values) -> set:
+        """既有数据里「从未填过值」的列名集合（归一后小写）。
+
+        表头有该列但历史每一行都留空 → 按既有数据判据它不是业务必填列。典型：
+        school_ability/SchoolAbility 的「功效描述」「升级描述」，8 行数据全为空，
+        而用户只给了「描述'…'」（落在「神通描述」列）→ 不该因两个从未使用的
+        描述列报 MISSING_REQUIRED 并 skip 整条新增。
+
+        existing_values 为空（表里压根没数据）时判据不可信 → 返回空集不豁免，
+        保持原保守行为。
+        """
+        if not headers or not existing_values:
+            return set()
+        out: set = set()
+        for h in headers:
+            if not h:
+                continue
+            name = str(h).split(":")[0].strip()
+            if not name:
+                continue
+            nl = name.lower()
+            vals = existing_values.get(nl)
+            if vals is None:
+                for k, v in existing_values.items():
+                    if str(k or "").split(":")[0].strip().lower() == nl:
+                        vals = v
+                        break
+            if not vals:
+                out.add(nl)
+        return out
+
+    @staticmethod
+    def _explicitly_empty_cols(raw: str, headers: list) -> set:
+        """指令里被显式声明为「空/不带」的列名集合（归一后小写）。
+
+        用户写「不带奖励」时是把「奖励」列显式置空，不是 LLM 漏产。原实现只看
+        raw 里出现「奖励」二字就报 MISSING_REQUIRED → 整条 GlobalMail 被 skip。
+        这里识别否定式（不带/不含/没有/不填/为空/留空… + 列名，或 列名 + 无/空/0），
+        命中则按语义补 0（数值列）放行，不报缺。
+
+        只认带否定词的组合，不匹配裸「无」字，避免「无相护体」这类正常实体名误伤。
+        """
+        if not raw or not headers:
+            return set()
+        neg = (r"(?:不带|不带用|不含|没有|不要|无需|不填|不加|不挂|不配|免|"
+               r"为空|留空|置空|留白|缺省)")
+        out: set = set()
+        for h in headers or []:
+            if not h:
+                continue
+            name = str(h).split(":")[0].strip()
+            if not name or len(name) < 2:
+                continue
+            n = re.escape(name)
+            pat_a = re.compile(neg + r"\s*(?:的)?\s*" + n)
+            pat_b = re.compile(
+                n + r"\s*(?:为|填|写|设|是|填为|设为|给)?\s*(?:无|空|0|没有|不带|不要)")
+            if pat_a.search(raw) or pat_b.search(raw):
+                out.add(name.lower())
+        return out
+
+    def _check_business_required_pre_add(self, intent, headers, fields, raw,
+                                         existing_values=None,
+                                         type_row=None) -> list:
         """Pack 3：写前 business heuristic 必填列校验（agent.py:4561 同启发式前移）。
 
         策略：user_text 含引号(说明用户显式给了名字/描述值) 且列名含「名称/描述/名」
@@ -310,6 +540,13 @@ class ValidatorAgent(LLMSubAgent):
         让 step4 induce_anti_patterns 标失败种；不强制走 _ask hard ask 循环（用户
         原则 "除主键缺失外不校验" 不变）。PK 自动分配列豁免（首列必非空时由
         _dedup_inter_pk_dup 等处理）。
+
+        三条误报豁免（均「数据/指令」驱动，不绑业务词）：
+          1. 全空列豁免：该列在既有所有数据行里从没填过 → 非业务必填列，不报。
+          2. 否定式豁免：指令显式说「不带X/无X」→ 按语义补 0 放行，不报。
+          3. 同族列豁免：同一族（描述族/名称族）里已有列被写入 → 同族其余列不报。
+             （用户只说「描述'…'」，LLM 已填进「神通描述」，就没理由要求它也填满
+             「功效描述」「升级描述」——误报会把整条新增标 skipped 拦下来。）
 
         Returns:
             list[Issue]，空 = 无业务必填列缺失。
@@ -330,8 +567,21 @@ class ValidatorAgent(LLMSubAgent):
                                   "开始时间", "结束时间", "图标", "邮件类型"))
             if not quoted:
                 return issues
+            never_used = self._never_filled_cols(headers, existing_values)
+            empties = self._explicitly_empty_cols(raw, headers)
             written_norm = {(str(k) or "").split(":")[0].strip().lower()
                             for k in fields.keys() if k}
+
+            def _kw_family(col_name: str) -> str:
+                """列名归属的关键词族：name（名称/名字/…名）/ desc（…描述）。"""
+                n = (col_name or "").lower()
+                if "名称" in n or "名字" in n or n.endswith("名"):
+                    return "name"
+                if "描述" in n:
+                    return "desc"
+                return ""
+
+            written_families = {_kw_family(k) for k in written_norm} - {""}
             # ① 名称/描述/名 类列：保持原 Pack3 契约——raw 含引号即视为用户给了
             #    名字/描述值，缺失即报（保守，宁可多报不可漏半成品）。
             name_kws = ("名称", "描述", "名")
@@ -354,6 +604,23 @@ class ValidatorAgent(LLMSubAgent):
                 if _is_explicit_kw and not _is_name_kw \
                         and name.lower() not in raw_lower:
                     continue
+                # §豁免2：指令显式声明该列为空（如"不带奖励"）→ 补 0 放行，不报缺
+                if name.lower() in empties:
+                    _ct = ""
+                    for _hh, _tt in zip(headers or [], type_row or []):
+                        if str(_hh or "").split(":")[0].strip() == name:
+                            _ct = str(_tt or "")
+                            break
+                    if "int" in _ct.lower() or "float" in _ct.lower():
+                        fields[h] = 0
+                    continue
+                # §豁免3：同族已有列被写入 → 同族其余列不算漏产，不报
+                if _is_name_kw and _kw_family(name) \
+                        and _kw_family(name) in written_families:
+                    continue
+                # §豁免1：该列历史从未填过 → 非业务必填列，不报
+                if name.lower() in never_used:
+                    continue
                 issues.append(Issue(
                     col=name, issue_type=IssueType.MISSING_REQUIRED.value,
                     expected=f"业务必填列「{name}」（指令明确给出该列值，LLM 漏产）",
@@ -366,12 +633,18 @@ class ValidatorAgent(LLMSubAgent):
         return issues
 
     def _is_pk_like_col(self, col_clean: str, stem: str = "",
-                        headers: list = None, sheet: str = "") -> bool:
+                        headers: list = None, sheet: str = "",
+                        non_unique_cols: set = None) -> bool:
         """PK 列判定（P1-9 读真实元数据，支持复合主键）。
 
         优先级：① table_relations/rules 声明的 PK 列（按 stem+sheet 精确命中）
                 ② _is_id_col 启发式（含 id/编号 子串）
                 ③ 表第一列（惯例主键）
+
+        Args:
+            non_unique_cols: _duplicate_value_cols 算出的「既有数据取值有重复」的列。
+                ②③ 两条**启发式**路径命中但列在此集合中 → 判 False。
+                声明式 ① 不受影响（声明优先，数据脏不能推翻声明）。
         """
         if not col_clean:
             return False
@@ -397,13 +670,42 @@ class ValidatorAgent(LLMSubAgent):
                 if any(_norm_col(c) == col_lower for c in sheets_map if c):
                     return True
         # ② id/编号 启发式
+        # §可共用引用列豁免：model_id/combat_model_id/buff_id 这类列名以 id 结尾
+        # 却是「多行共用引用」，既有数据里必然有重复值 → 不是唯一键，不参与唯一性
+        # 校验（否则用户显式给的 1027/1074/600003 会被误判冲突并改号）。
         if _is_id_col(col_clean):
-            return True
+            return col_lower not in (non_unique_cols or set())
         # ③ 表第一列
         if headers and col_clean == (str(headers[0] or "").split(":")[0].strip().lower()
                                      if headers else False):
-            return True
+            return col_lower not in (non_unique_cols or set())
         return False
+
+    @staticmethod
+    def _pick_single_pk_column(headers: list, non_unique_cols: set = None) -> str:
+        """从表头挑单列主键名：首个「id/编号/序号/主键型 且既有取值互不重复」的列。
+
+        原实现取「首个含 id 的列」，遇到多行共用的引用列就误判：school/School 的
+        大世界model_id=1027 被 7 个门派共用 → 被当成主键 → 用户显式给的 1027 判
+        占用 → 自动改号 1029（与指令直接冲突）。既有数据里取值有重复 = 该列可被
+        多行共用 = 不是身份列 → 跳过。全都不合格时退回表头首列（保持原兜底）。
+        """
+        if not headers:
+            return ""
+        first = str(headers[0] or "").split(":")[0].strip()
+        for h in headers:
+            if not h:
+                continue
+            name = str(h).split(":")[0].strip()
+            if not name:
+                continue
+            nl = name.lower()
+            if not any(k in nl for k in ("id", "编号", "序号", "主键")):
+                continue
+            if nl in (non_unique_cols or set()):
+                continue
+            return name
+        return first
 
     def validate(self, intents: list, locator_result: LocatorResult = None,
                  schema_getter=None, data_getter=None) -> dict:
@@ -541,6 +843,9 @@ class ValidatorAgent(LLMSubAgent):
             result_rows = data.get("result_rows") or []
             cli = data.get("cli") or self._cli
             headers_norm = {_norm_col_name(h).lower() for h in headers if h}
+            # §可共用引用列识别：既有数据里取值有重复的列不是唯一键/身份列，
+            # 不参与 ④ 唯一性校验（_is_pk_like_col ②③ 启发式路径据此豁免）。
+            _dup_cols = _duplicate_value_cols(result_rows, headers)
             # §复合主键：本 intent 目标 sheet 的 PK 列列表（≥2 即复合键）。
             # 预算一次，单列唯一性循环据此跳过复合键成员（组合唯一性交末尾统一判），
             # 兼作 _check_composite_unique 的输入。
@@ -637,7 +942,11 @@ class ValidatorAgent(LLMSubAgent):
                                    or _val_str == "<auto>"
                                    or (_val_str.startswith("<") and _val_str.endswith(">")))
                 # ② 类型 coerce（按解析后的真实中文表头查类型）
-                col_type = self._lookup_col_type(col_clean, headers, type_row)
+                # §传原始列键：点分嵌套列（effect.data.3005.to_pos）中文表头会撞
+                # 成同一个 "3005"，必须按原始点分键在 row2 精确取类型，否则查到
+                # 兄弟列（to_space_id:int）上 → 误报 TYPE_MISMATCH。
+                col_type = self._lookup_col_type(
+                    col_clean, headers, type_row, orig_col=col)
                 # §P1-6 枚举转码前置：int 列填中文标签（如"节日"）先查 enum_resolver
                 # 转数字码，命中则改写 fields 消除 TYPE_MISMATCH，避免硬阻断 ask 用户。
                 # 写路径 agent._coerce_value 也会查 enum_resolver，但 Step2 前置转码
@@ -737,7 +1046,8 @@ class ValidatorAgent(LLMSubAgent):
                 # 可能合法，如 (法宝id=5, 法宝等级=1/2/3) 的法宝id 重复），组合唯一性
                 # 交循环后的 _check_composite_unique 统一判定，避免误报。
                 _is_pk_like = self._is_pk_like_col(
-                    col_clean, stem=stem, headers=headers, sheet=sheet)
+                    col_clean, stem=stem, headers=headers, sheet=sheet,
+                    non_unique_cols=_dup_cols)
                 _in_composite = col_lower in _composite_pk_norm and _is_composite
                 if _is_pk_like and not _in_composite and not _is_placeholder \
                         and col_lower in existing_values \
@@ -802,7 +1112,8 @@ class ValidatorAgent(LLMSubAgent):
             # 的列 → 报 MISSING_REQUIRED + 标 intent.validation.skipped=True 让
             # Step3 跳写盘（避免半成品行落盘才 step4 retro-active 标失败）。
             issues.extend(self._check_business_required_pre_add(
-                it, headers, fields, getattr(it, "raw", "") or ""))
+                it, headers, fields, getattr(it, "raw", "") or "",
+                existing_values=existing_values, type_row=type_row))
             # ⑥ 范围分布（modify only, run_semantic_gate 纯函数,需 path/cli/vc/result_rows）
             action = getattr(it, "action", "")
             if (action == "modify" and cli is not None and path is not None
@@ -948,14 +1259,44 @@ class ValidatorAgent(LLMSubAgent):
         self._schema_cache[cache_key] = result
         return result
 
-    def _lookup_col_type(self, col, headers, type_row) -> str:
-        """从 type_row（row2 规范名）找列类型。"""
+    def _lookup_col_type(self, col, headers, type_row, orig_col: str = "") -> str:
+        """从 type_row（row2 规范名）找列类型。
+
+        §点分嵌套列修正：中文表头常是「3005：目标space ID」这种「序号：名字」形态，
+        _norm_col_name 按全角冒号截断后只剩 "3005"，于是同序号的多个子列
+        （effect.data.3005.to_space_id / to_pos / to_dir）全部撞成同一个 key，
+        类型查到**第一个**子列上——表现为给 `to_pos` 报
+        「需 effect.data.3005.to_space_id: int」，而 to_pos 真实类型是
+        tuple[float,float,float]（坐标本来就是三元组），纯属误报。
+
+        故优先用**解析前的原始列键**（LLM 产的点分规范名）直接按 row2 精确匹配，
+        匹配不到再退回原「中文表头精确匹配」行为。
+        """
         if not type_row:
             return ""
+        # ① 原始点分键精确匹配 row2 规范名（剥 ":类型" 后缀）
+        if orig_col:
+            _o = _norm_col_name(orig_col).lower()
+            for _h, _t in zip(headers, type_row):
+                if not _t:
+                    continue
+                if _norm_col_name(str(_t)).lower() == _o:
+                    return str(_t)
+        # ② 中文表头精确匹配（原行为）
         col_clean = _norm_col_name(col).lower()
         for h, t in zip(headers, type_row):
             if h and _norm_col_name(h).lower() == col_clean:
                 return str(t or "")
+        # ③ 原始键末段（to_pos）匹配 row2 末段（点分规范名缩写写法）
+        if orig_col and "." in str(orig_col):
+            _last = str(orig_col).rsplit(".", 1)[-1].lower()
+            if _last:
+                for _h, _t in zip(headers, type_row):
+                    if not _t:
+                        continue
+                    _tn = _norm_col_name(str(_t)).lower()
+                    if "." in _tn and _tn.rsplit(".", 1)[-1] == _last:
+                        return str(_t)
         return ""
 
     def _coerce_field_simple(self, col_type, val) -> tuple[bool, str]:
@@ -1413,6 +1754,23 @@ class ValidatorAgent(LLMSubAgent):
         # consumes 占位符替换成预分配的真实 ID，让下方 PK 检测看到真实值。
         _pre_produced: dict[str, str] = {}
         _pre_seq: dict[str, int] = {}
+        # §批内 PK 账本：(table, sheet, pk_col) → 本批已预分配的 ID 集合。
+        # 缺失它时"同表多 add 递增"只是注释——每条都基于同一份未变盘面算 max+1，
+        # 4 条 school_spirit 全分到 110，第 1 条写盘后 3 条在 Step3 撞 PK。
+        _pre_allocated: dict[tuple, set] = {}
+        # 既有行数据按 intent 缓存（判定"某列取值是否重复"要用，避免重复读表）
+        _rows_cache: dict = {}
+
+        def _rows_for(_it):
+            _k = id(_it)
+            if _k not in _rows_cache:
+                try:
+                    _d = data_getter(_it) if callable(data_getter) else {}
+                    _rows_cache[_k] = ((_d or {}).get("result_rows") or [])
+                except Exception:
+                    _rows_cache[_k] = []
+            return _rows_cache[_k]
+
         if data_getter is not None:
             try:
                 from ..core.operation_orchestrator import OperationOrchestrator as _OO
@@ -1429,14 +1787,8 @@ class ValidatorAgent(LLMSubAgent):
                     continue
                 # 预分配 PK：读表头找 PK 列名，预算 max+1（同表多 add 递增）
                 _phdrs, _ = self._get_schema(_pit, schema_getter)
-                _pk_cn = ""
-                if _phdrs:
-                    for _h in _phdrs:
-                        if _h and "id" in str(_h).lower():
-                            _pk_cn = str(_h).split(":")[0].strip()
-                            break
-                    if not _pk_cn and _phdrs:
-                        _pk_cn = str(_phdrs[0] or "").split(":")[0].strip()
+                _pk_cn = self._pick_single_pk_column(
+                    _phdrs, _duplicate_value_cols(_rows_for(_pit), _phdrs))
                 # 先解析 consumes 占位符（用前序已预分配的 produced）
                 _OO._resolve_placeholders(_pit, _pre_produced)
                 # 提取本条 PK 值（解析后，占位符已替换或仍为 <label>）
@@ -1454,8 +1806,18 @@ class ValidatorAgent(LLMSubAgent):
                 # PK 值仍是占位符 → 预分配（同表多 add 递增保证不撞）
                 if _pk_v is not None and isinstance(_pk_v, str) \
                         and _pk_v.startswith("<") and _pk_v.endswith(">"):
-                    _sugg = self._suggest_next_id(_pit, _pk_cn or "", data_getter)
+                    _a_key = (str(getattr(_pit, "table_hint", "") or "").lower(),
+                              str(getattr(_pit, "sheet_hint", "") or "").lower(),
+                              str(_pk_cn or "").lower())
+                    _sugg = self._suggest_next_id(
+                        _pit, _pk_cn or "", data_getter,
+                        extra_used=_pre_allocated.get(_a_key))
                     if _sugg is not None:
+                        # 登记进批内账本，下一条同表 add 从它之后继续递增
+                        try:
+                            _pre_allocated.setdefault(_a_key, set()).add(int(_sugg))
+                        except (ValueError, TypeError):
+                            pass
                         # 预分配值写入 produced（按 produces label + 通用 new_id）
                         _lbl = (getattr(_pit, "produces_label", None)
                                 or (getattr(_pit, "extras", None) or {}).get("produces"))
@@ -1501,6 +1863,28 @@ class ValidatorAgent(LLMSubAgent):
                     _comp_pk_now = self._get_pk_cols(_intent) \
                         if hasattr(self, "_get_pk_cols") else []
                     if len([c for c in (_comp_pk_now or []) if c]) >= 2:
+                        # §复合主键冲突不再静默 skip：原实现直接 _mark_intent_skipped
+                        # → 整条子任务被丢弃且用户毫无感知（school/School 组合唯一冲突
+                        # 即此路径，前端只看到"已跳过"）。改为带上"每列下一个可用值"
+                        # 的组合建议弹 ask，用户可一键接受或手填；仍 skip 才丢弃。
+                        _sug_combo = (getattr(iss, "suggested_combo", "")
+                                      if not isinstance(iss, dict)
+                                      else (iss.get("suggested_combo") or ""))
+                        if _sug_combo:
+                            try:
+                                _creply = self._ask_hard_issue(
+                                    _intent, iss, data_getter)
+                            except Exception:
+                                _creply = {"mode": "skip"}
+                            if (_creply or {}).get("mode") == "field":
+                                _cnew = ((_creply.get("custom_id")
+                                          or _creply.get("value")
+                                          or _creply.get("text")) or _sug_combo)
+                                if self._apply_issue_fix_to_intent(
+                                        _intent, iss,
+                                        {"mode": "field", "value": _cnew}):
+                                    _pk_resolved.add(sid)
+                                    continue
                         self._mark_intent_skipped(_intent)
                         _pk_skipped.add(sid)
                         continue
@@ -1544,14 +1928,8 @@ class ValidatorAgent(LLMSubAgent):
                 _comp_pk_n = len([c for c in (_comp_pk or []) if c])
                 if _comp_pk_n >= 2:
                     continue
-                _pk_col_name = ""
-                if _hdrs:
-                    for h in _hdrs:
-                        if h and "id" in str(h).lower():
-                            _pk_col_name = str(h).split(":")[0].strip()
-                            break
-                    if not _pk_col_name and _hdrs:
-                        _pk_col_name = str(_hdrs[0] or "").split(":")[0].strip()
+                _pk_col_name = self._pick_single_pk_column(
+                    _hdrs, _duplicate_value_cols(_rows_for(it), _hdrs))
                 # §PK 值提取按列位置对齐表头：Step3 写盘 _do_append 用 r[0]（首列）
                 # 硬比对，必抓；Step2 原靠列名匹配，LLM 命名偏差（rewardId vs 表头 id）
                 # 就漏（29004 案例）。改与写盘对齐——intent fields 第一项即 PK 列值。
@@ -1706,10 +2084,38 @@ class ValidatorAgent(LLMSubAgent):
         # 此处把 _pk_resolved 的 sid 也并入 _resolved_sids，避免遗留的 TYPE_MISMATCH issue
         # 对同一 intent 再触发 _ask_hard_issue 二次提问（用户刚接受建议ID又弹"类型不符"）。
         _resolved_sids = set(_pk_resolved)  # 初始化含已 PK 解决的 sid
+        # §可交互 issue 判定：与主 loop 的 ask 触发条件严格对称，供"清除已解决
+        # tip"复用。若两者不对称，已解决的 tip 会残留并被 P23 转软失败上报
+        # （表现为"用户已接受建议却仍报同一条失败"）。
+        def _is_askable_tip(t) -> bool:
+            """可经交互 ask 解决的 issue：硬 issue / 主键列缺失 / 枚举值非法。
+
+            注意：枚举值非法（ENUM_INVALID）可 ask，但【不硬阻断】——用户跳过时
+            保留 warning 继续写盘，不标 skipped（见下方 _is_blocking_tip）。
+            """
+            _it = (t.get("issue_type") if isinstance(t, dict)
+                   else getattr(t, "issue_type", ""))
+            return (_it in _hard_issue_types or _is_pk_missing(t)
+                    or _it == IssueType.ENUM_INVALID.value)
+
+        def _is_blocking_tip(t) -> bool:
+            """是否硬阻断（ask 被跳过时须标 skipped）：枚举不阻断。"""
+            _it = (t.get("issue_type") if isinstance(t, dict)
+                   else getattr(t, "issue_type", ""))
+            return _it in _hard_issue_types or _is_pk_missing(t)
         # 核心4：PK 冲突已 accept 改写的 intent 标 ok=True（_pk_resolved 已改写
         # fields，不应再阻断）；未解决（skip / 无 cb）的 intent 标 skipped。
         self._mark_validation_ok(intents)
-        if _has_hard:
+        # §枚举可交互（非阻断）：ENUM_INVALID 不进 _hard_issue_types，故不产生
+        # _has_hard。但无中文→数字的枚举映射时无法自动转码（强行转=瞎猜写错数据），
+        # 需把候选值列给用户选/填，故单独判 _has_enum 以触达同一 ask 循环。
+        # 是否阻断仍只由 _has_hard 决定，枚举不影响 ok / 不 skip intent。
+        _has_enum = any(
+            ((tip.get("issue_type") if isinstance(tip, dict)
+              else getattr(tip, "issue_type", ""))
+             == IssueType.ENUM_INVALID.value)
+            for tip in (tips or []))
+        if _has_hard or _has_enum:
             # §交互增强：对非 PK 已处理的硬 issue 通用 ask → 改写 fields → 标 ok
             # 已 accept 改写的 issue 从 tips 移除，未解决（skip/无 cb）标 skipped。
             # _resolved_sids 已在 _has_hard 前初始化含 _pk_resolved（P1-7 防重复 ask）
@@ -1752,11 +2158,42 @@ class ValidatorAgent(LLMSubAgent):
                     (tip.get("issue_type") if isinstance(tip, dict)
                      else getattr(tip, "issue_type", "")) in _hard_issue_types
                     for tip in (tips or []))
+            # §同类 issue 合并：同一列的 TYPE_MISMATCH 与 ENUM_INVALID 本质是同一
+            # 个问题（值「节日」既不是合法 int、也不在枚举白名单内）。二者各自独立
+            # ask 会让用户对同一字段被连续追问两次，且 TYPE_MISMATCH 侧拿不到枚举
+            # 候选（它的 expected 只有 "activity_type:int"）→ 只能给空输入框。
+            # 保留信息更全的 ENUM_INVALID（带"可选值/建议值"交互），移除其
+            # TYPE_MISMATCH 兄弟项。
+            _tm_en_by_col: dict = {}
+            for _t in (tips or []):
+                _tt = (_t.get("issue_type") if isinstance(_t, dict)
+                       else getattr(_t, "issue_type", ""))
+                if _tt not in (IssueType.TYPE_MISMATCH.value,
+                               IssueType.ENUM_INVALID.value):
+                    continue
+                _tsid = ((_t.get("subtask_id") if isinstance(_t, dict)
+                          else getattr(_t, "subtask_id", "")) or "")
+                _tc = _norm_col_name(
+                    (_t.get("col") if isinstance(_t, dict)
+                     else getattr(_t, "col", "")) or "")
+                _tm_en_by_col.setdefault((_tsid, _tc), []).append((_tt, _t))
+            _drop_ids = set()
+            for (_tsid, _tc), _items in _tm_en_by_col.items():
+                _ts = {_x[0] for _x in _items}
+                if (IssueType.TYPE_MISMATCH.value in _ts
+                        and IssueType.ENUM_INVALID.value in _ts):
+                    for _tt, _tobj in _items:
+                        if _tt == IssueType.TYPE_MISMATCH.value:
+                            _drop_ids.add(id(_tobj))
+            if _drop_ids:
+                tips = [t for t in (tips or []) if id(t) not in _drop_ids]
             for tip in (tips or []):
                 _itype = (tip.get("issue_type") if isinstance(tip, dict)
                           else getattr(tip, "issue_type", ""))
                 # §P25：MISSING_REQUIRED 仅主键列缺失才处理；非主键 MISSING_REQUIRED 降级 warning 跳过
-                if _itype not in _hard_issue_types and not _is_pk_missing(tip):
+                # §枚举可交互：ENUM_INVALID 也进 ask 循环（列候选值让用户选/填），
+                # 但它不硬阻断（skip 时保留 warning 继续写盘，见 _is_blocking_tip）。
+                if not _is_askable_tip(tip):
                     continue
                 if _itype == IssueType.UNIQUE_VIOLATION.value and \
                         (tip.get("subtask_id") if isinstance(tip, dict)
@@ -1770,12 +2207,37 @@ class ValidatorAgent(LLMSubAgent):
                 if sid in _resolved_sids:
                     continue  # 本 intent 已被前一个 issue ask 改过
                 # 非交互（无 _ask_callback）直接标 skipped 走原逻辑
+                # （枚举例外：非硬阻断，无 cb 时保留 warning 继续写盘，不 skip）
                 if getattr(self, "_ask_callback", None) is None:
-                    self._mark_intent_skipped(it)
+                    if _is_blocking_tip(tip):
+                        self._mark_intent_skipped(it)
                     continue
                 # §交互 ask 循环：用户输入需校验，不符合类型再提醒（最多 3 轮）
                 _col = (tip.get("col") if isinstance(tip, dict)
                         else getattr(tip, "col", "")) or ""
+                # §自动建议优先（不打断用户）：中文值落 int/枚举列时，先让 LLM
+                # 推断数字码并直接采用，避免弹对话框让用户手填。推断不出（低置信
+                # /无允许范围/LLM 不可用）才回落下方 ask 交互。
+                # 覆盖两类：TYPE_MISMATCH（中文值落 int 列）与 ENUM_INVALID
+                # （中文值不在枚举白名单）——二者常是同一问题的两种表现，合并后
+                # 只剩 ENUM_INVALID，故此处必须把 ENUM_INVALID 也纳入。
+                _v_cn = any(ord(c) > 127 for c in str(
+                    (tip.get("value") if isinstance(tip, dict)
+                     else getattr(tip, "value", "")) or ""))
+                if ((_itype == IssueType.TYPE_MISMATCH.value
+                     and self._is_cn_value_in_int_col(tip))
+                        or (_itype == IssueType.ENUM_INVALID.value and _v_cn)):
+                    try:
+                        _auto_v = self._auto_resolve_enum(
+                            it, tip, data_getter=data_getter)
+                    except Exception:
+                        _auto_v = None
+                    if _auto_v is not None:
+                        self._apply_issue_fix_to_intent(
+                            it, tip, {"mode": "field", "value": _auto_v,
+                                      "_auto": True})
+                        _resolved_sids.add(sid)
+                        break
                 _retry = 0
                 while _retry < 3:
                     _reply = self._ask_hard_issue(it, tip, data_getter=data_getter)
@@ -1817,32 +2279,45 @@ class ValidatorAgent(LLMSubAgent):
                         _retry += 1
                         continue
                     # skip / 无回复 → 标 skipped 阻断
-                    self._mark_intent_skipped(it)
+                    # （枚举例外：非硬阻断，用户跳过仅保留 warning，继续写盘）
+                    if _is_blocking_tip(tip):
+                        self._mark_intent_skipped(it)
                     break
                 if _retry >= 3:
                     # 3 轮仍不符合 → 标 skipped
                     self._mark_intent_skipped(it)
             # 移除已交互解决的硬 issue（已改 fields，冲突消除）
+            # §修复：过滤条件须与上方 ask 触发条件（1759 行）对称。ask 除硬 issue 外
+            # 还对 _is_pk_missing(tip)（主键列 MISSING_REQUIRED）生效，但此处原仅按
+            # _hard_issue_types 过滤，而该集合不含 missing_required → 用户 accept
+            # 建议 ID 后旧 tip 仍留在 tips，被 P23 转软失败上报（表现为"已接受建议
+            # 却仍报必填列缺失"）。补 _is_pk_missing 判定，使已解决 tip 真正摘除。
             if _resolved_sids:
+                # §用统一的 _is_askable_tip 过滤（含 ENUM_INVALID），否则用户选了
+                # 合法枚举值后旧 tip 仍残留 → P23 转软失败 → 表现为"已修正仍报错"。
                 tips = [t for t in (tips or [])
                         if not ((t.get("subtask_id") if isinstance(t, dict)
                                 else getattr(t, "subtask_id", "")) in _resolved_sids
-                                and ((t.get("issue_type") if isinstance(t, dict)
-                                      else getattr(t, "issue_type", ""))
-                                     in _hard_issue_types))]
-                _has_hard = any(
-                    (tip.get("issue_type") if isinstance(tip, dict)
-                     else getattr(tip, "issue_type", "")) in _hard_issue_types
-                    for tip in (tips or []))
+                                and _is_askable_tip(t))]
+                # §重算 _has_hard 须含 _is_pk_missing，与初始计算（1699 行）一致，
+                # 否则清除后 ok 判定漏算主键缺失类硬 issue。枚举不进 _has_hard
+                # （非阻断），故此处用 _is_blocking_tip 而非 _is_askable_tip。
+                _has_hard = any(_is_blocking_tip(tip) for tip in (tips or []))
             return {"ok": not _has_hard, "issues": tips, "fixes": [],
                     "intents": intents, "tips": tips, "user_reply": None}
         return {"ok": True, "issues": tips, "fixes": [], "intents": intents,
                 "tips": tips, "user_reply": None}
 
-    def _suggest_next_id(self, intent, col: str, data_getter) -> Optional[int]:
+    def _suggest_next_id(self, intent, col: str, data_getter,
+                         extra_used=None) -> Optional[int]:
         """核心4:调 data_getter(intent) 拿 existing_values,算 PK 列下一个可用 ID。
 
         data_getter 返回 {existing_values: {col_lower: set/list 已用值}}。
+
+        extra_used: 本批次**已经预分配出去**的 ID 集合。同批多条 add 共享同一份
+        盘面快照，若不排除本批已分配值，每条都会算出同一个 max+1 → 批内 PK 自撞
+        （实测：4 条 school_spirit 全部分到 110，第 1 条写成功后 3 条在 Step3
+        报"ID 已存在"）。调用方须把每次的返回值登记进该集合再传给下一条。
         """
         try:
             data = data_getter(intent) if callable(data_getter) else {}
@@ -1866,6 +2341,12 @@ class ValidatorAgent(LLMSubAgent):
                 return None
             used = set()
             for x in _vals:
+                try:
+                    used.add(int(x))
+                except (ValueError, TypeError):
+                    continue
+            # 本批次已预分配的 ID 一并占用，保证批内不撞号
+            for x in (extra_used or ()):
                 try:
                     used.add(int(x))
                 except (ValueError, TypeError):
@@ -1949,6 +2430,154 @@ class ValidatorAgent(LLMSubAgent):
         except Exception:
             logger.warning("_apply_pk_to_intent 失败", exc_info=True)
 
+    @staticmethod
+    def _is_cn_value_in_int_col(tip) -> bool:
+        """是否"中文值落进 int 列"（如「节日」填进 activity_type:int）。
+
+        这是唯一允许 LLM 推断枚举码的窄场景：表头无枚举含义、本地映射缺失时，
+        靠 LLM 语义匹配给出建议值，避免弹对话框让用户手填。
+        """
+        _exp = (tip.get("expected") if isinstance(tip, dict)
+                else getattr(tip, "expected", "")) or ""
+        _val = (tip.get("value") if isinstance(tip, dict)
+                else getattr(tip, "value", "")) or ""
+        if "int" not in str(_exp).lower():
+            return False
+        return any(ord(c) > 127 for c in str(_val))
+
+    @staticmethod
+    def _lookup_enum_set(enum_set: dict, col: str):
+        """在 enum_set 中按多种列名形态查找该列允许值。
+
+        背景：enum_set 的 key 来自真实表头（常为中文，如「活动类型」），
+        而 tip 的 col 是 LLM 产出的字段名（常为英文，如 activity_type），
+        二者口径不一致时直接匹配必然落空（导致自动推断与 ask 兜底都拿不到
+        候选值，只能给空输入框）。此处按 原名/去类型后缀/归一化 三种形态
+        依次尝试，并对 key 做大小写不敏感兜底。
+        """
+        if not isinstance(enum_set, dict) or not enum_set or not col:
+            return None
+        base = str(col).split(":")[0].strip()
+        cands: list[str] = []
+        for _c in (base, base.lower(),
+                   _norm_col_name(base), _norm_col_name(base).lower()):
+            if _c and _c not in cands:
+                cands.append(_c)
+        for _c in cands:
+            if _c in enum_set:
+                return enum_set[_c]
+        _lower = {str(_c).lower() for _c in cands}
+        for _k, _v in enum_set.items():
+            if str(_k).lower() in _lower:
+                return _v
+        return None
+
+    def _auto_resolve_enum(self, intent, tip, data_getter=None) -> Optional[int]:
+        """用 LLM 推断"中文含义 → 枚举数字码"，自动采用，不再打断用户。
+
+        仅用于 _is_cn_value_in_int_col 场景：本地 enum_mappings.yaml 无映射、
+        表头无枚举含义注释时，把允许值集合 + 列名 + 已有数据样例交给 LLM 做
+        一次语义匹配。置信度达阈值即直接写入 fields 并在 thinking 中说明；
+        高置信结果经 EnumResolver.register_label 缓存（D10 pending 门禁），
+        下次遇到同一中文值直接命中，不再调 LLM。
+
+        返回推断出的枚举值（int），无法确定/不可用时返回 None（回落 ask）。
+        """
+        if os.environ.get("CODEMAKER_AUTO_ENUM_INFER", "1") == "0":
+            return None
+        if not self.parser:
+            return None
+        _col = (tip.get("col") if isinstance(tip, dict)
+                else getattr(tip, "col", "")) or ""
+        _val = (tip.get("value") if isinstance(tip, dict)
+                else getattr(tip, "value", "")) or ""
+        _exp = (tip.get("expected") if isinstance(tip, dict)
+                else getattr(tip, "expected", "")) or ""
+        _tbl = getattr(intent, "table_hint", "") or ""
+        _sht = getattr(intent, "sheet_hint", "") or ""
+        # 该列允许的枚举值（enum_set 兜底，与 _ask_hard_issue 第三层同源）
+        _allowed: list[str] = []
+        if data_getter is not None:
+            try:
+                _d = data_getter(intent) if callable(data_getter) else {}
+                _es = (_d or {}).get("enum_set") or {}
+                _hit = self._lookup_enum_set(_es, _col)
+                if isinstance(_hit, (set, list, tuple)):
+                    _allowed = [str(x) for x in sorted(_hit, key=str)[:12]]
+            except Exception:
+                _allowed = []
+        if not _allowed:
+            return None  # 连允许范围都没有，无法安全推断（防编造枚举外的值）
+        _samples = ""
+        if data_getter is not None:
+            try:
+                _d2 = data_getter(intent) if callable(data_getter) else {}
+                _ev = (_d2 or {}).get("existing_values") or {}
+                _cl2 = (_col or "").split(":")[0].strip().lower()
+                for _k, _v in (_ev or {}).items():
+                    if str(_k).lower() == _cl2 and isinstance(_v, (set, list, tuple)):
+                        _samples = "、".join(str(x) for x in list(_v)[:12])
+                        break
+            except Exception:
+                _samples = ""
+        _prompt = (
+            "你是游戏配表专家。某张配表的列是 int 类型的枚举列，用户用中文描述了含义，"
+            "但没有给出数字码。请推断它对应的枚举数字。\n\n"
+            f"【表】{_tbl} / 【Sheet】{_sht}\n"
+            f"【列】{_col}（类型：{_exp}）\n"
+            f"【该列允许的枚举值】{'、'.join(_allowed)}\n"
+            f"【该列已有数据样例】{_samples or '（无）'}\n"
+            f"【用户想表达的含义】{_val}\n\n"
+            "只返回一个 JSON 对象（不要 markdown 代码块、不要解释文字）：\n"
+            '{"value": <枚举数字，必须是上面允许值之一>, '
+            '"confidence": <0到1的置信度>, "reason": "<一句话说明推断依据>"}\n\n'
+            "要求：\n"
+            "1. value 必须是【该列允许的枚举值】中的一个，不要编造范围外的数字；\n"
+            "2. 若无法从语义判断（多个码都可能，或该含义与列名明显无关），"
+            "就把 confidence 设为 0.5 或更低，value 仍填你认为最可能的一个；\n"
+            "3. 不要输出除 JSON 以外的任何内容。"
+        )
+        try:
+            self.add_thinking(
+                "校验", f"枚举推断：{_tbl}/{_sht} 列[{_col}] 中文值「{_val}」"
+                        f" → 调 LLM 匹配枚举码（可选 {'、'.join(_allowed[:6])}…）")
+            _data = self._call_llm(_prompt, timeout=30)
+        except Exception as e:
+            logger.debug("_auto_resolve_enum LLM 调用异常: %s", e)
+            return None
+        if not isinstance(_data, dict):
+            return None
+        try:
+            _v = int(_data.get("value"))
+        except (TypeError, ValueError):
+            return None
+        # 安全闸：推断值必须落在允许集合内，否则丢弃（不写脏数据）
+        if str(_v) not in _allowed:
+            return None
+        try:
+            _conf = float(_data.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            _conf = 0.0
+        # 缓存高置信映射（D10 pending 门禁 ≥0.7），下次同值直接命中不再调 LLM
+        if _conf >= 0.7:
+            try:
+                from ..core.enum_resolver import get_enum_resolver as _ger
+                _ger().register_label(_tbl, _sht, _col, str(_val), _v, _conf)
+            except Exception:
+                pass
+        # 自动采用阈值低于缓存阈值：宁可先按较可能的码写入并在汇总里说明，
+        # 也不打断用户手填；用户可在结果中直接改。
+        if _conf < 0.6:
+            self.add_thinking(
+                "校验", f"枚举推断置信度偏低（{_conf:.2f}），不自动采用，交用户确认")
+            return None
+        _reason = str(_data.get("reason") or "")[:60]
+        self.add_thinking(
+            "校验", f"自动采用：{_tbl}/{_sht} 列[{_col}]「{_val}」→ {_v}"
+                    f"（AI 推断，置信度 {_conf:.2f}"
+                    + (f"，{_reason}" if _reason else "") + "）")
+        return _v
+
     def _ask_hard_issue(self, intent, tip, data_getter=None) -> dict:
         """通用硬 issue 交互 ask（扩 _ask_pk_conflict 模式）。
 
@@ -1973,17 +2602,38 @@ class ValidatorAgent(LLMSubAgent):
         # §P26 初始化 _suggested_id 和 _enum_hint（避免分支未定义时 UnboundLocalError）
         _suggested_id = None
         _enum_hint = ""
+        # 值类 issue：这类问题的答案是一个"值"，可以给出可一键采纳的建议值。
+        # COL_NOT_FOUND/SCHEMA_MISSING 的答案是列名/表名，不是值，不给建议值。
+        _value_types = {
+            IssueType.TYPE_MISMATCH.value,
+            IssueType.ENUM_INVALID.value,
+            IssueType.RANGE_OUTLIER.value,
+            IssueType.ID_OUT_OF_SCOPE.value,
+            IssueType.UNIQUE_VIOLATION.value,
+            IssueType.MISSING_REQUIRED.value,
+        }
         # 按 issue_type 派生文案。_reason/_action 保留技术描述（供日志/root_cause）；
         # _uf_reason/_uf_action 为面向策划的大白话（一句话说清 + 明确一键操作），
         # 只放进 user_friendly 供前端展示。
         if _itype == IssueType.UNIQUE_VIOLATION.value:
+            # §复合主键（col 为 "列A,列B"）：给出可一键采纳的整组建议值，
+            # 原只把一句"疑似重复"当建议值塞给前端 → 用户面对空文本框无从下手。
+            _combo = (tip.get("suggested_combo") if isinstance(tip, dict)
+                      else getattr(tip, "suggested_combo", "")) or ""
+            if _combo:
+                _suggested_id = _combo
+                if isinstance(tip, dict):
+                    tip["_suggested_id"] = _combo
             _reason = f"值唯一冲突：列「{_col}」值「{_val}」已被占用"
             _action = (f"请输入新的「{_col}」值（原值「{_val}」重复），"
                        f"或点「跳过」放弃此项。建议：{_sug}")
             _mode = "field"
             _uf_reason = f"「{_col}」填的「{_val}」和已有数据重复了。"
-            _uf_action = (f"换一个没用过的值{('，建议填「'+_sug+'」') if _sug else ''}；"
-                          f"不改就点「跳过」。")
+            _uf_action = (
+                f"点「接受」直接改用建议组合 {_combo}；或按「列=值,列=值」手动填；"
+                f"不改就点「跳过」。" if _combo else
+                f"换一个没用过的值{('，建议填「'+_sug+'」') if _sug else ''}；"
+                f"不改就点「跳过」。")
         elif _itype == IssueType.MISSING_REQUIRED.value:
             # §P26 MISSING_REQUIRED 主键缺失文案改进：
             # 像「无法确定 X 的取值，已暂停写入」那样友好，提供建议 ID（已有最大值+1）。
@@ -2095,6 +2745,25 @@ class ValidatorAgent(LLMSubAgent):
                             break
                     except Exception:
                         pass
+            # §第三层兜底：enum_resolver 无中文→数字映射、existing_values 也未覆盖
+            # 该列时，回退 data_getter.enum_set 取该列允许值（如 activity_type
+            # 允许 1-6）。否则用户面对空输入框只看到"改成数字码"却不知能填什么。
+            if _is_int_col and not _enum_hint and data_getter is not None:
+                try:
+                    _d2 = data_getter(intent) if callable(data_getter) else {}
+                    _es = (_d2 or {}).get("enum_set") or {}
+                    _hit = self._lookup_enum_set(_es, _col)
+                    _allowed: list[str] = []
+                    if isinstance(_hit, (set, list, tuple)):
+                        _allowed = [str(x) for x in sorted(_hit, key=str)[:10]]
+                    if _allowed:
+                        # 无语义映射，无法判定"节日"对应哪个码 → 只给可填范围，
+                        # 建议值取首个仅作格式参考，用户可自行改填。
+                        _enum_hint = "可选值：" + "、".join(_allowed)
+                        if _suggested_id is None:
+                            _suggested_id = _allowed[0]
+                except Exception:
+                    pass
             # 建议值写回 tip（dict），供 accept_suggest 时回填 fields
             if isinstance(tip, dict):
                 tip["_suggested_id"] = _suggested_id
@@ -2124,6 +2793,47 @@ class ValidatorAgent(LLMSubAgent):
                 _uf_action = (f"填符合类型的值{('，'+_enum_hint) if _enum_hint else ''}；"
                               f"或点「跳过」。")
             _mode = "field"
+        elif _itype == IssueType.ENUM_INVALID.value:
+            # §枚举值不在白名单：无中文标签→数字码映射时【不可自动转码】
+            # （enum_set 只有 ['1'..'6'] 这类允许值，不含"节日=1"语义，强行转码
+            # =瞎猜→写错业务数据）。改为把候选值列给用户选/填（可交互，非阻断）。
+            _allowed: list[str] = []
+            try:
+                import ast as _ast
+                _m = re.search(r"\[[^\]]*\]", str(_exp))
+                if _m:
+                    _pv = _ast.literal_eval(_m.group(0))
+                    if isinstance(_pv, (list, tuple, set)):
+                        _allowed = [str(x) for x in _pv]
+            except Exception:
+                _allowed = []
+            # expected 解析不到时回退 data_getter.enum_set 取该列允许值
+            if not _allowed and data_getter is not None:
+                try:
+                    _data = data_getter(intent) if callable(data_getter) else {}
+                    _es = (_data or {}).get("enum_set") or {}
+                    _hit = self._lookup_enum_set(_es, _col)
+                    if isinstance(_hit, (set, list, tuple)):
+                        _allowed = [str(x) for x in sorted(_hit, key=str)[:10]]
+                except Exception:
+                    _allowed = []
+            _enum_hint = ("可选值：" + "、".join(_allowed[:10])) if _allowed else ""
+            # 建议值取首个可选值（仅作格式参考：系统无法判定"节日"对应哪个码）
+            if _allowed:
+                _suggested_id = _allowed[0]
+            if isinstance(tip, dict):
+                tip["_suggested_id"] = _suggested_id
+            _reason = (f"列「{_col}」的值「{_val}」不在枚举白名单内"
+                       + (f"（{_exp}）" if _exp else ""))
+            _action = (f"请改成允许的取值之一"
+                       + (f"（{_enum_hint}）" if _enum_hint else "")
+                       + "；或点「跳过」先不配这列")
+            _uf_reason = (f"「{_col}」填的「{_val}」不在允许范围里"
+                          + (f"，这列只能填：{_enum_hint.replace('可选值：', '')}"
+                             if _enum_hint else "。"))
+            _uf_action = ("从上面挑一个数字填进来（不填=用建议值）；"
+                          "不确定就点「跳过」先不配这列（不影响其它内容）。")
+            _mode = "field"
         elif _itype == IssueType.SCHEMA_MISSING.value:
             _reason = f"读不到表头：「{_tbl}/{_sht}」schema 缺失"
             _action = "表/sheet 可能不存在，请确认表名/sheet 名，或跳过"
@@ -2136,6 +2846,25 @@ class ValidatorAgent(LLMSubAgent):
             _mode = "field"
             _uf_reason = f"「{_col}」这项没通过校验。"
             _uf_action = _sug or "请按提示修正，或点「跳过」放弃此项。"
+        # ── §建议值兜底：ask 卡片一出现就必须带建议 ──────────────────────
+        # 上面各分支只在"有枚举映射/有现有值/有下一可用 ID"时才给建议值，命中不到
+        # 就给用户一个空输入框（用户反馈：无从下手）。而多数类型错误只是**形式**
+        # 不对（全角符号、「200,0,150」多值串、百分号、布尔词），值里带着可救的
+        # 信息 → 从错误输入本身派生一个形式合规的建议值。派生不出（纯中文塞进
+        # int 列）才保持无建议值，绝不瞎猜业务语义。
+        if _suggested_id is None and _itype in _value_types \
+                and _val not in (None, ""):
+            _derived = _derive_suggestion_from_value(_val, _exp or _sug)
+            if _derived is not None:
+                _suggested_id = _derived
+                if not _enum_hint:
+                    _enum_hint = (f"原值「{_val}」只是格式不对，"
+                                  f"整理后可用「{_derived}」")
+                if isinstance(tip, dict):
+                    tip["_suggested_id"] = _derived
+                _uf_action = (f"点「接受」直接写入整理后的「{_derived}」"
+                              f"（原值「{_val}」只是格式不对）；"
+                              f"或手动填其它值；不需要这列就点「跳过」。")
         question = {
             "reason": _reason,
             "error_type": _itype or "validation_issue",
@@ -2151,13 +2880,21 @@ class ValidatorAgent(LLMSubAgent):
         # §取值不确定统一交互：TYPE_MISMATCH/MISSING_REQUIRED 有建议值 →
         # 前端走「建议+输入框」（不填=接受建议，填了=按用户值），
         # 避免 textarea 被当自然语言重描述。
-        if _suggested_id is not None and _itype in (
-                IssueType.TYPE_MISMATCH.value,
-                IssueType.MISSING_REQUIRED.value):
+        if _suggested_id is not None and _itype in _value_types:
+            # 含 RANGE_OUTLIER / ID_OUT_OF_SCOPE：这两个也常是形式/量纲问题，
+            # 同样走「建议+输入框」卡片，用户一键采纳即可。
             question["mode_hint"] = "value_input"
             question["suggested_id"] = _suggested_id
             question["suggestion"] = (f"建议填 {_suggested_id}"
                                       + (f"（{_enum_hint}）" if _enum_hint else ""))
+        elif _suggested_id is not None and not question["suggestion"]:
+            # 非值类 issue：至少把建议值写进 suggestion 文案，卡片不空手出现
+            question["suggestion"] = f"建议值：{_suggested_id}"
+        if not question["suggestion"]:
+            # 兜底：任何 ask 卡片都不该出现"没有任何提示"的空态
+            question["suggestion"] = (
+                f"列「{_col}」当前值「{_val if _val not in (None, '') else '空'}」"
+                f"不合规，请填一个符合要求的值，或点「跳过」放弃此项。")
         try:
             return cb(question) or {"mode": "skip"}
         except Exception:
@@ -2346,6 +3083,30 @@ class ValidatorAgent(LLMSubAgent):
         _new = reply.get("custom_id") or reply.get("value") or reply.get("text")
         if not _new:
             return False
+        # §复合主键：col 形如 "列A,列B"，新值形如 "列A=1,列B=2" → 拆写回各列。
+        # 原只支持单列 fields[_col] = 新值，组合键下会把整串塞进一个不存在的键，
+        # 导致"用户已接受建议但字段没改"→ Step3 仍撞唯一键。
+        if "," in str(_col) and "=" in str(_new):
+            _pairs = [p for p in str(_new).split(",") if "=" in p]
+            if _pairs:
+                _src = "auto" if reply.get("_auto") else "user"
+                _fields_now = (getattr(intent, "extras", None) or {}).setdefault("fields", {})
+                _applied = False
+                for _p in _pairs:
+                    _k, _, _v = _p.partition("=")
+                    _k = _k.strip()
+                    _v = _v.strip()
+                    if not _k:
+                        continue
+                    # 用 fields 里已有的键形态（LLM 可能给别名/后缀），避免新增错键
+                    _real_k = next(
+                        (k for k in _fields_now
+                         if str(k).split(":")[0].strip().lower() == _k.lower()), _k)
+                    _old_v = _fields_now.get(_real_k)
+                    _fields_now[_real_k] = _v
+                    self._record_resolved_field(intent, _real_k, _old_v, _v, _src)
+                    _applied = True
+                return _applied
         # §输入校验：新值需符合列类型
         _exp = (tip.get("expected") if isinstance(tip, dict)
                 else getattr(tip, "expected", "")) or ""
@@ -2360,14 +3121,41 @@ class ValidatorAgent(LLMSubAgent):
                 return False
         try:
             fields = intent.extras.setdefault("fields", {})
+            _old = fields.get(_col)
+            _src = "auto" if reply.get("_auto") else "user"
             if str(_new).strip() in ("删除此列", "删除", "delete"):
                 fields.pop(_col, None)
+                self._record_resolved_field(intent, _col, _old, "", _src)
                 return True
             fields[_col] = _new
+            self._record_resolved_field(intent, _col, _old, _new, _src)
             return True
         except Exception:
             logger.warning("_apply_issue_fix_to_intent 失败", exc_info=True)
             return False
+
+    @staticmethod
+    def _record_resolved_field(intent, col: str, old, new, source: str) -> None:
+        """登记「本轮已被修正的字段」台账：{col: {old, new, source}}。
+
+        Step3 据此剔除修正后仍残留在 fields 里的旧值（同列以另一形态键残留时，
+        旧值会再触发一次 coerce 硬失败 → 行已按新值写成功却仍报"字段被跳过"的
+        假失败）。台账同时供汇总层区分「用户/AI 已修正」与「真缺失」。
+        """
+        try:
+            extras = getattr(intent, "extras", None)
+            if not isinstance(extras, dict):
+                extras = {}
+                intent.extras = extras
+            book = extras.get("user_resolved_fields")
+            if not isinstance(book, dict):
+                book = {}
+                extras["user_resolved_fields"] = book
+            if str(old).strip() == "" and str(new).strip() == "":
+                return
+            book[str(col)] = {"old": old, "new": new, "source": source}
+        except Exception:
+            logger.debug("登记已修正字段台账失败", exc_info=True)
 
     def _mark_validation_ok(self, intents: list) -> None:
         """无 issue 时标 NLIntent.validation.ok=True（下游 ExecuteAgent 据此写盘）。"""

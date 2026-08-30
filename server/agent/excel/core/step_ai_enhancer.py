@@ -754,6 +754,25 @@ JSON：{{"correct_col": "正确列名或原列名", "correct_value": "正确值�
         """
         if not traces:
             return None
+        # §防护①：剔除"因反模式拦截而产生的失败"再交给 LLM 归纳。
+        # 这类失败的成因是系统自身的拦截动作，不含业务反模式信息；若拿去归纳，
+        # LLM 会把"系统已判定为高风险反模式"当作依据，再产出一条
+        # block_dry_run 反模式 → 自我强化死循环（拦截→失败→归纳→更多拦截），
+        # 最终正常操作被永久阻断（本次 delete 全表被封即由此产生）。
+        _SELF_BLOCK_ERRORS = {"anti_pattern_block", "ap_block"}
+        _SELF_BLOCK_HINTS = ("反模式", "anti_pattern", "anti pattern")
+        _kept: list[dict] = []
+        for _t in traces:
+            _et = str(_t.get("error_type") or "").strip().lower()
+            _ed = str(_t.get("error_detail") or "")
+            if _et in _SELF_BLOCK_ERRORS:
+                continue
+            if any(_h in _ed for _h in _SELF_BLOCK_HINTS):
+                continue
+            _kept.append(_t)
+        if not _kept:
+            return None
+        traces = _kept
         # 拼 trace 描述（限制条数与长度防爆 prompt）
         items = []
         for i, t in enumerate(traces[:20], start=1):
@@ -814,6 +833,11 @@ table_stem/sheet 不确定时填空字符串。fix 可选。只输出 JSON，无
                 continue
             if a not in self._INDUCE_ACTION_WHITELIST:
                 continue
+            # §防护②：AI 归纳不得直接产出 block_dry_run。永久阻断后果严重，
+            # 而 AI 常基于"系统已拦截过"循环论证得出该结论（见防护①）。
+            # 一律降级为 require_confirm：仍提示风险，但用户确认后可执行。
+            if a == "block_dry_run":
+                a = "require_confirm"
             tp = (it.get("trigger_pattern") or "").strip()
             if not tp:
                 continue

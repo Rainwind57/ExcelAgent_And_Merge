@@ -187,8 +187,9 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
           st.llm_calls = evt.llm_calls
           if (evt.table) st.table_stem = evt.table
           await nextTick(); scrollToBottom()
-        } else if (evt.type === 'heartbeat') {
+        } else if (evt.type === 'heartbeat' || evt.type === 'heartbeat_urgent') {
           // 心跳：更新状态条 + 挂到当前气泡 thinking 流
+          // heartbeat_urgent（后端长任务催办）与 heartbeat 同处理，避免静默丢弃
           // 要求 C：heartbeat 刷新 lastEventTime，防 ask 阻塞期误触发 stuckWarning
           lastEventTime = Date.now()
           stuckWarning.value = false
@@ -262,6 +263,7 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
           tm.askUserReply = ''    // 要求 C：记录用户提交了什么
           tm.askBatchFill = {}   // UX Pack: 批量 COL_NOT_FOUND 按行真实列名填值
           tm.askBatchDelete = {} // UX Pack: 批量 COL_NOT_FOUND 按行勾选删除
+          tm.askSelectedRows = {} // 多行同名删除：{行号: true} 勾选态（默认不勾，需用户明确选）
           tm.askFullFields = normalizeAskEditableFields(evt)
           await nextTick(); scrollToBottom()
         }
@@ -566,6 +568,39 @@ async function replyAskColNotFoundBatch(agentMsg, opts = {}) {
   }
 }
 
+// 多行同名删除：勾选要删的行 → 单次交互内即时删除（不走二次 confirm 往返）
+function askSelectedRows(msg) {
+  const sel = msg.askSelectedRows || {}
+  return (msg.ask?.rows || []).filter(r => sel[r.row]).map(r => r.row)
+}
+
+function toggleAllAskRows(msg, on) {
+  if (!msg.askSelectedRows) msg.askSelectedRows = {}
+  ;(msg.ask?.rows || []).forEach(r => { msg.askSelectedRows[r.row] = on })
+}
+
+async function replyAskRowMultiselect(agentMsg) {
+  const selected = askSelectedRows(agentMsg)
+  if (agentMsg.askResolved || !selected.length) return
+  agentMsg.askResolved = true
+  agentMsg.askMode = 'field'
+  agentMsg.askUserReply = `✓ 已选择删除行 ${selected.join('、')}，执行中...`
+  agentMsg.askCollapsed = true
+  try {
+    await fetch('/api/agent/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId.value,
+        mode: 'field',
+        selected_rows: selected,
+      }),
+    })
+  } catch (e) {
+    // 静默
+  }
+}
+
 function normalizeAskEditableFields(ask) {
   const rows = Array.isArray(ask?.editable_fields) ? ask.editable_fields : []
   return rows.map((f, idx) => ({
@@ -830,14 +865,25 @@ onMounted(() => {
             <span class="stage-name">· {{ msg.stage_title }}</span>
             <span v-if="msg.stage_id !== 'summary'" class="stage-progress">{{ stageNo(msg.stage_id) }}/{{ stageTotal(msg) }}</span>
           </div>
+          <!-- 阶段总进度：分段条，一眼看到走到第几步 -->
+          <div v-if="msg.stage_title" class="stage-track">
+            <span
+              v-for="n in Number(stageTotal(msg))" :key="n"
+              class="stage-seg"
+              :class="{ 'seg-done': msg.stage_id === 'summary' || Number(stageNo(msg.stage_id)) > n, 'seg-cur': msg.stage_id !== 'summary' && Number(stageNo(msg.stage_id)) === n }"
+            ></span>
+          </div>
 
           <!-- Thinking 折叠：思考实时流式 + step/tool 进度，完成后自动折叠 -->
           <div v-if="msg.thinking_steps.length || msg.steps.length || msg.tool_calls.length || msg.live_text" class="think-block">
             <div class="think-toggle" @click="msg.show_thinking = !msg.show_thinking">
               <span class="think-arrow">{{ msg.show_thinking ? '▼' : '▶' }}</span>
-              <span class="think-label">Thinking</span>
+              <span class="think-label">执行过程</span>
               <span v-if="msg.thinking_live" class="think-live">进行中…</span>
+              <span v-else class="think-count">共 {{ msg.thinking_steps.length + msg.steps.length }} 步</span>
             </div>
+            <!-- 当前正在做什么：不展开也能看懂进度 -->
+            <div v-if="msg.thinking_live && thinkSummary(msg)" class="think-now">⏳ {{ thinkSummary(msg) }}</div>
             <div v-if="msg.show_thinking" class="think-list">
               <div v-for="(ts, i) in msg.thinking_steps" :key="'t' + i">
                 <!-- 结构化意图清单表格（Step1 解析结果，人工校验是否漏意图/错路由） -->
@@ -883,8 +929,8 @@ onMounted(() => {
                   <span class="think-desc">{{ sanitizeDetail(ts.detail) }}</span>
                 </div>
               </div>
-              <div v-for="(s, i) in msg.steps" :key="'s' + i" class="think-line">
-                <span class="think-phase">{{ s.ok ? '✅' : '❌' }}</span>
+              <div v-for="(s, i) in msg.steps" :key="'s' + i" class="think-line" :class="{ 'step-skipped': isSkipStep(s) }">
+                <span class="think-phase">{{ stepIcon(s) }}</span>
                 <span class="think-desc"><b>{{ stepLabel(s.name) }}</b> {{ sanitizeDetail(s.detail) }}</span>
               </div>
               <div v-for="(t, i) in msg.tool_calls" :key="'c' + i" class="tool-card" :class="{ 'tool-ok': t.ok, 'tool-fail': !t.ok }" @click="t.show = !t.show">
@@ -988,11 +1034,11 @@ onMounted(() => {
 
           <!-- 复合操作：按子任务分段渲染（定位→操作→结果→表体） -->
           <div v-if="msg.reply_type !== 'qa' && ((msg.sub_tasks_live && msg.sub_tasks_live.length) || (msg.sub_tasks && msg.sub_tasks.length))" class="subtasks-block">
-            <div class="subtasks-progress" v-if="msg.sub_tasks && msg.sub_tasks.length">
-              <span class="progress-text">{{ subtaskProgress(msg.sub_tasks) }}</span>
-              <div class="progress-bar"><div class="progress-fill" :style="{ width: subtaskProgressPct(msg.sub_tasks) + '%' }"></div></div>
+            <div class="subtasks-progress" v-if="subTaskList(msg).length">
+              <span class="progress-text">{{ subtaskProgress(subTaskList(msg)) }}</span>
+              <div class="progress-bar"><div class="progress-fill" :style="{ width: subtaskProgressPct(subTaskList(msg)) + '%' }"></div></div>
             </div>
-            <div v-for="(st, si) in (msg.sub_tasks_live && msg.sub_tasks_live.length ? msg.sub_tasks_live : msg.sub_tasks)" :key="si" class="subtask-card" :class="{ 'subtask-ok': st.ok === true, 'subtask-fail': st.ok === false, 'subtask-loading': st.loading }">
+            <div v-for="(st, si) in subTaskList(msg)" :key="si" class="subtask-card" :class="{ 'subtask-ok': st.ok === true && !st.loading, 'subtask-fail': st.ok === false, 'subtask-loading': st.loading }">
               <div class="subtask-head">
                 <span class="subtask-idx">#{{ st.index || st.idx }}</span>
                 <span class="subtask-action">{{ subtaskTitle(st) }}</span>
@@ -1003,8 +1049,8 @@ onMounted(() => {
               <template v-else>
               <!-- 子任务步骤 -->
               <div v-if="st.steps && st.steps.length" class="steps-card">
-                <div v-for="(s, i) in st.steps" :key="i" class="step-row" :class="{ 'step-ok': s.ok, 'step-fail': !s.ok }">
-                  <span class="step-icon">{{ s.ok ? '✅' : '❌' }}</span>
+                <div v-for="(s, i) in st.steps" :key="i" class="step-row" :class="{ 'step-ok': s.ok && !isSkipStep(s), 'step-fail': !s.ok, 'step-skipped': isSkipStep(s) }">
+                  <span class="step-icon">{{ stepIcon(s) }}</span>
                   <span class="step-name">{{ stepLabel(s.name) }}</span>
                   <span class="step-detail">{{ s.detail }}</span>
                 </div>
@@ -1208,6 +1254,41 @@ onMounted(() => {
                   <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
                 </div>
               </template>
+              <!-- 多行同名删除：勾选要删的行后确认（删除不可逆，默认不勾选） -->
+              <template v-else-if="msg.ask.mode_hint === 'row_multiselect'">
+                <div class="ask-row-multi">
+                  <div class="arm-head">
+                    <span class="arm-count">共 {{ (msg.ask.rows || []).length }} 条同名记录</span>
+                    <button type="button" class="mini-btn" @click="toggleAllAskRows(msg, true)">全选</button>
+                    <button type="button" class="mini-btn mini-btn--ghost" @click="toggleAllAskRows(msg, false)">清空</button>
+                  </div>
+                  <div
+                    v-for="r in (msg.ask.rows || [])" :key="'arm'+r.row"
+                    class="arm-row"
+                    :class="{ 'arm-row--on': msg.askSelectedRows && msg.askSelectedRows[r.row] }"
+                  >
+                    <label class="arm-label">
+                      <input type="checkbox" v-model="msg.askSelectedRows[r.row]" class="arm-cb">
+                      <span class="arm-row-no">行 {{ r.row }}</span>
+                      <span class="arm-val">{{ r.value }}</span>
+                    </label>
+                    <div v-if="r.summary && Object.keys(r.summary).length" class="arm-summary">
+                      <span v-for="(v, k) in r.summary" :key="k" class="arm-field">
+                        <span class="arm-key">{{ k }}</span>
+                        <span class="arm-val2">{{ v }}</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div class="ask-actions">
+                  <button
+                    class="confirm-btn confirm-yes"
+                    :disabled="askSelectedRows(msg).length === 0"
+                    @click="replyAskRowMultiselect(msg)"
+                  >删除选中的 {{ askSelectedRows(msg).length }} 行</button>
+                  <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">取消，不删</button>
+                </div>
+              </template>
               <!-- 其他失败:保留原文本填值 -->
               <template v-else>
                 <textarea v-model="msg.askReplyText" class="ask-input" placeholder="在此输入正确的值，如：5 或 100"></textarea>
@@ -1339,11 +1420,20 @@ export default {
     },
     stepLabel(name) {
       const map = {
+        // ── 定位 ──
         resolve_table: '定位表格', resolve_sheet: '定位Sheet',
         match_locator: '匹配定位列', match_target: '匹配目标列',
-        locate_row: '定位行', write: '写入', read_cell: '读取',
-        add_values: '提取新增值', append_row: '追加行',
-        delete_cell: '清空单元格', delete_row: '删除行',
+        match_field: '匹配写入列', locate_row: '定位行',
+        id_ambiguous: 'ID列名歧义', anti_pattern_block: '高风险拦截',
+        // ── 读写 ──
+        read_cell: '读取', write: '写入',
+        add_values: '提取新增值', append_row: '写入新行',
+        auto_sort: '自动排序', delete_cell: '清空单元格', delete_row: '删除行',
+        // ── 校验 / 转换 ──
+        coerce_value: '类型转换', coerce_failed: '跳过字段',
+        id_scope: 'ID段校验', pk_conflict: '主键检查',
+        unique_check: '唯一性检查', cascade_update: '级联更新',
+        index_dirty: '索引刷新', '写入汇总': '写入汇总',
         // 6 步流程
         'Step1解析': 'Step1 解析', 'Step2分区': 'Step2 分区',
         'Step3计划': 'Step3 计划', 'Step4校验': 'Step4 校验',
@@ -1355,6 +1445,49 @@ export default {
         'Step3 执行': '执行', 'Step4 汇总': '汇总',
       }
       return map[name] || name
+    },
+    // ── 步骤三态：失败 / 跳过（成功但有字段被略过）/ 成功 ──
+    // 原只有 ✅|❌：coerce_failed 这类"成功但跳过字段"的步骤显示 ✅，
+    // 用户看明细才知有字段没写，误以为全部成功。
+    isSkipStep(s) {
+      if (!s) return false
+      if (String(s.name || '') === 'coerce_failed') return true
+      return /跳过|略过|留空|待补|未替换/.test(String(s.detail || ''))
+    },
+    stepIcon(s) {
+      if (!s || s.ok === false) return '❌'
+      if (this.isSkipStep(s)) return '⚠️'
+      return '✅'
+    },
+    // 子任务统一列表：流式骨架优先 + done 批量补齐（执行中也有进度可显示）
+    subTaskList(msg) {
+      const live = (msg && msg.sub_tasks_live) || []
+      const done = (msg && msg.sub_tasks) || []
+      if (!live.length) return done
+      const out = live.slice()
+      const seen = new Set(live.map(s => (s.index !== undefined ? s.index : s.idx)))
+      done.forEach(st => {
+        const key = st.index !== undefined ? st.index : st.idx
+        if (!seen.has(key)) out.push(st)
+      })
+      return out
+    },
+    // 折叠头实时摘要：不展开也知道"现在在做什么"
+    thinkSummary(msg) {
+      if (!msg) return ''
+      const all = []
+      ;(msg.thinking_steps || []).forEach(t => {
+        if (t.jsonKind) return  // 结构化卡片（意图清单表）不进摘要
+        const d = this.sanitizeDetail(t.detail || '')
+        if (d) all.push(String(d))
+      })
+      ;(msg.steps || []).forEach(s => {
+        const d = this.sanitizeDetail(s.detail || '')
+        all.push(this.stepLabel(s.name) + (d ? '：' + d : ''))
+      })
+      if (!all.length) return ''
+      const last = all[all.length - 1]
+      return last.length > 40 ? last.slice(0, 40) + '…' : last
     },
     subtaskTitle(st) {
       const map = { add: '新增', delete: '删除', set: '修改', get: '查询' }
@@ -1427,6 +1560,12 @@ export default {
       s = s.replace(/Step2[^:]*[:：](?!.*校验)/g, '校验：')
       s = s.replace(/Step3[^:]*[:：](?!.*执行)/g, '执行：')
       s = s.replace(/Step4[^:]*[:：](?!.*汇总)/g, '汇总：')
+      // 内部参数口语化：row=15 / mode=exact / conf=0.87 这类裸参数用户看不懂
+      s = s.replace(/row=(\d+)/g, '第 $1 行')
+      s = s.replace(/mode=(\w+)/g, '匹配方式=$1')
+      s = s.replace(/conf=([\d.]+)/g, '置信度 $1')
+      s = s.replace(/score=([\d.]+)/g, '匹配度 $1')
+      s = s.replace(/idx=(\d+)/g, '列号 $1')
       return s
     },
     toolBadge(name) {
@@ -1914,6 +2053,12 @@ export default {
 .stage-badge .stage-step { font-size: 0.88rem; font-weight: 800; color: var(--text-primary); }
 .stage-badge .stage-name { color: var(--info); font-weight: 600; }
 .stage-badge .stage-progress { color: var(--text-muted); font-size: 0.7rem; }
+/* 阶段总进度分段条：已完成=绿，当前=主色，未开始=灰 */
+.stage-track { display: flex; gap: 3px; margin: 0 0 8px; }
+.stage-track .stage-seg { flex: 1; height: 3px; border-radius: 2px; background: var(--bg-disabled, #e0e4e8); }
+.stage-track .stage-seg.seg-done { background: var(--success, #22c55e); }
+.stage-track .stage-seg.seg-cur { background: var(--accent, #4f46e5); }
+
 
 /* Thinking 折叠 */
 .think-block { margin-bottom: 8px; }
@@ -1921,6 +2066,26 @@ export default {
 .think-arrow { font-size: 0.68rem; color: var(--text-muted); }
 .think-label { font-style: italic; color: var(--text-muted); font-size: 0.82rem; }
 .think-live { color: var(--accent); font-size: 0.74rem; }
+.think-count { color: var(--text-muted); font-size: 0.72rem; }
+/* 多行同名删除勾选卡片：行号 + 定位值 + 整行摘要，勾选后确认删除 */
+.ask-row-multi { margin: 6px 0; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; overflow: hidden; }
+.arm-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-secondary, #f3f4f6); font-size: 0.78rem; color: var(--text-secondary); }
+.arm-count { flex: 1; font-weight: 600; }
+.arm-row { padding: 6px 10px; border-top: 1px solid var(--border, #e5e7eb); }
+.arm-row--on { background: rgba(220, 38, 38, 0.06); }
+.arm-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.82rem; }
+.arm-cb { width: 15px; height: 15px; flex-shrink: 0; }
+.arm-row-no { font-weight: 700; color: var(--text-primary); }
+.arm-val { color: var(--text-secondary); }
+.arm-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 4px 0 0 23px; font-size: 0.74rem; color: var(--text-muted); }
+.arm-field { display: inline-flex; gap: 4px; }
+.arm-key { color: var(--text-muted); }
+.arm-val2 { color: var(--text-secondary); }
+/* 折叠头下方的"当前在做什么"摘要：不展开也能看懂进度 */
+.think-now { margin: 2px 0 4px; font-size: 0.76rem; color: var(--text-secondary, #555); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* 跳过态（成功但有字段未写入）：与真成功区分，避免误以为全部写入 */
+.think-line.step-skipped .think-desc { color: var(--warning, #b45309); }
+.step-row.step-skipped .step-detail { color: var(--warning, #b45309); }
 .think-list { margin-top: 6px; padding: 8px 10px; background: var(--bg-input); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
 .think-line { display: flex; gap: 8px; font-size: 0.78rem; align-items: baseline; }
 .think-line .think-phase { color: var(--accent); font-weight: 600; min-width: 40px; flex-shrink: 0; }

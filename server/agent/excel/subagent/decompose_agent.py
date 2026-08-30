@@ -472,6 +472,15 @@ class DecomposeAgent(LLMSubAgent):
         if not seg or not candidates or len(candidates) <= 3:
             return list(candidates)
         seg_lower = seg.lower()
+        seg_route_text = re.sub(r"['\"][^'\"]*['\"]", " ", seg)
+        seg_route_lower = seg_route_text.lower()
+
+        def _term_is_route_signal(term: str) -> bool:
+            term = str(term or "").strip()
+            if not term:
+                return True
+            return term.lower() in seg_route_lower
+
         # 1. column_signal hits stem（按命中列数加权）。
         #    §只统计强信号源（substring/exact/alias）：column_reverse 是列名反向
         #    索引命中（如「模型」反查 model_prefab 表 9 个含"模型"的列），是弱
@@ -503,7 +512,9 @@ class DecomposeAgent(LLMSubAgent):
             _lvl = (getattr(c, "level", "") or "").lower()
             _conf = getattr(c, "confidence", 0.0) or 0.0
             if _conf >= 0.8 and _lvl not in ("column_extract", "column_reverse",
-                                             "fk_inferred", "fk_expanded"):
+                                              "fk_inferred", "fk_expanded"):
+                if not _term_is_route_signal(getattr(c, "matched_term", "") or ""):
+                    continue
                 semantic_stems.add((getattr(c, "stem", "") or "").lower())
         # 3. FK 边端点表——只保「与段内命中表相关」的端点，不收全局噪声链
         # （如「战斗模型」命中 combat 后，combat→space 的 FK 会把 space 也拉进来，
@@ -544,6 +555,7 @@ class DecomposeAgent(LLMSubAgent):
                 _sig = sig_stems.get(_s, 0)
                 _txt = 1 if _s in text_stems else 0
                 _sem = 4 if _s in semantic_stems else 0
+                _explicit = 4 if _s and _s in seg_route_lower else 0
                 # FK 一跳目标（被语义命中表直接引用）是链路必需节点，权重高于
                 # 语义噪声表（如「模型」alias 命中 model_prefab 但非动作主语）。
                 # 仅对非语义命中的 FK 目标加权（语义命中的 FK 目标已由 _sem 覆盖）。
@@ -551,7 +563,7 @@ class DecomposeAgent(LLMSubAgent):
                 _lvl = (getattr(c, "level", "") or "").lower()
                 _lvl_w = 0 if _lvl in ("column_extract", "column_reverse",
                                         "fk_inferred", "fk_expanded") else 1
-                return (_sem + _fk1 + _sig + _txt + _lvl_w,
+                return (_explicit + _sem + _fk1 + _sig + _txt + _lvl_w,
                         getattr(c, "confidence", 0.0) or 0.0)
             ranked = sorted(candidates, key=_strength, reverse=True)
             pruned = ranked[:5]
@@ -596,6 +608,9 @@ class DecomposeAgent(LLMSubAgent):
         except Exception:  # noqa: BLE001
             logger.warning("DecomposeAgent splitter_baseline 模板失败",
                            exc_info=True)
+        kv_fb = self._key_value_type_baseline(text, candidates)
+        if kv_fb:
+            return kv_fb
         # b. ColumnExtractor 信号兜底：每候选表产 1 条 add intent
         # 候选表已含列名信号，从 text 提取列值填 fields
         if len(all_fb) < len(candidates):
@@ -734,6 +749,126 @@ class DecomposeAgent(LLMSubAgent):
                     produces=(f"new_{stem}_id" if _fb_action == "add" and stem else None),
                 ))
         return all_fb
+
+    def _key_value_type_baseline(self, text: str, candidates: list) -> list:
+        rows = self._extract_key_value_type_rows(text)
+        if not rows or self._cli is None:
+            return []
+
+        def _norm(value) -> str:
+            return re.sub(r"[\s_:\-./\\()\[\]{}]+", "", str(value or "").lower())
+
+        def _role_for(header, type_name) -> str | None:
+            names = {_norm(header), _norm(str(type_name or "").split(":")[0])}
+            if names & {"key", "程序引用key", "程序引用关键字", "策划文档对照关键字"}:
+                return "key"
+            if names & {"value", "原文", "内容", "文本", "文案", "提示文案"}:
+                return "value"
+            if names & {"type", "类型", "分类"}:
+                return "type"
+            return None
+
+        route_text = re.sub(r"['\"][^'\"]*['\"]|[“‘][^”’]*[”’]", " ", text or "")
+        route_lower = route_text.lower()
+        try:
+            all_tables = {p.stem: p for p in self._cli.list_tables()}
+        except Exception:
+            return []
+
+        options: list[tuple[tuple[float, float], CandidateTable, str, dict[str, str]]] = []
+        for cand in candidates or []:
+            stem = getattr(cand, "stem", "") or ""
+            p = all_tables.get(stem)
+            if p is None:
+                continue
+            try:
+                sheets = [getattr(cand, "sheet", "")] if getattr(cand, "sheet", "") else self._cli.get_sheets(p)
+            except Exception:
+                sheets = []
+            for sheet in sheets or []:
+                if not sheet or "CONFIG" in str(sheet).upper() or "说明" in str(sheet):
+                    continue
+                hdrs, trow = self._read_schema_cached(p, stem, sheet)
+                role_cols: dict[str, str] = {}
+                for h, t in zip(hdrs, trow):
+                    role = _role_for(h, t)
+                    if role and role not in role_cols:
+                        role_cols[role] = str(t or h).split(":")[0].strip() or str(h).strip()
+                if not {"key", "value", "type"} <= set(role_cols):
+                    continue
+                term = str(getattr(cand, "matched_term", "") or "").strip().lower()
+                level = str(getattr(cand, "level", "") or "").lower()
+                stem_l = stem.lower()
+                sheet_l = str(sheet).lower()
+                route = 0.0
+                if term and term in route_lower:
+                    route += 4.0
+                if stem_l and (stem_l in route_lower or stem_l.replace("_", "") in route_lower.replace("_", "")):
+                    route += 3.0
+                if sheet_l and sheet_l in route_lower:
+                    route += 2.0
+                if level not in {"column_extract", "column_reverse"}:
+                    route += 1.0
+                options.append(((route, float(getattr(cand, "confidence", 0.0) or 0.0)),
+                                cand, str(sheet), role_cols))
+        if not options:
+            return []
+        options.sort(key=lambda x: x[0], reverse=True)
+        if len(options) > 1 and options[0][0][0] <= options[1][0][0] and options[0][0][0] < 2.0:
+            return []
+        if options[0][0][0] < 1.0 and len(options) > 1:
+            return []
+
+        _score, cand, sheet, role_cols = options[0]
+        SI = _SplitIntent()
+        stem = getattr(cand, "stem", "") or ""
+        out = []
+        for idx, row in enumerate(rows, start=1):
+            out.append(SI(
+                text=row.get("text") or text,
+                table_hint=stem,
+                sheet_hint=sheet,
+                action="add",
+                fields={
+                    role_cols["value"]: row["value"],
+                    role_cols["key"]: row["key"],
+                    role_cols["type"]: row["type"],
+                },
+                produces=f"new_{stem}_{idx}_id" if stem else None,
+            ))
+        return out
+
+    @staticmethod
+    def _extract_key_value_type_rows(text: str) -> list[dict[str, str]]:
+        if not text:
+            return []
+        marker = re.compile(r"第[一二三四五六七八九十百千万\d]+条")
+        matches = list(marker.finditer(text))
+        if not matches:
+            return []
+        global_type = None
+        gm = re.search(r"type\s*都?\s*(?:填|用|为|是|=|:|：)?\s*['\"]?([A-Za-z0-9_\-\u4e00-\u9fff]+)",
+                       text, re.IGNORECASE)
+        if not gm:
+            gm = re.search(r"类型\s*都?\s*(?:填|用|为|是|=|:|：)?\s*['\"]?([A-Za-z0-9_\-\u4e00-\u9fff]+)",
+                           text, re.IGNORECASE)
+        if gm:
+            global_type = gm.group(1).strip().strip("'\"，,。；;")
+        rows: list[dict[str, str]] = []
+        for pos, match in enumerate(matches):
+            end = matches[pos + 1].start() if pos + 1 < len(matches) else len(text)
+            chunk = text[match.start():end]
+            vm = re.search(r"['\"]([^'\"]+)['\"]|[“‘]([^”’]+)[”’]", chunk)
+            km = re.search(r"(?:程序引用\s*)?key\s*(?:用|为|是|=|:|：)\s*['\"]?([A-Za-z0-9_.\-]+)",
+                           chunk, re.IGNORECASE)
+            tm = re.search(r"(?:type|类型)\s*(?:填|用|为|是|=|:|：)?\s*['\"]?([A-Za-z0-9_\-\u4e00-\u9fff]+)",
+                           chunk, re.IGNORECASE)
+            value = (vm.group(1) or vm.group(2)).strip() if vm else ""
+            key = km.group(1).strip().strip("'\"，,。；;") if km else ""
+            typ = tm.group(1).strip().strip("'\"，,。；;") if tm else (global_type or "")
+            if value and key and typ:
+                rows.append({"text": chunk.strip(), "value": value, "key": key, "type": typ})
+        return rows
 
     def _backfill_missing(self, text: str, intents: list, candidates: list,
                           fk_edges: list, fk_block: str, per_to: int,
@@ -1514,9 +1649,31 @@ class DecomposeAgent(LLMSubAgent):
             except Exception:
                 logger.debug("填表规则加载失败", exc_info=True)
         fill_rules_section = f"{fill_rules}\n\n" if fill_rules else ""
+        semantic_output_section = ""
+        if os.environ.get("CODEMAKER_DECOMPOSE_SEMANTIC_OUTPUT", "0").lower() in (
+            "1", "true", "yes", "on"):
+            semantic_output_section = (
+                "## Optional semantic_plan output mode\n"
+                "Return one fenced JSON object in this shape instead of the legacy array:\n"
+                "```json\n"
+                "{\"semantic_plan\":{\"version\":1,\"entities\":[{\"entity_id\":1,"
+                "\"operation\":\"add|set|delete|get\","
+                "\"target\":{\"table\":\"<stem>\",\"sheet\":\"<sheet>\"},"
+                "\"locator\":{\"field\":\"\",\"value\":\"\",\"fields\":[],\"values\":[]},"
+                "\"attributes\":[{\"name\":\"<schema column>\","
+                "\"value\":\"<literal or <label>>\"}],\"produces\":\"\","
+                "\"references\":[{\"field\":\"<column>\","
+                "\"label\":\"<produces_label>\"}],\"raw\":\"<source clause>\"}]}}\n"
+                "```\n"
+                "Keep attributes schema-aware: attribute.name must be a real column "
+                "from the selected sheet. Put cross-row references in attributes as "
+                "\"<label>\" and mirror them in references. Do not invent "
+                "resolved_from placeholders.\n\n"
+            )
         return (
             few_shot_section +
             fill_rules_section +
+            semantic_output_section +
             "你是配表跨表链分解器。一条指令可能涉及多张表(经外键关联)。"
             "请分解为每张表一个原子操作,用真实表头列名。\n\n"
             f"## 候选表 schema(row1 显示名,row2 规范名)\n{schema_block}\n\n"
@@ -1543,6 +1700,11 @@ class DecomposeAgent(LLMSubAgent):
             "- ⚠【硬约束】指令中每一个明确动作(新增/修改/删除/查询)都必须产出至少1条意图。"
             "宁可产保守意图(仅填指令明确给的列,其余列留空待 Step2 校验补)也不要漏。"
             "若指令含「同时/然后/并且/再配」等连接,每个子句都要产对应意图,不可合并丢弃。\n"
+            "- ⚠【列表计数硬约束】指令出现明确数量或枚举项（如“三条/两个/四个”、"
+            "第一条/第二条/第三条、选项1/选项2、1级/2级、A/B/C）时，"
+            "必须先按这些项目建立行清单：同一表同一 sheet 的每个枚举项目各产一条 add，"
+            "跨表子配置也按项目数展开。输出条数必须覆盖所有枚举项目，不允许只输出最后一项"
+            "或把多项合并进一条 fields。\n"
             "- fields 键必须用上面 schema 的真实表头列名(row1 显示名)。"
             "**若 schema 列含点分规范键（括号内为 a.b.C 形式，如「体力资质（aptitude_base.StrPotCon）」），"
             "fields 键用点分规范键（aptitude_base.StrPotCon）而非中文显示名**，"
@@ -1672,7 +1834,7 @@ class DecomposeAgent(LLMSubAgent):
         if "tips" in text_l or "tips/" in schema_l:
             examples.append(
                 "### few-shot: homogeneous batch rows\n"
-                "Input: 配三条提示文案：第一条'背包已满' key 用 BAG_FULL 类型 tips；第二条'金币不足' key 用 GOLD_LACK 类型 tips。\n"
+                "Input: 配三条提示文案：第一条'背包已满' key 用 BAG_FULL 类型 tips；第二条'金币不足' key 用 GOLD_LACK 类型 tips；第三条'活动未开' key 用 ACTIVITY_CLOSED 类型 tips。\n"
                 "Output:\n"
                 "```json\n"
                 "[{\"table\":\"tips\",\"sheet\":\"tips\",\"action\":\"add\","
@@ -1680,6 +1842,9 @@ class DecomposeAgent(LLMSubAgent):
                 "\"produces\":\"\",\"consumes\":{}},"
                 "{\"table\":\"tips\",\"sheet\":\"tips\",\"action\":\"add\","
                 "\"fields\":{\"value\":\"金币不足\",\"key\":\"GOLD_LACK\",\"type\":\"tips\"},"
+                "\"produces\":\"\",\"consumes\":{}},"
+                "{\"table\":\"tips\",\"sheet\":\"tips\",\"action\":\"add\","
+                "\"fields\":{\"value\":\"活动未开\",\"key\":\"ACTIVITY_CLOSED\",\"type\":\"tips\"},"
                 "\"produces\":\"\",\"consumes\":{}}]\n"
                 "```"
             )
@@ -1786,17 +1951,82 @@ class DecomposeAgent(LLMSubAgent):
 
     # ── 解析 ───────────────────────────────────────────────────
 
+    def _normalise_json_payload(self, payload) -> list:
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return []
+        plan = payload.get("semantic_plan")
+        if isinstance(plan, dict):
+            from ..core.pipeline.semantic_plan import (
+                compile_semantic_plan_to_operation_items,
+            )
+            items, report = compile_semantic_plan_to_operation_items(
+                plan, schema_getter=self._schema_for_semantic_entity)
+            if not report.get("ok"):
+                logger.warning("semantic_plan compile issues: %s",
+                               report.get("issues"))
+            return items
+        if isinstance(payload.get("entities"), list):
+            from ..core.pipeline.semantic_plan import (
+                compile_semantic_plan_to_operation_items,
+            )
+            items, report = compile_semantic_plan_to_operation_items(
+                payload, schema_getter=self._schema_for_semantic_entity)
+            if not report.get("ok"):
+                logger.warning("semantic entities compile issues: %s",
+                               report.get("issues"))
+            return items
+        for key in ("intents", "operations", "items", "tasks"):
+            wrapped = payload.get(key)
+            if isinstance(wrapped, list):
+                return wrapped
+        return [payload]
+
+    def _schema_for_semantic_entity(self, entity: dict) -> tuple[list, list]:
+        target = entity.get("target") if isinstance(entity, dict) else {}
+        target = target if isinstance(target, dict) else {}
+        stem = str(target.get("table") or entity.get("table") or "").strip()
+        sheet = str(target.get("sheet") or entity.get("sheet") or "").strip()
+        if not stem or not sheet or self._cli is None:
+            return [], []
+        if not hasattr(self, "_table_index_cache") or not self._table_index_cache:
+            try:
+                self._table_index_cache = {p.stem: p
+                                           for p in self._cli.list_tables()}
+            except Exception:  # noqa: BLE001
+                self._table_index_cache = {}
+        path = (self._table_index_cache or {}).get(stem)
+        if path is None:
+            path = (self._table_index_cache or {}).get(stem.lower())
+        if not path:
+            return [], []
+        return self._read_schema_cached(path, stem, sheet)
+
     def _parse_json_array(self, raw: str) -> list:
+        mf = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
+        if mf:
+            body = mf.group(1).strip()
+            if body.startswith("{") or body.startswith("["):
+                try:
+                    return self._normalise_json_payload(json.loads(body))
+                except ValueError:
+                    pass
         """从 LLM 返回解析 JSON 数组。容忍 fenced code block、裸 JSON、多数组、单 dict。"""
         # 1) fenced ```json [ ... ]```（显式组1）
+        body = str(raw or "").strip()
+        if body.startswith("{") or body.startswith("["):
+            try:
+                return self._normalise_json_payload(json.loads(body))
+            except ValueError:
+                pass
         m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
         if not m:
             # 2) 裸 JSON 数组（也带组1，避免 m.group(1) 在无组正则上报 IndexError）
             m = re.search(r"(\[\s*\{.*\}\s*\])", raw, re.DOTALL)
         if m:
             try:
-                arr = json.loads(m.group(1))
-                return arr if isinstance(arr, list) else []
+                return self._normalise_json_payload(json.loads(m.group(1)))
             except ValueError:
                 pass
         # 3) 单 dict（LLM 未包数组，仅产一个 op）→ 包装成 [dict] 接收，避免单 op 输出被丢弃
@@ -1804,13 +2034,7 @@ class DecomposeAgent(LLMSubAgent):
             re.search(r"(\{.*\})", raw, re.DOTALL)
         if md:
             try:
-                d = json.loads(md.group(1))
-                for key in ("intents", "operations", "items", "tasks"):
-                    wrapped = d.get(key) if isinstance(d, dict) else None
-                    if isinstance(wrapped, list):
-                        return wrapped
-                if isinstance(d, dict):
-                    return [d]
+                return self._normalise_json_payload(json.loads(md.group(1)))
             except ValueError:
                 pass
         return []

@@ -341,6 +341,9 @@ async def agent_reply(payload: dict = Body(...)):
         "columns": _columns if isinstance(_columns, list) else None,
         "fields": _fields if isinstance(_fields, list) else None,
         "delete_all": bool(payload.get("delete_all", False)),
+        # 多行同名删除勾选：mode=field + selected_rows=[行号...]
+        # （agent.py:_run_delete 的 row_multiselect ask 卡片消费）
+        "selected_rows": payload.get("selected_rows"),
     })
     return {"ok": True, "replied": True}
 

@@ -1800,15 +1800,76 @@ anti_patterns:
   action: force_exact
   status: active
   source: rule
-- id: ap_fail_activity_Activity_delete_row
-  type: failed_operation
-  table_stem: activity
-  sheet: Activity
-  operation: delete_row
-  trigger: confirm_abandoned
-  occurrences: 2
-  first_seen: '2026-08-28T14:41:49+08:00'
-  last_seen: '2026-08-28T14:41:49+08:00'
-  action: block_dry_run
+- id: ap_ind__global__any_9edb0c11
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-30T11:46:42+08:00'
+  last_seen: '2026-08-30T15:40:30+08:00'
+  action: warn_only
   status: active
-  source: rule
+  source: ai_induction
+  trigger_pattern: 活动,编号,枚举,activity_type
+  rationale: 活动配置中枚举字段（如活动类型）常因新增枚举值或输入值不在预设范围内而触发 enum_invalid 错误。此类错误源于枚举约束与输入值不匹配，需在写入前确认枚举合法性，避免软错误。;
+    输入活动配置时，activity_type 字段值不在枚举范围内，说明用户可能使用了未注册的活动类型编号。此类错误在新增活动类型时容易重复出现，应提示用户检查枚举合法性。;
+    活动配置时未提供枚举字段（如活动类型），导致默认值或空值触发枚举校验失败。此类错误在新增活动配置时反复出现，需在写入前检查必填枚举字段。
+- id: ap_ind__global__any_b9b6ff15
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-30T11:46:42+08:00'
+  last_seen: '2026-08-30T15:40:30+08:00'
+  action: require_confirm
+  status: active
+  source: ai_induction
+  trigger_pattern: skipped,fields,partial,row
+  rationale: 子任务写入部分行时跳过某些字段，导致数据不完整。此类部分写入常因字段缺失或校验失败而静默跳过，需提示用户检查未写入字段，防止数据不完整。;
+    子任务写入时跳过部分字段，导致行不完整。此类部分写入问题在复杂配置任务中反复出现，应提示用户检查未填字段。; 子任务写入部分字段后跳过剩余字段，导致行不完整。此类部分写入在复杂配置任务中常见，需在提交前确认所有必填字段已覆盖。
+- id: ap_ind__global__any_bbb9288d
+  type: failed_operation
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-30T11:55:09+08:00'
+  last_seen: '2026-08-30T15:44:49+08:00'
+  action: require_confirm
+  status: active
+  source: ai_induction
+  trigger_pattern: all_subtasks_failed,失败,子任务
+  rationale: 所有子任务均失败，说明输入或配置存在系统性错误，继续执行无意义，应阻断并提示用户检查输入。; 所有子任务均失败，通常由前置条件缺失或输入为空导致。此类全失败模式需阻断并提示用户检查输入完整性，避免无效重试。;
+    所有子任务均失败，说明输入或配置存在系统性错误，继续执行无意义。应阻断操作并提示用户检查输入。
+- id: ap_ind__global__any_fbb9a270
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-30T01:29:26+08:00'
+  last_seen: '2026-08-30T19:27:38+08:00'
+  action: warn_only
+  status: active
+  source: ai_induction
+  trigger_pattern: skipped fields,partial write,partial row,review skipped fields
+  rationale: 当任务描述中出现'跳过字段'或'部分写入'等关键词时，表明操作可能只完成了部分字段的写入，存在遗漏风险。此类模式常见于批量写入或复杂表结构场景，应提示用户检查未写入字段，避免数据不完整。;
+    当输入文本中出现'跳过字段'、'部分写入'等表述时，表明操作可能只完成了部分字段的写入，存在遗漏风险。此类模式在配表任务中反复出现，因为用户常忽略未填写的字段而直接标记完成。应提示用户检查所有字段，但允许继续操作，因为部分写入有时是预期行为（如增量更新）。;
+    当任务描述中出现'跳过字段'、'部分写入'等提示时，表明写入操作可能不完整，存在字段遗漏风险。此类情况常因字段映射不完整或数据源缺失导致，需提醒用户检查遗漏字段，但不应阻断操作，因为部分写入可能是业务允许的。
+- id: ap_ind__global__any_81d8d37e
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-30T16:36:53+08:00'
+  last_seen: '2026-08-30T20:35:17+08:00'
+  action: warn_only
+  status: active
+  source: ai_induction
+  trigger_pattern: 限时,activity_type,枚举
+  rationale: 输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型包含限时活动），而枚举列表仅覆盖了部分类型。此类失败源于枚举定义与业务语义不一致，属于可复用的语义触发模式。;
+    输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型为限时活动），而枚举列表仅包含数字编码。此类失败源于语义值与编码值之间的映射缺失，属于可复用的模式：当输入为中文业务词而枚举为数字编码时，应提示而非阻断，并建议补充映射或确认。;
+    输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型为限时活动），而枚举列表仅包含数字编码。此类失败源于枚举校验与业务语义脱节，可复用模式为：当输入文本包含业务语义词（如限时）且目标列为枚举类型时，应提示而非阻断，避免误杀合法配置。

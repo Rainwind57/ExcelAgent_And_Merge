@@ -15,6 +15,58 @@ from agent.excel.subagent.locator_agent import CandidateTable, FKEdge
 RESOURCES = Path(__file__).resolve().parents[2] / "resources"
 
 
+class _KvtCli:
+    def __init__(self):
+        class _P:
+            def __init__(self, stem):
+                self.stem = stem
+        self._paths = [_P("tips"), _P("guild")]
+        self._schemas = {
+            ("tips", "tips"): (["value", "key", "type"],
+                              ["value:string", "key:string", "type:string"]),
+            ("guild", "Const"): (["value", "key", "type"],
+                                 ["value:string", "key:string", "type:string"]),
+        }
+
+    def list_tables(self):
+        return self._paths
+
+    def get_sheets(self, path):
+        return ["tips"] if path.stem == "tips" else ["Const"]
+
+    def read_header(self, path, sheet):
+        return self._schemas[(path.stem, sheet)][0]
+
+    def read_type_row(self, path, sheet):
+        return self._schemas[(path.stem, sheet)][1]
+
+
+def test_key_value_type_baseline_routes_by_unquoted_intent_text():
+    text = (
+        "帮我把几条游戏内提示文案配一下。"
+        "第一条：'帮派资金不足，无法升级该建筑'，key 用 TID_TIPS_GUILD_FUNDS_LACK，类型 tips；"
+        "第二条：'当前网络波动，请稍后重试'，key 用 TID_TIPS_NETWORK_RETRY，类型 tips。"
+    )
+    candidates = [
+        CandidateTable(stem="guild", sheet="Const", confidence=0.95,
+                       level="alias", matched_term="帮派"),
+        CandidateTable(stem="tips", sheet="tips", confidence=0.8,
+                       level="alias", matched_term="提示文案"),
+    ]
+
+    intents = DecomposeAgent(parser=object(), cli=_KvtCli())._splitter_baseline(
+        text, candidates, [])
+
+    assert len(intents) == 2
+    assert {it.table_hint for it in intents} == {"tips"}
+    assert [it.fields["key"] for it in intents] == [
+        "TID_TIPS_GUILD_FUNDS_LACK",
+        "TID_TIPS_NETWORK_RETRY",
+    ]
+    assert intents[0].fields["value"] == "帮派资金不足，无法升级该建筑"
+    assert intents[1].fields["type"] == "tips"
+
+
 def test_splitter_baseline_does_not_append_empty_candidate_shells_after_template():
     text = (
         "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，"

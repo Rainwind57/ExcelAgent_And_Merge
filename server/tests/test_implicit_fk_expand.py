@@ -45,6 +45,66 @@ def test_implicit_fk_expands_adj(monkeypatch):
     print(f"PASS implicit_fk: adj={adj}")
 
 
+def test_infer_fk_edges_keeps_same_workbook_cross_sheet_refs():
+    cli = MagicMock()
+    path = Path("/fake/fabao.xlsx")
+    cli.list_tables.return_value = [path]
+    cli.get_sheets.return_value = ["Fabao", "FabaoLevel"]
+    cli.read_header.side_effect = lambda _p, sh: {
+        "Fabao": ["法宝id", "名称"],
+        "FabaoLevel": ["法宝id", "法宝等级"],
+    }[sh]
+    cli.read_type_row.side_effect = lambda _p, sh: {
+        "Fabao": ["id:int", "name:string"],
+        "FabaoLevel": ["fabao_id:int", "level:int"],
+    }[sh]
+
+    loc = LocatorAgent(cli=cli)
+    edges = loc._infer_fk_edges([CandidateTable(stem="fabao", confidence=1.0, level="rule")])
+
+    assert any(
+        e.from_stem == "fabao"
+        and e.from_sheet == "FabaoLevel"
+        and e.from_column == "fabao_id"
+        and e.to_stem == "fabao"
+        and e.to_sheet == "Fabao"
+        and e.to_column == "id"
+        for e in edges
+    ), edges
+
+
+def test_infer_fk_edges_matches_same_workbook_pk_column_family():
+    cli = MagicMock()
+    path = Path("/fake/interaction.xlsx")
+    cli.list_tables.return_value = [path]
+    cli.get_sheets.return_value = ["InteractionConv", "InteractionConvOption"]
+    cli.read_header.side_effect = lambda _p, sh: {
+        "InteractionConv": ["编号", "对话内容"],
+        "InteractionConvOption": ["编号", "选项内容", "1:新对话ID"],
+    }[sh]
+    cli.read_type_row.side_effect = lambda _p, sh: {
+        "InteractionConv": ["conv_id:int", "prompt_text:string"],
+        "InteractionConvOption": [
+            "option_id:int",
+            "option_text:string",
+            "option_function.data.1.conv_id:int",
+        ],
+    }[sh]
+
+    loc = LocatorAgent(cli=cli)
+    edges = loc._infer_fk_edges([CandidateTable(stem="interaction", confidence=1.0, level="rule")])
+
+    assert any(
+        e.from_stem == "interaction"
+        and e.from_sheet == "InteractionConvOption"
+        and e.from_column == "option_function.data.1.conv_id"
+        and e.to_stem == "interaction"
+        and e.to_sheet == "InteractionConv"
+        and e.to_column == "conv_id"
+        for e in edges
+    ), edges
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v", "-s"])

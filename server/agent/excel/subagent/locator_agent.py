@@ -128,7 +128,7 @@ def _base_col(col: str) -> str:
 def _ref_base(base: str) -> str:
     """列名 → 被引表名：'school_id'→'school'，'spirit_id'→'spirit'，
     '物品编号'→'物品'，'talent_id'→'talent'。非引用列返空。"""
-    b = base
+    b = str(base or "").rsplit(".", 1)[-1]
     if not b:
         return ""
     if b.endswith("_id") and len(b) > 3:
@@ -893,7 +893,7 @@ class LocatorAgent(LLMSubAgent):
                             pk_for_sheet.append(col)
                     # 引用列判定：xxx_id / xxxid / xxx编号
                     ref = _ref_base(col)
-                    if ref and ref != stem:
+                    if ref:
                         ref_for_sheet.append((col, ref))
                 if pk_for_sheet:
                     pk_cols.setdefault(stem, []).extend(
@@ -914,11 +914,21 @@ class LocatorAgent(LLMSubAgent):
                 if not targets and ref.endswith("_id"):
                     body = ref[:-3]
                     targets = [t for t in cand_stems if t == body]
+                if not targets and from_stem in cand_stems:
+                    same_workbook_pks = pk_cols.get(from_stem) or []
+                    if any(
+                        to_sheet != from_sheet
+                        and (
+                            _ref_base(to_col) == ref
+                            or _base_col(to_col).lower() == ref
+                            or _base_col(to_col).lower().startswith(ref + "_")
+                        )
+                        for to_sheet, to_col in same_workbook_pks
+                    ):
+                        targets = [from_stem]
                 if not targets:
                     continue
                 for to_stem in targets:
-                    if to_stem == from_stem:
-                        continue
                     to_pk = pk_cols.get(to_stem)
                     if not to_pk:
                         continue
@@ -927,8 +937,16 @@ class LocatorAgent(LLMSubAgent):
                     # 与表名同）→ 首列 → 其余。
                     best = None
                     for to_sheet, to_col in to_pk:
+                        if to_stem == from_stem and to_sheet == from_sheet:
+                            continue
+                        to_col_base = _base_col(to_col).lower()
+                        to_col_ref = _ref_base(to_col) or ""
                         score = (2 if to_col.lower() == to_stem.lower() else 0) \
                             + (1 if to_col == to_pk[0][1] else 0)
+                        if to_stem == from_stem:
+                            score += 3
+                        if to_col_ref == ref or to_col_base == ref or to_col_base.startswith(ref + "_"):
+                            score += 4
                         if best is None or score > best[0]:
                             best = (score, to_sheet, to_col)
                     if best:

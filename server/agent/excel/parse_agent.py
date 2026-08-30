@@ -414,38 +414,305 @@ class ParseAgent:
         # 本批 producer 的 name refs，这里补既有表：按 FK 边定位目标表 → 精确名匹配
         # 唯一行 → 改写为该行 PK 值。命中唯一才改，多命中/无命中保留原文交 Step2 ask。
         self._resolve_existing_name_fk(nl_intents, locator_result)
-        self._prune_fields_not_in_schema(nl_intents)
-        self._align_placeholder_families(nl_intents)
-        if locator_result is not None:
-            self._backfill_missing_fk_fields(
-                nl_intents, getattr(locator_result, "fk_edges", None) or [])
-            self._resolve_ordinal_placeholders(
-                nl_intents, getattr(locator_result, "fk_edges", None) or [])
-            self._expand_repeated_child_configs(
-                nl_intents, text, getattr(locator_result, "fk_edges", None) or [])
-            self._resolve_placeholders_to_explicit_pks(nl_intents)
-            self._fill_empty_fks_from_explicit_pks(
-                nl_intents, getattr(locator_result, "fk_edges", None) or [])
-        self._backfill_same_workbook_placeholder_fields(nl_intents)
-        self._prune_fields_not_in_schema(nl_intents)
-        nl_intents = self._dedupe_same_sheet_shadows(nl_intents)
-        nl_intents = self._dedupe_same_sheet_natural_duplicates(nl_intents)
-        self._clean_self_consumes(nl_intents)
-        self._clean_dangling_consumes(nl_intents)
-        # §3.1 step 5: produces 推断（关系图驱动,原地补 produces_label/consumes 占位）
+        nl_intents = self._compile_step1_references(nl_intents, text, locator_result)
+        self._think(f"ParseAgent 产出 {len(nl_intents)} 条 NLIntent(source=llm_decompose)")
+        return nl_intents
+
+    def _compile_step1_references(self, intents: list[NLIntent], text: str,
+                                  locator_result: Optional[LocatorResult]) -> list[NLIntent]:
+        """Normalize Step1 executable references after LLM extraction."""
+        if not intents:
+            return intents
+        fk_edges = getattr(locator_result, "fk_edges", None) or []
+        self._prune_fields_not_in_schema(intents)
+        self._align_placeholder_families(intents)
+        self._ensure_produced_primary_fields(intents)
+        self._replace_reused_explicit_pks_with_placeholders(intents, fk_edges)
+        self._backfill_missing_fk_fields(intents, fk_edges)
+        self._resolve_ordinal_placeholders(intents, fk_edges)
+        self._expand_repeated_child_configs(intents, text, fk_edges)
+        self._resolve_placeholders_to_explicit_pks(intents)
+        self._resolve_placeholders_by_embedded_explicit_pks(intents, fk_edges)
+        self._fill_empty_fks_from_explicit_pks(intents, fk_edges)
+        self._drop_foreign_placeholder_primary_fields(intents, fk_edges)
+        self._backfill_same_workbook_placeholder_fields(intents)
+        self._expand_enumerated_same_sheet_adds(intents, text)
+        self._supplement_option_rows_from_text(intents, text)
+        self._compact_indexed_field_gaps(intents)
+        self._prune_fields_not_in_schema(intents)
+        intents = self._dedupe_same_sheet_same_explicit_pk(intents)
+        intents = self._dedupe_same_sheet_shadows(intents)
+        intents = self._dedupe_same_sheet_natural_duplicates(intents)
+        self._uniquify_reused_placeholder_primary_fields(intents)
+        self._demote_consumed_duplicate_producers(intents)
+        self._clean_self_consumes(intents)
+        self._clean_dangling_consumes(intents)
+        # 子表主键即外键（school_spirit.神通id → school_ability）时，把自引用主键
+        # 绑到上游新产出，避免主键被自增成无关 ID
+        self._bind_self_primary_to_upstream(intents, fk_edges)
         try:
-            infer_produces_consumes(nl_intents)
+            infer_produces_consumes(intents)
         except Exception:
             logger.warning("ParseAgent produces_inference 失败,保留原 intent", exc_info=True)
-        # 同步 NLIntent.produces_label 字段（从 extras["produces"] 同步,供 Step3 拓扑用）
-        for it in nl_intents:
+        for it in intents:
             prod = it.extras.get("produces") if it.extras else None
             if prod and not it.produces_label:
                 it.produces_label = str(prod)
-        self._clean_self_consumes(nl_intents)
-        self._clean_dangling_consumes(nl_intents)
-        self._think(f"ParseAgent 产出 {len(nl_intents)} 条 NLIntent(source=llm_decompose)")
-        return nl_intents
+        self._resolve_ordinal_placeholders(intents, fk_edges)
+        self._resolve_placeholders_to_explicit_pks(intents)
+        self._resolve_placeholders_by_embedded_explicit_pks(intents, fk_edges)
+        self._fill_empty_fks_from_explicit_pks(intents, fk_edges)
+        self._replace_reused_explicit_pks_with_placeholders(intents, fk_edges)
+        self._drop_foreign_placeholder_primary_fields(intents, fk_edges)
+        self._uniquify_reused_placeholder_primary_fields(intents)
+        self._demote_consumed_duplicate_producers(intents)
+        self._clean_self_consumes(intents)
+        self._clean_dangling_consumes(intents)
+        return intents
+
+    def _dedupe_same_sheet_same_explicit_pk(self, intents: list[NLIntent]) -> list[NLIntent]:
+        if not intents:
+            return intents
+
+        def _real(value) -> str | None:
+            if value is None:
+                return None
+            s = str(value).strip()
+            if not s or (s.startswith("<") and s.endswith(">")):
+                return None
+            return s
+
+        def _label(it: NLIntent) -> str:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            return str(label or "").strip().strip("<>").strip()
+
+        groups: dict[tuple[str, str, str], list[int]] = {}
+        norm_fields_by_idx: dict[int, dict[str, tuple[str, object]]] = {}
+        for idx, it in enumerate(intents):
+            if getattr(it, "action", "") != "add":
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip()
+            if not stem or not sheet:
+                continue
+            pk_names = {self._field_name_norm(x)
+                        for x in self._primary_field_names(stem, sheet)}
+            if not pk_names:
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            canon = self._field_canon_map(stem, sheet)
+            norm: dict[str, tuple[str, object]] = {}
+            pk_values: list[str] = []
+            for col, value in fields.items():
+                col_norm = self._field_name_norm(col)
+                key = canon.get(col_norm, col_norm)
+                norm[key] = (col, value)
+                if key in pk_names:
+                    rv = _real(value)
+                    if rv is not None:
+                        pk_values.append(f"{key}={rv}")
+            if not pk_values:
+                continue
+            norm_fields_by_idx[idx] = norm
+            groups.setdefault((stem, sheet.lower(), "|".join(sorted(pk_values))), []).append(idx)
+
+        if not groups:
+            return intents
+
+        label_remap: dict[str, str] = {}
+        drop: set[int] = set()
+
+        def _score(idx: int) -> tuple[int, int, int, int]:
+            norm = norm_fields_by_idx.get(idx, {})
+            real_count = sum(1 for _, value in norm.values() if _real(value) is not None)
+            provided_count = sum(1 for _, value in norm.values()
+                                 if value is not None and str(value).strip() != "")
+            text_len = sum(len(str(value)) for _, value in norm.values()
+                           if _real(value) is not None)
+            return (real_count, provided_count, text_len, -idx)
+
+        for idxs in groups.values():
+            if len(idxs) < 2:
+                continue
+            winner = sorted(idxs, key=_score, reverse=True)[0]
+            winner_fields = (getattr(intents[winner], "extras", None) or {}).get("fields") or {}
+            if not isinstance(winner_fields, dict):
+                continue
+            winner_norm = norm_fields_by_idx.get(winner, {})
+            winner_by_norm = {k: col for k, (col, _) in winner_norm.items()}
+            winner_label = _label(intents[winner])
+            for loser in idxs:
+                if loser == winner:
+                    continue
+                loser_fields = (getattr(intents[loser], "extras", None) or {}).get("fields") or {}
+                if isinstance(loser_fields, dict):
+                    for norm_key, (src_col, src_value) in norm_fields_by_idx.get(loser, {}).items():
+                        dst_col = winner_by_norm.get(norm_key)
+                        if dst_col is None:
+                            winner_fields[src_col] = src_value
+                            winner_by_norm[norm_key] = src_col
+                            continue
+                        if _real(winner_fields.get(dst_col)) is None and _real(src_value) is not None:
+                            winner_fields[dst_col] = src_value
+                loser_label = _label(intents[loser])
+                if loser_label and winner_label:
+                    label_remap[loser_label] = winner_label
+                elif loser_label and not winner_label:
+                    intents[winner].produces_label = loser_label
+                    if getattr(intents[winner], "extras", None) is not None:
+                        intents[winner].extras["produces"] = loser_label
+                    winner_label = loser_label
+                drop.add(loser)
+
+        if not drop:
+            return intents
+        kept = [it for idx, it in enumerate(intents) if idx not in drop]
+        if label_remap:
+            for it in kept:
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if isinstance(fields, dict):
+                    for col, value in list(fields.items()):
+                        if isinstance(value, str):
+                            raw = value.strip().strip("<>").strip()
+                            if raw in label_remap:
+                                fields[col] = f"<{label_remap[raw]}>"
+                it.consumes_labels = [
+                    label_remap.get(str(x).strip().strip("<>").strip(), x)
+                    for x in (getattr(it, "consumes_labels", None) or [])
+                ]
+                consumes = (getattr(it, "extras", None) or {}).get("consumes")
+                if isinstance(consumes, dict):
+                    for col, label in list(consumes.items()):
+                        raw = str(label).strip().strip("<>").strip()
+                        if raw in label_remap:
+                            consumes[col] = label_remap[raw]
+        return kept
+
+    def _ensure_produced_primary_fields(self, intents: list[NLIntent]) -> int:
+        n = 0
+        for it in intents or []:
+            if getattr(it, "action", "") != "add":
+                continue
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if not label:
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = getattr(it, "sheet_hint", "") or ""
+            pk_names = {
+                self._field_name_norm(x)
+                for x in self._primary_field_names(stem, sheet)
+            }
+            if not pk_names:
+                continue
+            found_non_empty = False
+            for key, value in fields.items():
+                if self._field_name_norm(key) not in pk_names:
+                    continue
+                if value is not None and str(value).strip() != "":
+                    found_non_empty = True
+                    break
+            if found_non_empty:
+                continue
+            target_key = ""
+            headers = self._headers_for(stem, sheet)
+            type_row = self._type_row_for(stem, sheet)
+            for h, t in zip(headers, type_row):
+                raw_type = str(t or "").split(":", 1)[0].strip()
+                names = {self._field_name_norm(h), self._field_name_norm(raw_type)}
+                if names & pk_names:
+                    target_key = raw_type or str(h or "").strip()
+                    break
+            if not target_key:
+                target_key = next(iter(self._primary_field_names(stem, sheet)), "")
+            if not target_key:
+                continue
+            fields[target_key] = f"<{str(label).strip().strip('<>').strip()}>"
+            n += 1
+        return n
+
+    def _resolve_placeholders_by_embedded_explicit_pks(self, intents: list[NLIntent], fk_edges: list) -> int:
+        if not intents or not fk_edges:
+            return 0
+        explicit_by_target: dict[tuple[str, str], object] = {}
+        for it in intents or []:
+            if getattr(it, "action", "") != "add":
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            pk_names = {
+                self._field_name_norm(x)
+                for x in self._primary_field_names(stem, sheet)
+            }
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not pk_names or not isinstance(fields, dict):
+                continue
+            for key, value in fields.items():
+                if self._field_name_norm(key) not in pk_names:
+                    continue
+                if value is None:
+                    continue
+                s = str(value).strip()
+                if not s or (s.startswith("<") and s.endswith(">")):
+                    continue
+                explicit_by_target[(stem, sheet)] = value
+                break
+        if not explicit_by_target:
+            return 0
+
+        edge_target_by_child_col: dict[tuple[str, str, str], tuple[str, str]] = {}
+        for edge in fk_edges or []:
+            target = (
+                (getattr(edge, "to_stem", "") or "").lower(),
+                (getattr(edge, "to_sheet", "") or "").lower(),
+            )
+            if target not in explicit_by_target:
+                continue
+            edge_target_by_child_col[(
+                (getattr(edge, "from_stem", "") or "").lower(),
+                (getattr(edge, "from_sheet", "") or "").lower(),
+                self._field_name_norm(getattr(edge, "from_column", "") or ""),
+            )] = target
+
+        n = 0
+        resolved_labels: set[str] = set()
+        for it in intents or []:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            for key, value in list(fields.items()):
+                if not isinstance(value, str):
+                    continue
+                raw = value.strip()
+                if not (raw.startswith("<") and raw.endswith(">")):
+                    continue
+                label = raw.strip("<>").strip()
+                target = edge_target_by_child_col.get((stem, sheet, self._field_name_norm(key)))
+                if target is None:
+                    continue
+                explicit = explicit_by_target[target]
+                explicit_s = str(explicit).strip()
+                if explicit_s and explicit_s in label:
+                    fields[key] = explicit
+                    resolved_labels.add(label)
+                    n += 1
+            if resolved_labels:
+                old = list(getattr(it, "consumes_labels", None) or [])
+                new = [x for x in old if str(x).strip().strip("<>").strip() not in resolved_labels]
+                if len(new) != len(old):
+                    it.consumes_labels = new
+                    n += len(old) - len(new)
+        return n
 
     @staticmethod
     def _backfill_missing_fk_fields(intents: list[NLIntent], fk_edges: list) -> int:
@@ -576,6 +843,81 @@ class ParseAgent:
             return self._cli.read_header(path, real_sheet) or []
         except Exception:
             return []
+
+    def _read_sheet_rows(self, stem: str, sheet: str) -> list:
+        """读 (stem, sheet) 既有数据行（按 stem/sheet 小写缓存，一次解析只算一遍）。"""
+        if not stem or not sheet:
+            return []
+        cache = getattr(self, "_rows_cache", None)
+        if cache is None:
+            cache = {}
+            self._rows_cache = cache
+        key = (str(stem).strip().lower(), str(sheet).strip().lower())
+        if key in cache:
+            return cache[key]
+        rows: list = []
+        try:
+            if self._cli is not None:
+                tables = {p.stem.lower(): p for p in self._cli.list_tables()}
+                path = tables.get(str(stem).strip().lower())
+                if path is not None:
+                    real_sheet = sheet
+                    try:
+                        sheets = self._cli.get_sheets(path) or []
+                        real_sheet = next(
+                            (s for s in sheets
+                             if str(s).lower() == str(sheet).lower()), sheet)
+                    except Exception:
+                        real_sheet = sheet
+                    rows = self._cli.read_sheet(path, real_sheet) or []
+        except Exception:
+            rows = []
+        cache[key] = rows
+        return rows
+
+    def _shared_value_columns(self, stem: str, sheet: str) -> set:
+        """既有数据里「取值有重复」的列名归一集合 = 多行共用的引用列。
+
+        身份列（主键）取值必然互不相同；某列一旦出现重复值，说明它是可被多行
+        共用的引用列，例如 school_talent/SchoolTalentLevel 的 buff_id=600003 被
+        同一天赋的 1 级/2 级两行共用。在这类列上「同一个显式值被多条 intent 复用」
+        是**合法**的，不该被当成"重复主键"改写成占位符（否则用户明确给的
+        「被动 600003」会被替换成 <new_school_talent_level_1_id>）。
+        """
+        headers = self._headers_for(stem, sheet) or []
+        types = self._type_row_for(stem, sheet) or []
+        rows = self._read_sheet_rows(stem, sheet)
+        if not headers or not rows:
+            return set()
+        # 中文显示名与 row2 英文规范名都要登记：下游比对用的是 _field_canon_map
+        # 归一后的英文规范键（buff_id → buffid），只登记中文键会漏判。
+        canon_of: dict[int, set] = {}
+        for idx, h in enumerate(headers):
+            if not h:
+                continue
+            names = {self._field_name_norm(h)}
+            if idx < len(types) and types[idx]:
+                names.add(self._field_name_norm(
+                    str(types[idx]).split(":", 1)[0].strip()))
+            names.discard("")
+            canon_of[idx] = names
+        out: set = set()
+        for idx, names in canon_of.items():
+            seen: set = set()
+            for row in rows:
+                if not isinstance(row, (list, tuple)) or idx >= len(row):
+                    continue
+                v = row[idx]
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if not s:
+                    continue
+                if s in seen:
+                    out |= names
+                    break
+                seen.add(s)
+        return out
 
 
     def parse_baseline(self, text: str, splitter_intents: list) -> list[NLIntent]:
@@ -1061,7 +1403,8 @@ class ParseAgent:
             return s[1:-1].strip() if s.startswith("<") and s.endswith(">") else ""
 
         def _ordinal(label: str) -> int:
-            m = re.search(r"(?:_id)?_(\d+)$", label or "")
+            m = (re.search(r"(?:_id)?_(\d+)$", label or "")
+                 or re.search(r"(\d+)(?=_id$)", label or ""))
             return int(m.group(1)) if m else 0
 
         n = 0
@@ -1205,12 +1548,23 @@ class ParseAgent:
                         def _provided(d: dict) -> set:
                             return {k for k, v in d.items()
                                     if v is not None and str(v).strip() != ""}
+                        def _defaultish(v) -> bool:
+                            if v is None:
+                                return True
+                            s = str(v).strip()
+                            if not s:
+                                return True
+                            if s.startswith("<") and s.endswith(">"):
+                                return True
+                            return s in {"0", "0.0", "false", "False"}
                         a_keys = _provided(fa)
                         b_keys = _provided(fb)
                         a_real = {k: _real(v) for k, v in fa.items()
                                   if _real(v) is not None}
                         b_real = {k: _real(v) for k, v in fb.items()
                                   if _real(v) is not None}
+                        a_info = {k: v for k, v in fa.items() if not _defaultish(v)}
+                        b_info = {k: v for k, v in fb.items() if not _defaultish(v)}
                         if not a_keys and b_keys:
                             drop.add(ia)
                             changed = True
@@ -1234,7 +1588,20 @@ class ParseAgent:
                             same_produces
                             and (a_keys & b_keys)
                             and (len(a_real), len(a_keys)) < (len(b_real), len(b_keys)))
-                        if not (a_keys < b_keys or same_produces_richer):
+                        shared_anchor = any(
+                            k in b_keys and (
+                                _defaultish(fa.get(k))
+                                or _defaultish(fb.get(k))
+                                or str(fa.get(k)).strip() == str(fb.get(k)).strip()
+                            )
+                            for k in (a_keys & b_keys)
+                        )
+                        default_shell_shadow = (
+                            shared_anchor
+                            and len(a_info) < len(b_info)
+                            and set(a_info).issubset(set(b_info))
+                        )
+                        if not (a_keys < b_keys or same_produces_richer or default_shell_shadow):
                             continue
                         # a 的每个非占位实值都要在 b 中同键同值（b 该键空/占位 =
                         # 待补，不算冲突）。
@@ -1251,11 +1618,12 @@ class ParseAgent:
                             bv_s = str(bv).strip()
                             if bv_s.startswith("<") and bv_s.endswith(">"):
                                 continue
-                            if bv_s != av_s and not same_produces_richer:
+                            if (bv_s != av_s and not same_produces_richer
+                                    and not default_shell_shadow):
                                 shadow = False
                                 break
                         if shadow:
-                            if same_produces_richer:
+                            if same_produces_richer or default_shell_shadow:
                                 src = (getattr(kept[ia], "extras", None) or {}).get("fields") or {}
                                 dst = (getattr(kept[ib], "extras", None) or {}).get("fields") or {}
                                 if isinstance(src, dict) and isinstance(dst, dict):
@@ -1277,6 +1645,279 @@ class ParseAgent:
             if not changed:
                 break
         return kept
+
+    def _replace_reused_explicit_pks_with_placeholders(self, intents: list[NLIntent],
+                                                       fk_edges: list) -> int:
+        if not intents:
+            return 0
+
+        def _real(value) -> str | None:
+            if value is None:
+                return None
+            s = str(value).strip()
+            if not s or (s.startswith("<") and s.endswith(">")):
+                return None
+            return s
+
+        def _label(it: NLIntent) -> str:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            return str(label or "").strip().strip("<>").strip()
+
+        foreign_fk_cols: set[tuple[str, str, str]] = set()
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").strip().lower()
+            fsh = (getattr(e, "from_sheet", "") or "").strip().lower()
+            ts = (getattr(e, "to_stem", "") or "").strip().lower()
+            tsh = (getattr(e, "to_sheet", "") or "").strip().lower()
+            fc = self._field_name_norm(getattr(e, "from_column", "") or "")
+            if fs and fc and (fs, fsh) != (ts, tsh):
+                foreign_fk_cols.add((fs, fsh, fc))
+
+        groups: dict[tuple[str, str, str, str], list[tuple[int, str, str, dict[str, tuple[str, object]]]]] = {}
+        for idx, it in enumerate(intents):
+            if getattr(it, "action", "") != "add":
+                continue
+            label = _label(it)
+            if not label:
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip()
+            pk_names = {self._field_name_norm(x)
+                        for x in self._primary_field_names(stem, sheet)}
+            if not stem or not sheet or not pk_names:
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            canon = self._field_canon_map(stem, sheet)
+            norm: dict[str, tuple[str, object]] = {}
+            for col, value in fields.items():
+                cn = canon.get(self._field_name_norm(col), self._field_name_norm(col))
+                norm[cn] = (col, value)
+            # §可共用引用列豁免：既有数据里取值有重复的列（buff_id / talent_id /
+            # model_id 这类多行共用的引用列）不是身份列，同一显式值被多条 intent
+            # 复用是合法的，转成占位符反而把用户给的真实引用值弄丢。
+            shared_cols = self._shared_value_columns(stem, sheet)
+            id_like_names = {
+                k for k in norm
+                if k not in shared_cols
+                and (
+                    k in pk_names
+                    or (
+                        "id" in k
+                        and (stem, sheet.lower(), k) not in foreign_fk_cols
+                    )
+                )
+            }
+            for pk in id_like_names:
+                item = norm.get(pk)
+                if not item:
+                    continue
+                rv = _real(item[1])
+                if rv is None:
+                    continue
+                groups.setdefault((stem, sheet.lower(), pk, rv), []).append((idx, label, item[0], norm))
+
+        replace: dict[str, list[tuple[int, str, str]]] = {}
+        for (_stem, _sheet, _pk, pk_value), rows in groups.items():
+            labels = {label for _idx, label, _col, _norm in rows}
+            if len(rows) < 2 or len(labels) < 2:
+                continue
+            signatures = []
+            for _idx, _label_s, _col, norm in rows:
+                sig = {
+                    k: _real(v)
+                    for k, (_orig, v) in norm.items()
+                    if k != _pk and _real(v) is not None
+                }
+                signatures.append(sig)
+            conflict = False
+            for pos, a in enumerate(signatures):
+                for b in signatures[pos + 1:]:
+                    shared = set(a) & set(b)
+                    if any(a[k] != b[k] for k in shared) or (a and b and a != b):
+                        conflict = True
+                        break
+                if conflict:
+                    break
+            if not conflict:
+                continue
+            for idx, label, pk_col, _norm in rows:
+                fields = (getattr(intents[idx], "extras", None) or {}).get("fields") or {}
+                if isinstance(fields, dict):
+                    fields[pk_col] = f"<{label}>"
+                    replace.setdefault(label, []).append((idx, pk_value, _stem))
+
+        if not replace:
+            return 0
+
+        by_label = {
+            label: (old_value, stem)
+            for label, rows in replace.items()
+            for _idx, old_value, stem in rows[:1]
+        }
+        fk_cols: dict[tuple[str, str], set[str]] = {}
+        for e in fk_edges or []:
+            to_stem = (getattr(e, "to_stem", "") or "").strip().lower()
+            to_sheet = (getattr(e, "to_sheet", "") or "").strip().lower()
+            from_stem = (getattr(e, "from_stem", "") or "").strip().lower()
+            from_sheet = (getattr(e, "from_sheet", "") or "").strip().lower()
+            from_col = self._field_name_norm(getattr(e, "from_column", "") or "")
+            if to_stem and from_stem and from_col:
+                fk_cols.setdefault((from_stem, from_sheet), set()).add(from_col)
+
+        changed = sum(len(v) for v in replace.values())
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            consumes = {
+                str(x).strip().strip("<>").strip()
+                for x in (getattr(it, "consumes_labels", None) or [])
+            }
+            if not consumes:
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip().lower()
+            canon = self._field_canon_map(stem, sheet)
+            allowed_fk_cols = fk_cols.get((stem, sheet), set())
+            relevant_labels = sorted(
+                consumes & set(by_label),
+                key=lambda x: (self._placeholder_ordinal(x) or 10**6, x))
+            assigned_cols: set[str] = set()
+            values_to_labels: dict[str, list[str]] = {}
+            for label in relevant_labels:
+                old_value, _parent_stem = by_label[label]
+                values_to_labels.setdefault(old_value, []).append(label)
+            for old_value, labels in values_to_labels.items():
+                if len(labels) <= 1:
+                    continue
+                matching_cols = []
+                for col, value in fields.items():
+                    if _real(value) != old_value:
+                        continue
+                    col_norm = canon.get(self._field_name_norm(col), self._field_name_norm(col))
+                    if allowed_fk_cols and col_norm not in allowed_fk_cols:
+                        continue
+                    nums = re.findall(r"\d+", str(col))
+                    order = int(nums[-1]) if nums else 10**6
+                    matching_cols.append((order, col))
+                if len(matching_cols) < len(labels):
+                    continue
+                matching_cols.sort(key=lambda x: (x[0], x[1]))
+                for (_order, col), label in zip(matching_cols, labels):
+                    fields[col] = f"<{label}>"
+                    assigned_cols.add(col)
+                    changed += 1
+            for label in relevant_labels:
+                old_value, _parent_stem = by_label[label]
+                for col, value in list(fields.items()):
+                    if col in assigned_cols:
+                        continue
+                    if _real(value) != old_value:
+                        continue
+                    col_norm = canon.get(self._field_name_norm(col), self._field_name_norm(col))
+                    if allowed_fk_cols and col_norm not in allowed_fk_cols:
+                        continue
+                    fields[col] = f"<{label}>"
+                    changed += 1
+        if changed:
+            self._think(f"Step1 reused explicit PKs converted to placeholders: {changed}")
+        return changed
+
+    def _uniquify_reused_placeholder_primary_fields(self, intents: list[NLIntent]) -> int:
+        if not intents:
+            return 0
+
+        def _placeholder(value) -> str:
+            if not isinstance(value, str):
+                return ""
+            s = value.strip()
+            if s.startswith("<") and s.endswith(">"):
+                return s.strip("<>").strip()
+            return ""
+
+        def _label(it: NLIntent) -> str:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            return str(label or "").strip().strip("<>").strip()
+
+        groups: dict[tuple[str, str, str, str], list[tuple[int, str, str, dict[str, object]]]] = {}
+        for idx, it in enumerate(intents):
+            if getattr(it, "action", "") != "add":
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip()
+            pk_names = {self._field_name_norm(x)
+                        for x in self._primary_field_names(stem, sheet)}
+            if not stem or not sheet or not pk_names:
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            canon = self._field_canon_map(stem, sheet)
+            norm: dict[str, tuple[str, object]] = {}
+            for col, value in fields.items():
+                cn = canon.get(self._field_name_norm(col), self._field_name_norm(col))
+                norm[cn] = (col, value)
+            for pk in pk_names:
+                item = norm.get(pk)
+                if not item:
+                    continue
+                ph = _placeholder(item[1])
+                if ph:
+                    groups.setdefault((stem, sheet.lower(), pk, ph), []).append(
+                        (idx, item[0], ph, fields))
+
+        changed = 0
+        for (_stem, _sheet, _pk, shared_label), rows in groups.items():
+            if len(rows) < 2:
+                continue
+            signatures = []
+            for idx, _pk_col, _ph, fields in rows:
+                signatures.append({
+                    self._field_name_norm(k): str(v).strip()
+                    for k, v in fields.items()
+                    if self._field_name_norm(k) != _pk
+                    and v is not None
+                    and str(v).strip()
+                    and not _placeholder(v)
+                })
+            if len({tuple(sorted(sig.items())) for sig in signatures}) <= 1:
+                continue
+            used: set[str] = set()
+            for pos, (idx, pk_col, _ph, fields) in enumerate(rows, start=1):
+                it = intents[idx]
+                current = _label(it)
+                if current and current != shared_label and current not in used:
+                    new_label = current
+                elif current == shared_label and shared_label not in used:
+                    new_label = shared_label
+                else:
+                    base = current or shared_label or f"new_{_stem}_id"
+                    new_label = f"{base}_{pos}"
+                    while new_label in used:
+                        pos += 1
+                        new_label = f"{base}_{pos}"
+                used.add(new_label)
+                if fields.get(pk_col) != f"<{new_label}>":
+                    fields[pk_col] = f"<{new_label}>"
+                    changed += 1
+                if not _label(it) or _label(it) == shared_label and new_label != shared_label:
+                    it.produces_label = new_label
+                    if getattr(it, "extras", None) is not None:
+                        it.extras["produces"] = new_label
+                if new_label != shared_label:
+                    it.consumes_labels = [
+                        x for x in (getattr(it, "consumes_labels", None) or [])
+                        if str(x).strip().strip("<>").strip() != shared_label
+                    ]
+        if changed:
+            self._think(f"Step1 reused placeholder PKs uniquified: {changed}")
+        return changed
 
     def _dedupe_same_sheet_natural_duplicates(self, intents: list[NLIntent]) -> list[NLIntent]:
         if not intents:
@@ -1384,6 +2025,329 @@ class ParseAgent:
         if not drop:
             return intents
         return [it for idx, it in enumerate(intents) if idx not in drop]
+
+    def _demote_consumed_duplicate_producers(self, intents: list[NLIntent]) -> int:
+        if not intents:
+            return 0
+
+        def _label(it) -> str:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            return str(label or "").strip().strip("<>").strip()
+
+        by_label: dict[str, list[NLIntent]] = {}
+        for it in intents:
+            label = _label(it)
+            if label:
+                by_label.setdefault(label, []).append(it)
+        duplicates = {label for label, rows in by_label.items() if len(rows) > 1}
+        if not duplicates:
+            return 0
+
+        n = 0
+        for label in duplicates:
+            rows = by_label[label]
+            keep = rows[0]
+            demote: list[NLIntent] = []
+            for it in rows:
+                stem = (getattr(it, "table_hint", "") or "").lower()
+                sheet = (getattr(it, "sheet_hint", "") or "").lower()
+                pk_names = {
+                    self._field_name_norm(x)
+                    for x in self._primary_field_names(stem, sheet)
+                }
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if not isinstance(fields, dict):
+                    fields = {}
+                non_pk_refs_label = False
+                pk_refs_label = False
+                for col, value in fields.items():
+                    if not isinstance(value, str):
+                        continue
+                    raw = value.strip()
+                    if not (raw.startswith("<") and raw.endswith(">")):
+                        continue
+                    if raw.strip("<>").strip() != label:
+                        continue
+                    col_norm = self._field_name_norm(col)
+                    if pk_names and col_norm in pk_names:
+                        pk_refs_label = True
+                    elif col_norm != "id":
+                        non_pk_refs_label = True
+                if non_pk_refs_label:
+                    demote.append(it)
+                elif pk_refs_label:
+                    keep = it
+            for it in demote:
+                if it is keep:
+                    continue
+                if getattr(it, "produces_label", None):
+                    it.produces_label = None
+                    n += 1
+                extras = getattr(it, "extras", None)
+                if isinstance(extras, dict) and extras.get("produces"):
+                    extras.pop("produces", None)
+                    n += 1
+        by_label = {}
+        for it in intents:
+            label = _label(it)
+            if label:
+                by_label.setdefault(label, []).append(it)
+        for label, rows in by_label.items():
+            if len(rows) <= 1:
+                continue
+
+            def _owns_label(it: NLIntent) -> tuple[int, int]:
+                stem = (getattr(it, "table_hint", "") or "").lower()
+                sheet = (getattr(it, "sheet_hint", "") or "").lower()
+                pk_names = {
+                    self._field_name_norm(x)
+                    for x in self._primary_field_names(stem, sheet)
+                } or {"id"}
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if not isinstance(fields, dict):
+                    fields = {}
+                pk_ref = 0
+                any_ref = 0
+                for col, value in fields.items():
+                    if not isinstance(value, str):
+                        continue
+                    raw = value.strip()
+                    if not (raw.startswith("<") and raw.endswith(">")):
+                        continue
+                    if raw.strip("<>").strip() != label:
+                        continue
+                    any_ref = 1
+                    if self._field_name_norm(col) in pk_names:
+                        pk_ref = 1
+                return pk_ref, any_ref
+
+            keep = max(rows, key=_owns_label)
+            for it in rows:
+                if it is keep:
+                    continue
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if isinstance(fields, dict):
+                    for col, value in list(fields.items()):
+                        if not isinstance(value, str):
+                            continue
+                        raw = value.strip()
+                        if raw.startswith("<") and raw.endswith(">") and raw.strip("<>").strip() == label:
+                            fields.pop(col, None)
+                if getattr(it, "produces_label", None):
+                    it.produces_label = None
+                    n += 1
+                extras = getattr(it, "extras", None)
+                if isinstance(extras, dict) and extras.get("produces"):
+                    extras.pop("produces", None)
+                    n += 1
+        return n
+
+    @staticmethod
+    def _fk_edge_targets(fk_edges) -> dict:
+        """(from_stem, from_sheet, from_col_norm) -> {(to_stem, to_sheet)}（仅跨表边）。"""
+        out: dict = {}
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").strip().lower()
+            fsh = (getattr(e, "from_sheet", "") or "").strip().lower()
+            ts = (getattr(e, "to_stem", "") or "").strip().lower()
+            tsh = (getattr(e, "to_sheet", "") or "").strip().lower()
+            fc = re.sub(r"[\s_:\-./\\()\[\]（）【】]+", "",
+                        str(getattr(e, "from_column", "") or "").lower())
+            if fs and fsh and fc and ts and tsh and (fs, fsh) != (ts, tsh):
+                out.setdefault((fs, fsh, fc), set()).add((ts, tsh))
+        return out
+
+    def _bind_self_primary_to_upstream(self, intents: list[NLIntent],
+                                       fk_edges: list) -> int:
+        """自引用主键 → 绑定上游 producer（子表主键本身就是外键的场景）。
+
+        场景：school_spirit 的「神通id」既是本表主键，又是指向 school_ability
+        的外键。LLM 只会把主键列填成自己的 produces 占位符 <new_school_spirit_id>，
+        Step2 于是按自增分配 110~113，"把神通和灵根绑定"的语义彻底丢失（神通id
+        应为新神通 8012~8015）。
+
+        判据（全部满足才改，否则一律不动，宁可退化为自动分配）：
+          1. add intent，主键列当前是占位符且恰为本条自己的 produces label
+             （= 用户没显式给主键）
+          2. 该主键列存在跨表 FK 边指向 (to_stem, to_sheet)
+          3. 本批该目标恰好有 N 个 producer，且本表本 sheet 的自引用 intent
+             也恰好 N 条 → 按出现顺序一一绑定
+        """
+        if not intents or not fk_edges:
+            return 0
+
+        def _label(it) -> str:
+            lab = getattr(it, "produces_label", None)
+            if not lab and getattr(it, "extras", None):
+                lab = it.extras.get("produces")
+            return str(lab or "").strip().strip("<>").strip()
+
+        def _placeholder(value) -> str:
+            if not isinstance(value, str):
+                return ""
+            s = value.strip()
+            return s[1:-1].strip() if s.startswith("<") and s.endswith(">") else ""
+
+        edge_targets = self._fk_edge_targets(fk_edges)
+        produced_by_target: dict = {}
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            lab = _label(it)
+            if not lab:
+                continue
+            produced_by_target.setdefault(
+                ((getattr(it, "table_hint", "") or "").strip().lower(),
+                 (getattr(it, "sheet_hint", "") or "").strip().lower()),
+                []).append(lab)
+
+        groups: dict = {}
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            own = _label(it)
+            if not own:
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet_l = (getattr(it, "sheet_hint", "") or "").strip().lower()
+            sheet = getattr(it, "sheet_hint", "") or ""
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            pk_names = {self._field_name_norm(x)
+                        for x in self._primary_field_names(stem, sheet)}
+            for col, value in fields.items():
+                cn = self._field_name_norm(col)
+                if cn not in pk_names or _placeholder(value) != own:
+                    continue
+                targets = edge_targets.get((stem, sheet_l, cn)) or set()
+                for tgt in targets:
+                    groups.setdefault((stem, sheet_l, cn, tgt), []).append((it, col))
+
+        n = 0
+        for (_stem, _sheet, _cn, target), rows in groups.items():
+            producers = produced_by_target.get(target) or []
+            if not producers or len(producers) != len(rows):
+                continue
+            for (it, col), lab in zip(rows, producers):
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if not isinstance(fields, dict):
+                    continue
+                fields[col] = f"<{lab}>"
+                it.consumes_labels = list(
+                    getattr(it, "consumes_labels", None) or [])
+                if lab not in it.consumes_labels:
+                    it.consumes_labels.append(lab)
+                extras = getattr(it, "extras", None)
+                if isinstance(extras, dict):
+                    consumes = extras.get("consumes")
+                    if isinstance(consumes, dict):
+                        consumes[col] = lab
+                n += 1
+        if n:
+            self._think(f"Step1 self-primary bound to upstream producers: {n}")
+        return n
+
+    def _drop_foreign_placeholder_primary_fields(self, intents: list[NLIntent],
+                                                 fk_edges: list = None) -> int:
+        if not intents:
+            return 0
+        produced = set()
+        produced_at: dict = {}
+        for it in intents:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if label:
+                lab = str(label).strip().strip("<>").strip()
+                produced.add(lab)
+                produced_at.setdefault(lab, set()).add(
+                    ((getattr(it, "table_hint", "") or "").strip().lower(),
+                     (getattr(it, "sheet_hint", "") or "").strip().lower()))
+        edge_targets = self._fk_edge_targets(fk_edges) if fk_edges else {}
+
+        def _placeholder(value) -> str:
+            if not isinstance(value, str):
+                return ""
+            raw = value.strip()
+            if raw.startswith("<") and raw.endswith(">"):
+                return raw.strip("<>").strip()
+            return ""
+
+        n = 0
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            own = getattr(it, "produces_label", None)
+            if not own and getattr(it, "extras", None):
+                own = it.extras.get("produces")
+            own = str(own or "").strip().strip("<>").strip()
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            pk_names = {
+                self._field_name_norm(x)
+                for x in self._primary_field_names(stem, sheet)
+            }
+            if not pk_names:
+                pk_names = {"id"}
+            refs_by_col = {
+                col: _placeholder(value)
+                for col, value in fields.items()
+                if _placeholder(value)
+            }
+            non_pk_refs = {
+                label for col, label in refs_by_col.items()
+                if self._field_name_norm(col) not in pk_names
+            }
+            for col, label in list(refs_by_col.items()):
+                col_norm = self._field_name_norm(col)
+                if col_norm not in pk_names:
+                    continue
+                if not label or label == own or label not in produced:
+                    continue
+                if label in non_pk_refs:
+                    del fields[col]
+                    n += 1
+                    continue
+                # §自引用主键已绑上游（_bind_self_primary_to_upstream）：本列 FK 目标
+                # 的 producer 就是 label → 保留该绑定，不要回填成自己的 produces
+                # label（否则 school_spirit 的 神通id 又被打回 <new_school_spirit_id>）。
+                if edge_targets:
+                    _tgts = edge_targets.get((stem, sheet, col_norm)) or set()
+                    if _tgts and (produced_at.get(label) or set()) & _tgts:
+                        continue
+                if own:
+                    fields[col] = f"<{own}>"
+                    it.consumes_labels = [
+                        x for x in (getattr(it, "consumes_labels", None) or [])
+                        if str(x).strip().strip("<>").strip() != label
+                    ]
+                    n += 1
+                    continue
+                if not own:
+                    base = f"new_{stem}_id" if stem else "new_row_id"
+                    new_label = base
+                    suffix = 1
+                    while new_label in produced:
+                        suffix += 1
+                        new_label = f"{base}_{suffix}"
+                    fields[col] = f"<{new_label}>"
+                    it.produces_label = new_label
+                    if getattr(it, "extras", None) is not None:
+                        it.extras["produces"] = new_label
+                    produced.add(new_label)
+                    it.consumes_labels = [
+                        x for x in (getattr(it, "consumes_labels", None) or [])
+                        if str(x).strip().strip("<>").strip() != label
+                    ]
+                    n += 1
+                    continue
+        return n
 
     @staticmethod
     def _clean_self_consumes(intents: list[NLIntent]) -> int:
@@ -1571,6 +2535,9 @@ class ParseAgent:
                         new_prod = f"{prod}_{parent_pos + 1}"
                         clone.produces_label = new_prod
                         clone.extras["produces"] = new_prod
+                        for k, v in list(clone_fields.items()):
+                            if isinstance(v, str) and v.strip() == f"<{prod}>":
+                                clone_fields[k] = f"<{new_prod}>"
                     added.append(clone)
                     existing.add(label)
                 break
@@ -1697,6 +2664,297 @@ class ParseAgent:
                 n += 1
         return n
 
+    def _expand_enumerated_same_sheet_adds(self, intents: list[NLIntent], text: str) -> int:
+        if not intents or not text:
+            return 0
+
+        def _chunks() -> list[str]:
+            patterns = [
+                r"(第[一二三四五六七八九十\d]+条[:：]?.*?)(?=第[一二三四五六七八九十\d]+条[:：]?|$)",
+                r"(选项编号\s*\d+.*?)(?=选项编号\s*\d+|$)",
+            ]
+            out: list[str] = []
+            for pat in patterns:
+                for m in re.finditer(pat, text, re.S):
+                    chunk = m.group(1).strip(" ，,；;。")
+                    if chunk and chunk not in out:
+                        out.append(chunk)
+            return out
+
+        def _first_quote(s: str) -> str:
+            m = re.search(r"['\"]([^'\"]+)['\"]", s)
+            return m.group(1).strip() if m else ""
+
+        def _field_by_norm(keys: list[str], *needles: str) -> str:
+            for k in keys:
+                kn = self._field_name_norm(k)
+                if any(n in kn for n in needles):
+                    return k
+            return ""
+
+        def _extract(keys: list[str], chunk: str) -> dict:
+            out: dict = {}
+            key_col = _field_by_norm(keys, "key", "程序引用关键字")
+            if key_col:
+                m = re.search(r"\bkey\b\s*(?:用|=|为)?\s*([A-Za-z][A-Za-z0-9_]*)",
+                              chunk, re.I)
+                if m:
+                    out[key_col] = m.group(1)
+            type_col = _field_by_norm(keys, "type", "类型")
+            if type_col:
+                m = re.search(r"类型\s*(?:用|=|为)?\s*([A-Za-z0-9_\u4e00-\u9fff]+)",
+                              chunk)
+                if m:
+                    out[type_col] = m.group(1).strip(" ，,；;。")
+            value_col = _field_by_norm(keys, "value", "原文")
+            if value_col:
+                m = re.search(r"原文\s*['\"]([^'\"]+)['\"]", chunk)
+                out[value_col] = (m.group(1).strip() if m else _first_quote(chunk))
+
+            option_id_col = _field_by_norm(keys, "optionid", "选项编号")
+            if option_id_col:
+                m = re.search(r"选项编号\s*(\d+)", chunk)
+                if m:
+                    out[option_id_col] = int(m.group(1))
+            option_text_col = _field_by_norm(keys, "optiontext", "选项内容")
+            if option_text_col:
+                m = re.search(r"(?:文字|选项内容)\s*['\"]([^'\"]+)['\"]", chunk)
+                out[option_text_col] = (m.group(1).strip() if m else _first_quote(chunk))
+            func_col = _field_by_norm(keys, "functiontype", "功能类型")
+            if func_col:
+                m = re.search(r"功能类型\s*(\d+)", chunk)
+                if m:
+                    out[func_col] = int(m.group(1))
+            conv_col = ""
+            for k in keys:
+                kn = self._field_name_norm(k)
+                if "convid" in kn and "optionid" not in kn:
+                    conv_col = k
+                    break
+            if conv_col:
+                m = re.search(r"(?:跳到|跳转到|对话)\s*(\d+)", chunk)
+                if m:
+                    out[conv_col] = int(m.group(1))
+            return {k: v for k, v in out.items() if k and v is not None and str(v).strip() != ""}
+
+        chunks = _chunks()
+        if len(chunks) < 2:
+            return 0
+        import copy
+        n = 0
+        groups: dict[tuple[str, str], list[NLIntent]] = {}
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict) or not fields:
+                continue
+            groups.setdefault((
+                (getattr(it, "table_hint", "") or "").lower(),
+                (getattr(it, "sheet_hint", "") or "").lower(),
+            ), []).append(it)
+
+        for rows in groups.values():
+            exemplar = rows[0]
+            keys = [str(k) for row in rows
+                    for k in ((getattr(row, "extras", None) or {}).get("fields") or {}).keys()]
+            keys = list(dict.fromkeys(keys))
+            if not keys:
+                continue
+            has_batch_shape = (
+                bool(_field_by_norm(keys, "key", "程序引用关键字") and _field_by_norm(keys, "value", "原文"))
+                or bool(_field_by_norm(keys, "optionid", "选项编号") and _field_by_norm(keys, "optiontext", "选项内容"))
+            )
+            if not has_batch_shape:
+                continue
+            parsed = [_extract(keys, chunk) for chunk in chunks]
+            parsed = [p for p in parsed if p]
+            if len(parsed) <= len(rows):
+                continue
+            existing = {
+                tuple(sorted((str(k), repr(v)) for k, v in (((getattr(row, "extras", None) or {}).get("fields") or {}).items())))
+                for row in rows
+            }
+            for fields in parsed:
+                sig = tuple(sorted((str(k), repr(v)) for k, v in fields.items()))
+                if sig in existing:
+                    continue
+                clone = copy.deepcopy(exemplar)
+                clone.extras["fields"] = fields
+                clone.produces_label = None
+                clone.consumes_labels = []
+                clone.extras.pop("produces", None)
+                clone.extras.pop("consumes", None)
+                intents.append(clone)
+                existing.add(sig)
+                n += 1
+        return n
+
+    def _supplement_option_rows_from_text(self, intents: list[NLIntent], text: str) -> int:
+        if not intents or not text or not self._cli:
+            return 0
+        chunks = [
+            m.group(1).strip(" ，,；;。")
+            for m in re.finditer(r"(选项编号\s*\d+.*?)(?=选项编号\s*\d+|$)", text, re.S)
+        ]
+        if not chunks:
+            return 0
+
+        def _quote(s: str) -> str:
+            m = re.search(r"['\"]([^'\"]+)['\"]", s)
+            return m.group(1).strip() if m else ""
+
+        def _col_by_norm(cols: list[str], *needles: str) -> str:
+            for col in cols:
+                norm = self._field_name_norm(col)
+                if any(n in norm for n in needles):
+                    return col
+            return ""
+
+        stems = {
+            (getattr(it, "table_hint", "") or "").lower()
+            for it in intents
+            if getattr(it, "action", "") == "add" and getattr(it, "table_hint", "")
+        }
+        existing = {
+            ((getattr(it, "table_hint", "") or "").lower(),
+             (getattr(it, "sheet_hint", "") or "").lower(),
+             tuple(sorted((str(k), repr(v)) for k, v in (((getattr(it, "extras", None) or {}).get("fields") or {}).items()))))
+            for it in intents
+        }
+        n = 0
+        created_ids_by_stem: dict[str, list[int]] = {}
+        try:
+            tables = {p.stem.lower(): p for p in self._cli.list_tables()}
+        except Exception:
+            tables = {}
+        for stem in stems:
+            path = tables.get(stem)
+            if path is None:
+                continue
+            try:
+                sheets = [s for s in self._cli.get_sheets(path)
+                          if s and "说明" not in s and "CONFIG" not in s.upper()]
+            except Exception:
+                sheets = []
+            for sheet in sheets:
+                headers = self._headers_for(stem, sheet)
+                types = self._type_row_for(stem, sheet)
+                cols = []
+                for h, t in zip(headers, types):
+                    raw_type = str(t or "").split(":", 1)[0].strip()
+                    cols.append(raw_type or str(h or "").strip())
+                option_id_col = _col_by_norm(cols, "optionid", "选项编号")
+                option_text_col = _col_by_norm(cols, "optiontext", "选项内容")
+                if not option_id_col or not option_text_col:
+                    continue
+                func_col = _col_by_norm(cols, "functiontype", "功能类型")
+                conv_col = ""
+                for col in cols:
+                    norm = self._field_name_norm(col)
+                    if "convid" in norm and "optionid" not in norm:
+                        conv_col = col
+                        break
+                for chunk in chunks:
+                    m_id = re.search(r"选项编号\s*(\d+)", chunk)
+                    if not m_id:
+                        continue
+                    fields = {
+                        option_id_col: int(m_id.group(1)),
+                        option_text_col: _quote(chunk),
+                    }
+                    if func_col:
+                        m_func = re.search(r"功能类型\s*(\d+)", chunk)
+                        if m_func:
+                            fields[func_col] = int(m_func.group(1))
+                    if conv_col:
+                        m_conv = re.search(r"(?:跳到|跳转到|对话)\s*(\d+)", chunk)
+                        if m_conv:
+                            fields[conv_col] = int(m_conv.group(1))
+                    sig = (stem, sheet.lower(),
+                           tuple(sorted((str(k), repr(v)) for k, v in fields.items())))
+                    if sig in existing:
+                        continue
+                    intents.append(NLIntent(
+                        action="add",
+                        table_hint=stem,
+                        sheet_hint=sheet,
+                        raw=chunk,
+                        extras={"fields": fields, "source": "enumerated_option_fallback"},
+                        source="enumerated_option_fallback",
+                    ))
+                    existing.add(sig)
+                    created_ids_by_stem.setdefault(stem, []).append(int(m_id.group(1)))
+                    n += 1
+
+        for it in intents:
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not stem or not isinstance(fields, dict):
+                continue
+            option_id = None
+            for key, value in fields.items():
+                if "optionid" not in self._field_name_norm(key):
+                    continue
+                try:
+                    option_id = int(str(value).strip())
+                except ValueError:
+                    option_id = None
+                break
+            if option_id is not None and option_id not in created_ids_by_stem.setdefault(stem, []):
+                created_ids_by_stem[stem].append(option_id)
+
+        if created_ids_by_stem:
+            for it in intents:
+                stem = (getattr(it, "table_hint", "") or "").lower()
+                ids = sorted(created_ids_by_stem.get(stem) or [])
+                if not ids:
+                    continue
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if not isinstance(fields, dict):
+                    continue
+                for idx, oid in enumerate(ids):
+                    for key in (f"options[{idx}]", f"选项{idx + 1}"):
+                        if key in fields and str(fields.get(key) or "").strip():
+                            break
+                    else:
+                        headers = self._headers_for(stem, getattr(it, "sheet_hint", "") or "")
+                        types = self._type_row_for(stem, getattr(it, "sheet_hint", "") or "")
+                        for h, t in zip(headers, types):
+                            raw_type = str(t or "").split(":", 1)[0].strip()
+                            col = raw_type or str(h or "").strip()
+                            if self._field_name_norm(col) == self._field_name_norm(f"options[{idx}]"):
+                                fields[col] = oid
+                                n += 1
+                                break
+        return n
+
+    @staticmethod
+    def _compact_indexed_field_gaps(intents: list[NLIntent]) -> int:
+        n = 0
+        idx_re = re.compile(r"^(?P<base>.+)\[(?P<idx>\d+)\]$")
+        for it in intents or []:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            by_base: dict[str, list[tuple[str, int]]] = {}
+            for key in fields.keys():
+                m = idx_re.match(str(key))
+                if not m:
+                    continue
+                by_base.setdefault(m.group("base"), []).append((str(key), int(m.group("idx"))))
+            for base, items in by_base.items():
+                present = {idx for _, idx in items}
+                if 0 in present or len(items) != 1:
+                    continue
+                old_key, _old_idx = items[0]
+                new_key = f"{base}[0]"
+                if new_key in fields:
+                    continue
+                fields[new_key] = fields.pop(old_key)
+                n += 1
+        return n
+
     @staticmethod
     def _placeholder_family(label: str) -> str:
         s = str(label or "").strip().strip("<>").strip().lower()
@@ -1707,7 +2965,9 @@ class ParseAgent:
     @staticmethod
     def _placeholder_ordinal(label: str) -> int | None:
         s = str(label or "").strip().strip("<>").strip().lower()
-        m = re.search(r"_(\d+)(?=_id$)", s) or re.search(r"_(\d+)$", s)
+        m = (re.search(r"_(\d+)(?=_id$)", s)
+             or re.search(r"_(\d+)$", s)
+             or re.search(r"(\d+)(?=_id$)", s))
         if not m:
             return None
         try:

@@ -609,13 +609,19 @@ class SkillUpdater:
                     and _parse_iso(s.get("ts", "")) and (now - _parse_iso(s["ts"])) <= window)
         if count < AP_FAILED_OP_HITS:
             return
+        # §修复：confirm_abandoned 语义是"用户放弃了确认"（可能当时不想删、
+        # 误点、或在等更明确的指令），并不代表"该操作本身危险"。原用
+        # block_dry_run 会把 delete_row 永久阻断（正常删除再也做不了），且后续
+        # 每次删除失败又被 AI 归纳成新的 block_dry_run 反模式 → 自我强化死循环。
+        # 降级为 require_confirm：仍提示风险并要求二次确认，但允许用户确认后
+        # 继续执行，不再一刀切禁止。
         self._upsert_anti_pattern(AntiPattern(
             id=f"ap_fail_{table_stem}_{sheet}_{operation}".replace(" ", "_"),
             type="failed_operation",
             table_stem=table_stem, sheet=sheet, operation=operation,
             trigger="confirm_abandoned", occurrences=count,
             first_seen=ts, last_seen=ts,
-            action="block_dry_run", status="pending_review",
+            action="require_confirm", status="pending_review",
         ))
 
     def check_anti_pattern_upgrade(self, record: dict) -> Optional[dict]:
