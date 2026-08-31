@@ -293,3 +293,65 @@ def test_dotted_nested_col_type_not_from_sibling():
     # 坐标「200,0,150」在 tuple 列上是合法的
     assert v._coerce_field_simple(t_pos, "200,0,150")[0] is True
     assert re.search(r"\d", t_pos)
+
+
+# ───────────── A+：对话选项悬空占位符规则兜底补空壳 ─────────────
+# 背景：InteractionConv.options[N] 引用了 <opt_xxx_id>，但 DecomposeAgent
+# 漏拆对应的 InteractionConvOption producer（「下次再来/结束」类选项常被当
+# 作结束节点省略）。且 options[N]→InteractionConvOption 的 FK 边在 fk_edges
+# 里往往缺失，原 _backfill_dangling_placeholder_producers 查不到 target 就
+# 静默跳过 → Step1 unresolved_placeholder 硬失败。
+# 修复：无 FK 边时按「InteractionConv.options[N] 引用 opt_* 标签 → 目标表
+# InteractionConvOption」的规则确定性补空壳（零 LLM、零失败可能）。
+
+
+def test_aplus_rule_shell_backfills_dangling_option_producer():
+    """InteractionConv.options[N] 引用悬空 opt_* 标签 → 规则兜底补 InteractionConvOption。"""
+    pa = ParseAgent(cli=_ResCli())
+    pa._decompose_agent = None  # 模拟降级环境（纯规则兜底，不走 LLM 重拆）
+    raw = ("新增对话：点击弹出'欢迎光临，要不要看看我的货物？'，"
+           "选项'好的，看看'和'下次再来'。")
+    conv = _It("interaction", "InteractionConv",
+               {"prompt_text": "欢迎光临，要不要看看我的货物？",
+                "options[0]": "<opt_yes_id>", "options[1]": "<opt_no_id>"},
+               "conv_root_id")
+    # 有 opt_yes_id 的 producer，但 opt_no_id 悬空（无 producer、无 FK 边）
+    opt_yes = _It("interaction", "InteractionConvOption",
+                  {"option_text": "好的，看看"}, "opt_yes_id")
+    intents = [conv, opt_yes]
+    n = pa._backfill_dangling_placeholder_producers(intents, raw, [])
+    assert n == 1
+    shells = [it for it in intents
+              if (it.table_hint == "interaction"
+                  and it.sheet_hint == "InteractionConvOption"
+                  and it.produces_label == "opt_no_id")]
+    assert len(shells) == 1
+    # 空壳保证引用闭环：option_id 填上标签自身作为自引用 PK，可被 produced 集合接收
+    assert shells[0].extras["fields"]["option_id"] == "<opt_no_id>"
+    assert shells[0].extras.get("source") == "dangling_option_rule_shell"
+    # 补全后所有被引用占位符都应有 producer（不再 unresolved）
+    produced = {it.produces_label for it in intents}
+    assert "opt_no_id" in produced and "opt_yes_id" in produced
+
+
+def test_aplus_rule_shell_extracts_option_text_from_raw():
+    """空壳能从原文抽出 option_text（「下次再来」→ 不落空）。"""
+    pa = ParseAgent(cli=_ResCli())
+    pa._decompose_agent = None
+    raw = ("对话'请选择'，选项'确认前往'和'下次再来'。")
+    assert pa._extract_option_text_for_label(raw, "opt_no_id") == "下次再来"
+    # 抽不到的标签（如奖励对话的领取选项）返回空，不强填脏数据
+    assert pa._extract_option_text_for_label("随便一段没有选项的话", "opt_done_id") == ""
+
+
+def test_aplus_rule_shell_non_option_dangling_still_skipped():
+    """非对话选项的悬空占位符（无 FK 边）仍按原逻辑跳过，不臆测目标表。"""
+    pa = ParseAgent(cli=_ResCli())
+    pa._decompose_agent = None
+    raw = "新增物品并用到一个奖励包"
+    # item 的 reward_id 引用悬空，但消费者不是 InteractionConv.options → 不兜底
+    item = _It("item", "Item", {"reward_id": "<some_reward_id>"}, "new_item_id")
+    intents = [item]
+    n = pa._backfill_dangling_placeholder_producers(intents, raw, [])
+    assert n == 0
+    assert len(intents) == 1

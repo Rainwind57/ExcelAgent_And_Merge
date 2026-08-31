@@ -3205,6 +3205,41 @@ class ParseAgent:
             canon_key = re.sub(r"\d+$", "", canon_key)
         return canon_key
 
+    @staticmethod
+    def _extract_option_text_for_label(text: str, label: str) -> str:
+        """尽力而为地从原文抽取 `opt_*_id` 标签对应的选项文本。
+
+        标签命名不可靠（opt_no_id / opt_done_id / option_0_id 等），这里只做
+        启发式匹配，抽不到就返回空串（由 Step2 补值提示兜底，不强填脏数据）。
+          - 语义关键词：no→下次/不了；yes/go/ok→好的/看看/愿意；done/get/
+            reward/take→领取/确定。
+          - 兜底：取原文首个「选项'…'」/「选项"…"」里的引号短语。
+        """
+        s = str(label or "").strip().strip("<>").strip().lower()
+        quoted = re.findall(r"['\"‘’“”]([^'\"‘’“”]{1,40})['\"‘’“”]", str(text or ""))
+        candidates = [q.strip() for q in quoted if q.strip()]
+
+        def _pick(keys):
+            for q in candidates:
+                if any(k in q.lower() for k in keys):
+                    return q
+            return ""
+
+        if any(k in s for k in ("_no", "no_", "no", "quit", "exit", "back")):
+            for q in candidates:
+                if any(k in q.lower() for k in ("下次", "不了", "不要", "返回", "离开")):
+                    return q
+        if any(k in s for k in ("yes", "go", "ok", "accept", "yes_")):
+            for q in candidates:
+                if any(k in q.lower() for k in ("好的", "看看", "愿意", "确定", "出发")):
+                    return q
+        if any(k in s for k in ("done", "get", "reward", "take", "claim")):
+            for q in candidates:
+                if any(k in q.lower() for k in ("领取", "确定", "好的", "收下")):
+                    return q
+        # 兜底：首条含关键词的选项短语，或直接取首条
+        return _pick(["选项"]) or (candidates[0] if candidates else "")
+
     def _backfill_dangling_placeholder_producers(self, intents: list[NLIntent],
                                                  text: str, fk_edges: list) -> int:
         """悬空占位符定向补拆（框架级，不绑业务词）。
@@ -3228,8 +3263,11 @@ class ParseAgent:
           5. 重拆仍产空 / 异常 → 静默跳过，悬空标签留给 Step2/_clean_dangling_
              consumes 走原有软降级，不阻塞主链路（零回归底线）。
         """
-        if not intents or self._decompose_agent is None:
+        if not intents:
             return 0
+        # A+ 规则兜底是确定性补全，不依赖 LLM，即使 _decompose_agent 为空（如
+        # 离线测试/降级环境）也能工作；仅真正的 LLM 定向重拆分支需要它（那里
+        # 单独判空跳过）。故此处不再因 _decompose_agent is None 提前返回。
         # §多段路径修复：_compile_step1_references 传入的 fk_edges 只来自
         # 首段 locator_result（_parse_segments 的已知限制，历史遗留），跨段
         # 指令（如「引导 NPC」段的对话树在别的段）会漏掉该段真实产出的 FK 边，
@@ -3280,6 +3318,13 @@ class ParseAgent:
                 edge_by_child_col.setdefault((fs, fsh.lower(), key), (ts, tsh))
 
         targets: dict[tuple[str, str], list[str]] = {}
+        # A+ 规则兜底：无需 FK 边也能确定目标表的「悬空生产者」。
+        # 典型：InteractionConv.options[N]=<opt_xxx_id> 的消费者引用了对话选项，
+        # 但 DecomposeAgent 漏拆了对应的 InteractionConvOption 记录（LLM 常把
+        # 「下次再来/领取奖励后结束」这类无后续选项当作结束节点省略）。
+        # 规则直接推断目标表为 InteractionConvOption，且这类用确定性空壳补全
+        # （零 LLM、零失败可能），绕开「FK 边缺失 + LLM 二次产空」两个不确定点。
+        rule_shells: dict[tuple[str, str], list[str]] = {}
         for label in dangling:
             ctx = consumer_ctx.get(label)
             if not ctx:
@@ -3290,15 +3335,53 @@ class ParseAgent:
             target = (edge_by_child_col.get((c_stem, c_sheet.lower(), key_exact))
                      or edge_by_child_col.get((c_stem, c_sheet.lower(), key_wild)))
             if target is None or not target[0]:
+                # ── A+ 对话选项规则兜底（无 FK 边时）──────────────────────────
+                # InteractionConv.options[N] 引用的 opt_*/option_* 标签，目标表
+                # 固定为 InteractionConvOption（对话选项记录），无需 FK 边即可
+                # 确定。判定足够保守：消费者表/列、标签前缀双命中才兜底，不臆测
+                # 其他表。
+                label_l = str(label or "").strip().strip("<>").strip().lower()
+                is_opt_label = (label_l.startswith("opt_")
+                                or label_l.startswith("option_")
+                                or label_l in ("opt", "option"))
+                if (c_stem.lower() == "interaction"
+                        and str(c_sheet).lower() == "interactionconv"
+                        and str(c_col).lower().startswith("options")
+                        and is_opt_label):
+                    rule_shells.setdefault(
+                        ("interaction", "InteractionConvOption"), []).append(label)
                 continue
             targets.setdefault(target, []).append(label)
-        if not targets:
-            return 0
+        # 规则空壳优先于 LLM 重拆：对话选项目标表已被规则锁定，不走易产空的
+        # LLM 二次重拆，直接补确定性空壳 add（字段可从原文抽取 option_text）。
+        for (rs_stem, rs_sheet), rs_labels in rule_shells.items():
+            for rlabel in rs_labels:
+                fields = {"option_id": f"<{rlabel}>"}
+                text_opt = self._extract_option_text_for_label(text, rlabel)
+                if text_opt:
+                    fields["option_text"] = text_opt
+                # 奖励对话「领取奖励」选项无后续动作，option_function 留空由 Step2
+                # 校验/Step3 写盘决定；此处只保证引用闭环（producer 存在）。
+                nl = NLIntent(
+                    action="add", table_hint=rs_stem, sheet_hint=rs_sheet,
+                    raw=text, produces_label=rlabel,
+                    extras={"fields": fields, "produces": rlabel,
+                            "source": "dangling_option_rule_shell"},
+                    consumes_labels=[], source="splitter_baseline",
+                )
+                intents.append(nl)
+                self._think(f"A+规则兜底补 {rs_stem}/{rs_sheet} option 空壳"
+                            f"（{rlabel}，option_text={'有' if text_opt else '留空'}）")
+        n_rule = sum(len(v) for v in rule_shells.values())
 
+        # 其余悬空标签仍走既有 LLM 定向重拆（FK 边命中目标表的情形）
         _MAX_CALLS = 3
-        n_added = 0
+        n_added = n_rule
         calls = 0
         for (t_stem, t_sheet), labels in targets.items():
+            if self._decompose_agent is None:
+                # 降级环境无 decompose agent：仅规则兜底已补，其余留 Step2 软降级
+                continue
             if calls >= _MAX_CALLS:
                 break
             calls += 1

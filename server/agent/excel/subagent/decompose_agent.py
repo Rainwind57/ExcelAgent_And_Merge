@@ -1990,6 +1990,18 @@ class DecomposeAgent(LLMSubAgent):
                 if ("InteractionConv" in schema_block or "interaction" in schema_block.lower()) else ""
             )
             + (
+                "\n## ⚠ 对话树硬约束(InteractionConv/InteractionConvOption 相关指令必须遵守)\n"
+                "- 只要某条 InteractionConv 的 options[N] 字段写入了 \"<opt_xxx_id>\"，就【必须】"
+                "再产出一条同名的 InteractionConvOption add 意图（\"produces\":\"opt_xxx_id\"）"
+                "作为该选项记录，二者标签一一对应，不允许只引用不产出。\n"
+                "- 「下次再来/不了/离开/结束」这类【无后续动作的结束选项】同样必须产出对应的 "
+                "InteractionConvOption 记录（其 option_function 可空或指向结束动作），不要因为"
+                "\"没有后续\"就省略该选项记录——省略会导致 options[N] 的占位符悬空、整条指令校验失败。\n"
+                "- 若对话里要发放奖励，记得在对应选项/对话上把奖励配置（如 option_function / "
+                "effect 里的奖励包）也一并产出，不要只做跳转。\n"
+                if ("InteractionConv" in schema_block or "interaction" in schema_block.lower()) else ""
+            )
+            + (
                 "\n## ⚠ 多表候选时的选表决策（定位歧义场景）\n"
                 "当候选表有多个且表名相近/含同名别名（如 spawn_world_entity 与 spawn_*、"
                 "entity_prefab 与 pet/pet_evolve、item 与 equipment）时，按以下优先级选表：\n"
