@@ -207,7 +207,11 @@ def test_induce_empty_traces(tmp_path):
 
 
 def test_induce_dedup_same_trigger_pattern(tmp_path):
-    """两次 induce 同 trigger_pattern → yaml 中该 id 只一条（去重）。"""
+    """两次 induce 同 trigger_pattern → 暂存 yaml 中该 id 只一条（去重）。
+
+    AP_AI_HITS=3（收紧后的 AI 归纳 promote 阈值）：两次 induce occurrences=2 < 3，
+    ai_induction 候选留在 pending 暂存（不进 committed），去重后同 id 只一条。
+    """
     enhancer = MagicMock()
     enhancer.ai_induce_anti_pattern.return_value = [{
         "type": "semantic_pattern", "trigger_pattern": "conv_id,对话",
@@ -222,9 +226,11 @@ def test_induce_dedup_same_trigger_pattern(tmp_path):
         "table_stem": "interaction", "sheet": "InteractionConv",
     }]
     updater.induce_anti_patterns(_trace(), enhancer)
-    aps = updater.load_anti_patterns()
+    aps = updater.load_pending_anti_patterns()
     target = [a for a in aps if a.trigger_pattern == "conv_id,对话"]
     assert len(target) == 1  # 去重，不重复 append
+    assert target[0].occurrences == 2
+    assert target[0].status == "pending_review"
 
 
 def test_induce_invalid_type_filtered(tmp_path):

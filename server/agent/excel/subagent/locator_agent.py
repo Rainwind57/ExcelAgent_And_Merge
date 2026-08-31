@@ -345,6 +345,15 @@ class LocatorAgent(LLMSubAgent):
             for c in self._expand_by_fk(candidates, complex_input):
                 if not any(x.stem == c.stem for x in candidates):
                     candidates.append(c)
+        # §9.4 候选表通用 scorer：动词邻近度对弱置信段（conf<0.80）小幅加权，
+        # 让「动作词附近出现的实体名词」表在 cap 裁剪时优先保留（新增/绑定/
+        # 修改等动作主语表不被远距离 alias 挤掉）。强命中(>=0.80)不动，封顶
+        # 0.79 不跨强命中分界线。纯函数 0 LLM，失败降级原列表不阻塞。
+        try:
+            from ..locator.candidate_scorer import rescore_candidates as _rescore
+            candidates = _rescore(text, candidates)
+        except Exception:
+            logger.debug("候选表 scorer 失败,降级原列表", exc_info=True)
         # §P0-3 候选池总量上限：复杂多指令 + 规则ambiguous全收 + 列名补 + FK扩表
         # 可叠到 50+ 候选 → 并发主路径每表一次 LLM → 50 次 LLM 爆炸。
         # cap 默认 8（env 可调），按置信度降序保留，优先规则命中(高conf) + 列名专有列命中。
@@ -568,12 +577,16 @@ class LocatorAgent(LLMSubAgent):
             ))
         if not complex_input:
             return out
-        # BFS 多跳,跳数衰减置信度,2 跳上限
+        # BFS 多跳,跳数衰减置信度,2 跳上限。
+        # 跳数基准：原始候选表是 hop0，其 FK 邻接是 hop1（0.50），再远是 hop2（0.40）。
+        # 直接以候选为 BFS 种子（而非把 fk_inferred 也并入种子再标 hop），保证
+        # 「候选 quest → combat(hop1) + reward(hop2)」的契约稳定成立。
         import os as _os
         max_hops = max(1, int(_os.environ.get("CODEMAKER_LOCATOR_FK_HOPS", "2")))
-        seen = {c.stem for c in candidates} | inferred_targets
+        seed_stems = {c.stem for c in candidates}
+        seen = set(seed_stems) | set(inferred_targets)
         new_entries: list[tuple[str, int]] = []  # (stem, hop)
-        frontier = list(seen)
+        frontier = sorted(seed_stems)
         for hop in range(1, max_hops + 1):
             next_frontier: list[str] = []
             for s in frontier:
@@ -589,6 +602,8 @@ class LocatorAgent(LLMSubAgent):
         # 置信度衰减:hop1=0.50, hop2=0.40(每跳 -0.10)
         conf_by_hop = {1: 0.50, 2: 0.40}
         for stem, hop in new_entries:
+            if any(c.stem == stem for c in out):
+                continue
             out.append(CandidateTable(
                 stem=stem, confidence=conf_by_hop.get(hop, 0.30),
                 level="fk_expanded", matched_term=f"fk_h{hop}",
@@ -959,6 +974,11 @@ class LocatorAgent(LLMSubAgent):
                         if best is None or score > best[0]:
                             best = (score, to_sheet, to_col)
                     if best:
+                        # 跳过真正自环（同 stem 同 sheet 同列，如 item.Item.item→item）
+                        # ——PK 列名 == 本表 stem 时非跨表 FK。跨 sheet（如 InteractionConv
+                        # →InteractionConvOption）保留。
+                        if (to_stem == from_stem and best[1] == from_sheet):
+                            continue
                         edges.append(FKEdge(
                             from_stem=from_stem, from_sheet=from_sheet,
                             from_column=col,

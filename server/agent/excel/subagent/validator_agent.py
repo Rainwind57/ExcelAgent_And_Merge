@@ -236,6 +236,20 @@ def _label_from_consumes(value) -> Optional[str]:
     return None
 
 
+# 硬 issue 集合（§P26 用户原则：除主键冲突、主键缺失、类型出错、列名错外不校验）。
+# 供 validate_two_layer 与 §9.1 全字段编辑重校验复用，避免两处口径漂移。
+_HARD_ISSUE_TYPES = {
+    IssueType.UNIQUE_VIOLATION.value,
+    IssueType.TYPE_MISMATCH.value,
+    IssueType.COL_NOT_FOUND.value,
+}
+
+
+def _is_issue_hard(issue_type: str) -> bool:
+    """issue_type 是否属硬 issue（不涉及主键列缺失，后者需 pk_cols 判定）。"""
+    return str(issue_type or "") in _HARD_ISSUE_TYPES
+
+
 class ValidatorAgent(LLMSubAgent):
     """校验 Agent:produces 闭环 + 抑制过产 + 修正。
 
@@ -909,25 +923,35 @@ class ValidatorAgent(LLMSubAgent):
                         _resolved = col  # 表头含点分全名/末段子串，保留原键
                 if _resolved is None:
                     # 真找不到 → 幻觉/别名。给出该表真实列名清单 + 最相近猜测，
-                    # 让用户一眼看懂该填什么。
+                    # 让用户一眼看懂该填什么。规则层 _closest_header 匹配不到时，
+                    # 再走 LLM 列名消歧（真实列名植入 prompt 选最接近），命中则
+                    # 交下方 _renames 统一改名，消除 COL_NOT_FOUND + MISSING_REQUIRED。
                     _guess = self._closest_header(col_clean, headers, type_row)
-                    _avail = "、".join(
-                        _norm_col_name(h)
-                        for h in headers if h)[:200]
-                    _hint = (f"最相近的真实列可能是「{_guess}」，建议改填此列。"
-                             if _guess else
-                             "实在看不出与原列名相似的真实列名，建议填「删除此列」丢弃该字段。")
-                    issues.append(Issue(
-                        col=col, issue_type=IssueType.COL_NOT_FOUND.value,
-                        expected=f"列存在于 {stem}/{sheet} 表头",
-                        suggestion=(
-                            f"LLM 写的列名「{col}」是英文/别名，在表「{stem}/{sheet}」"
-                            f"的中文表头里找不到对应列。{_hint}"
-                            f"该表真实列名有：{_avail}。"
-                            f"请改填其中一个真实列名，或填「删除此列」丢弃该字段。"),
-                        value=val,
-                    ))
-                    continue
+                    if not _guess:
+                        _guess = self._resolve_col_with_llm(
+                            col_clean, val, headers, type_row,
+                            raw=getattr(it, "raw", "") or "")
+                    if _guess:
+                        # 命中真实列 → 记改名，落入下方统一 _renames 应用（不在此
+                        # 迭代中 mutate fields，避免 dict 迭代期改尺寸 RuntimeError）
+                        _resolved = _guess
+                        _renames[col] = _guess
+                    else:
+                        _avail = "、".join(
+                            _norm_col_name(h)
+                            for h in headers if h)[:200]
+                        _hint = "实在看不出与原列名相似的真实列名，建议填「删除此列」丢弃该字段。"
+                        issues.append(Issue(
+                            col=col, issue_type=IssueType.COL_NOT_FOUND.value,
+                            expected=f"列存在于 {stem}/{sheet} 表头",
+                            suggestion=(
+                                f"LLM 写的列名「{col}」是英文/别名，在表「{stem}/{sheet}」"
+                                f"的中文表头里找不到对应列。{_hint}"
+                                f"该表真实列名有：{_avail}。"
+                                f"请改填其中一个真实列名，或填「删除此列」丢弃该字段。"),
+                            value=val,
+                        ))
+                        continue
                 # 命中：归一到真实中文表头，后续类型/枚举/唯一/PK 检查按真实列进行
                 if _resolved and _resolved != col:
                     _real_clean = _norm_col_name(_resolved)
@@ -957,8 +981,10 @@ class ValidatorAgent(LLMSubAgent):
                         and not _is_placeholder and stem and sheet):
                     try:
                         from ..core.enum_resolver import get_enum_resolver as _ger
+                        from ..core.live_enum import resolve_label_full as _rlf
                         _er = _ger()
-                        _enum_val = _er.resolve_label(stem, sheet, col_clean, _val_str)
+                        _enum_val = _rlf(self._cli, stem, sheet, col_clean, _val_str,
+                                         resolver=_er)
                         if _enum_val is not None:
                             # 转码成功，改写 fields 值为数字码
                             fields[col] = _enum_val
@@ -1430,47 +1456,71 @@ class ValidatorAgent(LLMSubAgent):
         except Exception:
             return ""
 
+    def _resolve_col_with_llm(self, col, value, headers, type_row=None,
+                              raw=""):
+        """LLM 列名消歧：真实列名清单植入 prompt，让 LLM 从里面选最接近列。
 
-        """简化类型 coerce（int/float/bool/string）。占位符软跳过。
+        场景：LLM 在 fields 里用了表头不存在的列名（如 `"None"`——漏给列名，
+        或别名/英文键），规则层 `_closest_header` 匹配不到。此时把该表真实
+        列名（含 row2 类型）全量喂给 LLM，结合原列名 + 值语义选最接近的，
+        命中则改写 intent.fields 键，消除 COL_NOT_FOUND + 连带 MISSING_REQUIRED，
+        让整条 intent 走通而非被 skipped。
 
-        返回 (ok, err_msg)。完整 coerce（含枚举映射/数组/date）留 agent._coerce_value
-        写路径（validator 无 agent 引用，本版只做基础类型校验）。
+        返回：命中的真实中文表头名，或 ""（超时/失败/LLM 幻觉——幻觉列名
+        会被下方真实表头白名单校验拦掉，返回 "" 交原流程兜底）。
 
-        §P1-5 与写路径 coerce 能力对齐：原 int(s) 直接抛 ValueError，但写路径
-        agent._coerce_value 对 "703.0"(浮点串)/"1×1"(面积串拆首整数)能容错转。
-        能力不对称致 Step2 误报 TYPE_MISMATCH 硬阻断（写路径本可成功）。
-        现对 int 列容错：① 浮点串 int(float()) ② 含×x面积串拆首整数。
-        枚举中文标签(int列填"节日")仍报 TYPE_MISMATCH（交 Step2 ask，写路径也无枚举映射时失败）。
+        opt-in：env CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG=1 开启（默认 off，
+        与 forward_ref 同风格，避免 CI/无 LLM 环境意外产生额外调用）。
         """
-        if val is None:
-            return True, ""
-        s = str(val).strip()
-        if s == "" or s == "<auto>" or (s.startswith("<") and s.endswith(">")):
-            return True, ""  # 占位符/空软跳过
-        ct = (col_type or "").lower()
-        if "int" in ct and "id" not in ct:
-            try:
-                int(s)
-            except ValueError:
-                # §P1-5 容错1：浮点串 "703.0" → int(float("703.0"))=703
-                try:
-                    int(float(s))
-                except ValueError:
-                    # §P1-5 容错2：面积串 "1×1"/"2x2" 拆首整数
-                    import re as _re
-                    m = _re.match(r'\s*(\d+)', s)
-                    if m:
-                        return True, ""  # 能拆出首整数，写路径会转
-                    return False, f"期望 int,实际「{s}」"
-        elif "float" in ct or "double" in ct:
-            try:
-                float(s)
-            except ValueError:
-                return False, f"期望 float,实际「{s}」"
-        elif "bool" in ct:
-            if s not in ("true", "false", "True", "False", "1", "0", "是", "否"):
-                return False, f"期望 bool,实际「{s}」"
-        return True, ""
+        if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") != "1":
+            return ""
+        if not col or not headers:
+            return ""
+        sid = self._ensure_own_session()
+        if not sid:
+            return ""
+        cands = []
+        for _h, _t in zip(headers or [], type_row or []):
+            _n = _norm_col_name(_h)
+            if _n:
+                cands.append(_n + (f" ({_t})" if _t else ""))
+        if not cands:
+            return ""
+        _v = "" if value is None else str(value)
+        prompt = (
+            "配表列名消歧。系统在写一条配表操作时用了列名「%s」（值「%s」），"
+            "但该表真实表头里没有这个列名。\n"
+            "请从下面的【真实列名清单】中选出与它语义最接近的一个：\n"
+            "真实列名：%s\n"
+            "判断依据：列名含义 + 值「%s」的语义（如「九尾天狐·终焉」是名称）。\n"
+            "仅输出 JSON：{\"column\":\"选中的真实列名\"}，"
+            "若都不合适输出 {\"column\":\"\"}。"
+        ) % (str(col)[:40], _v[:60], "、".join(cands)[:800], _v[:60])
+        try:
+            raw_resp = self._call_llm_raw(prompt, timeout=30)
+        except Exception:
+            logger.warning("_resolve_col_with_llm 异常 col=%s", col, exc_info=True)
+            return ""
+        if not raw_resp:
+            logger.warning("_resolve_col_with_llm 空响应 col=%s", col)
+            return ""
+        m = re.search(r"\{.*\}", raw_resp, re.DOTALL)
+        if not m:
+            logger.warning("_resolve_col_with_llm 无 JSON col=%s", col)
+            return ""
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            logger.warning("_resolve_col_with_llm JSON 解析失败 col=%s", col)
+            return ""
+        picked = str(d.get("column", "") or "").strip()
+        # 幻觉防护：picked 必须是真实表头之一（精确匹配），否则丢弃
+        for _h in (headers or []):
+            if _norm_col_name(_h) == _norm_col_name(picked):
+                return _norm_col_name(_h)
+        logger.warning("_resolve_col_with_llm 选中列不在真实表头 col=%s picked=%s",
+                       col, picked[:40])
+        return ""
 
     # ── FK 拓扑层校验（§4.2）────────────────────────────────
 
@@ -1603,6 +1653,62 @@ class ValidatorAgent(LLMSubAgent):
 
     # ── 两段式整合（§4.1+4.2+4.5+4.6+4.7）────────────────────
 
+    @staticmethod
+    def _collect_produced_labels(intents: list) -> set:
+        """收集本批 produces label 集合（拓扑序推进，供占位符可解析豁免）。"""
+        try:
+            from ..core.operation_orchestrator import OperationOrchestrator
+            _ordered = OperationOrchestrator._topo_order(intents)
+        except Exception:
+            logger.debug("_topo_order 失败,降级原序", exc_info=True)
+            _ordered = list(range(len(intents)))
+        produced: set = set()
+        for _idx in _ordered:
+            if not isinstance(_idx, int) or _idx < 0 or _idx >= len(intents):
+                continue
+            _it = intents[_idx]
+            _pl = (getattr(_it, "produces_label", None)
+                   or (getattr(_it, "extras", None) or {}).get("produces"))
+            if _pl:
+                produced.add(str(_pl).strip())
+        return produced
+
+    @staticmethod
+    def _collect_unresolved_placeholder_issues(intent, produced_labels=None) -> list:
+        """单条 intent 的悬空占位符检测（抽成独立方法，供编辑回写后重校验复用）。
+
+        add intent 的 fields 里非 <auto> 占位符（<new_xxx>/<consume:label>），
+        且 label 不在 produced_labels（可解析豁免）内 → FORWARD_REF_BROKEN。
+        """
+        fields = getattr(intent, "extras", None) or {}
+        fields = fields.get("fields") if isinstance(fields, dict) else None
+        if not isinstance(fields, dict):
+            return []
+        produced = produced_labels or set()
+        issues: list[Issue] = []
+        for col, value in fields.items():
+            if not isinstance(value, str) or "<" not in value:
+                continue
+            if re.fullmatch(r"<\s*auto\s*>", value.strip()):
+                continue  # <auto> 可选留空
+            label = _label_from_consumes(value)
+            if label and label in produced:
+                continue  # 本批 produces 内 → 可解析
+            issues.append(Issue(
+                col=col,
+                issue_type=IssueType.FORWARD_REF_BROKEN.value,
+                expected="已解析的具体值（非占位符）",
+                suggestion=(
+                    f"列「{col}」的值现在是占位符「{value}」，还没变成真实数据。"
+                    f"占位符（尖括号 <...> 包住的内容）本该由前面某个操作先执行、"
+                    f"产出真实编号后自动回填，但当前那个前置操作没跑或没对上，"
+                    f"所以这里悬空了。解决方式二选一：① 确保生成该编号的前置"
+                    f"操作先执行；② 直接在此手动填入真实值（如具体 ID 数字），"
+                    f"或点「跳过」放弃此字段。"),
+                value=value,
+            ))
+        return issues
+
     def validate_two_layer(self, intents: list, schema_getter=None,
                            locator_result: LocatorResult = None,
                            data_getter=None, dry_run: bool = False) -> dict:
@@ -1671,64 +1777,16 @@ class ValidatorAgent(LLMSubAgent):
         # 命中即报 FORWARD_REF_BROKEN issue 进 merged → 下方硬阻断逻辑标 skipped。
         # <auto> 视为可选留空，不报（与 _classify_placeholder_fields 一致）。
         #
-        # §P0 可解析豁免：与 validate_fk_layer（:726-732）同构——按拓扑序推进
-        # produced 集合，只对「label 不在本批 produces 内」的占位符报 FORWARD_REF_BROKEN。
+        # §P0 可解析豁免：与 validate_fk_layer 同构——按拓扑序推进 produced 集合，
+        # 只对「label 不在本批 produces 内」的占位符报 FORWARD_REF_BROKEN。
         # 否则每条合法跨表链（<new_quest_id>）都被误报 → 交互模式假 ask 浪费轮次 /
         # 非交互带病落盘。复用 _topo_order + produces_label，不重复造轮子。
-        _ph_auto_re = re.compile(r"<\s*auto\s*>")
-        _ph_re = re.compile(r"<([^>]+)>")
-        # 收集本批 produces label 集合（拓扑序推进，含前序已产出）
-        try:
-            from ..core.operation_orchestrator import OperationOrchestrator
-            _ordered = OperationOrchestrator._topo_order(intents)
-        except Exception:
-            logger.debug("_topo_order 失败,降级原序", exc_info=True)
-            _ordered = list(range(len(intents)))
-        _produced_labels: set = set()
-        for _idx in _ordered:
-            if not isinstance(_idx, int) or _idx < 0 or _idx >= len(intents):
-                continue
-            _it = intents[_idx]
-            _pl = (getattr(_it, "produces_label", None)
-                   or (getattr(_it, "extras", None) or {}).get("produces"))
-            if _pl:
-                _produced_labels.add(str(_pl).strip())
-        for it in intents:
-            _fields = getattr(it, "extras", None) or {}
-            _fields = _fields.get("fields") if isinstance(_fields, dict) else None
-            if not isinstance(_fields, dict):
-                continue
-            _sid = id(it)
-            _ph_cols: list[str] = []
-            for _k, _v in _fields.items():
-                if not isinstance(_v, str) or "<" not in _v:
-                    continue
-                if not _ph_re.search(_v):
-                    continue
-                if _ph_auto_re.fullmatch(_v.strip()):
-                    continue  # <auto> 可选留空
-                # §P0 可解析豁免：占位符 label 在本批 produces 内 → 可解析，不报
-                _lbl = _label_from_consumes(_v)
-                if _lbl and _lbl in _produced_labels:
-                    continue
-                _ph_cols.append(_k)
-            if _ph_cols:
-                # 占位符悬空 = 跨表前序产出未对上 → FORWARD_REF_BROKEN
-                for _c in _ph_cols:
-                    _ph_val = _fields.get(_c, "")
-                    merged.setdefault(_sid, []).append(Issue(
-                        col=_c,
-                        issue_type=IssueType.FORWARD_REF_BROKEN.value,
-                        expected="已解析的具体值（非占位符）",
-                        suggestion=(
-                            f"列「{_c}」的值现在是占位符「{_ph_val}」，还没变成真实数据。"
-                            f"占位符（尖括号 <...> 包住的内容）本该由前面某个操作先执行、"
-                            f"产出真实编号后自动回填，但当前那个前置操作没跑或没对上，"
-                            f"所以这里悬空了。解决方式二选一：① 确保生成该编号的前置"
-                            f"操作先执行；② 直接在此手动填入真实值（如具体 ID 数字），"
-                            f"或点「跳过」放弃此字段。"),
-                        value=_fields.get(_c, ""),
-                    ))
+        _produced_labels = self._collect_produced_labels(intents)
+        for _it in intents:
+            _ph_issues = self._collect_unresolved_placeholder_issues(
+                _it, _produced_labels)
+            if _ph_issues:
+                merged.setdefault(id(_it), []).extend(_ph_issues)
         # 核心4:PK 冲突(UNIQUE_VIOLATION)前移到 validate 阶段阻断 + ask 用户
         # 原 O3 全软失败 → PK 冲突漏到 Step3 写盘才抓 + 误分类 unknown
         # 现对 UNIQUE_VIOLATION 预算建议 ID(max+1) → ask 接受/输入 → 改 intent
@@ -2187,6 +2245,38 @@ class ValidatorAgent(LLMSubAgent):
                             _drop_ids.add(id(_tobj))
             if _drop_ids:
                 tips = [t for t in (tips or []) if id(t) not in _drop_ids]
+            # §9.1 全字段可编辑回写：把同一 intent 的【硬阻断】issue 合并成一张
+            # 全字段编辑卡（目标表/动作/所有字段+值），用户改完回写 → 重跑 Step2。
+            # 阻断类 = UNIQUE_VIOLATION(非PK) / TYPE_MISMATCH / 主键列 MISSING_REQUIRED；
+            # ENUM_INVALID 非阻断，保留下方单列 value_input 卡片。避免旧逻辑对同一
+            # intent 逐列弹 ask 造成疲劳，且确保"确认≠跳过校验"（改完必重校验）。
+            _edit_groups: dict = {}
+            _edit_order: list = []
+            for _tip in (tips or []):
+                if not _is_blocking_tip(_tip):
+                    continue
+                _sid_e = (_tip.get("subtask_id") if isinstance(_tip, dict)
+                          else getattr(_tip, "subtask_id", ""))
+                if not _sid_e or _sid_e in _resolved_sids or _sid_e in _pk_resolved \
+                        or _sid_e in _pk_skipped:
+                    continue
+                if _sid_e not in _edit_groups:
+                    _edit_groups[_sid_e] = []
+                    _edit_order.append(_sid_e)
+                _edit_groups[_sid_e].append(_tip)
+            for _sid_e in _edit_order:
+                _it_e = _sid_to_intent.get(_sid_e)
+                if _it_e is None:
+                    continue
+                if getattr(self, "_ask_callback", None) is None:
+                    # 无 cb（CI/非交互）：不弹编辑卡，留给下方 per-tip 循环标 skipped
+                    # （保 ok=False 硬阻断语义，不静默放行）。
+                    continue
+                _reply_e = self._ask_full_field_edit(
+                    _it_e, _edit_groups[_sid_e],
+                    schema_getter=schema_getter, data_getter=data_getter)
+                # 无论 resolved 还是 skip，本 sid 已决策完成，per-tip 循环跳过
+                _resolved_sids.add(_sid_e)
             for tip in (tips or []):
                 _itype = (tip.get("issue_type") if isinstance(tip, dict)
                           else getattr(tip, "issue_type", ""))
@@ -3018,6 +3108,297 @@ class ValidatorAgent(LLMSubAgent):
             # 这里按每行 suggested 改名 / 无 suggested 删列，等价自动解决。
             self._apply_batch_to_intent(intent, _auto_columns(), delete_all=False)
         return _reply
+
+    # ── §9.1 全字段可编辑回写（Step2）─────────────────────────
+
+    def _field_hint(self, col: str, value, itype: str, col_type: str, suggested: str) -> str:
+        """全字段编辑卡的行级中文错误说明（业务口径：错在哪、该填什么）。"""
+        if not itype:
+            return ""
+        v = "" if value is None else str(value)
+        ct = (col_type or "").strip()
+        if itype == IssueType.TYPE_MISMATCH.value:
+            if ct and ct.lower() in ("int", "float", "number", "num", "long"):
+                if suggested:
+                    return (f"「{col}」需要 {ct} 类型，当前值「{v}」不是 {ct}"
+                            f"，建议填「{suggested}」，或点右侧「用 {suggested}」一键填入")
+                return (f"「{col}」需要 {ct} 类型，当前值「{v}」不是 {ct}"
+                        "，请填数字（如 2）")
+            return (f"「{col}」类型不符：当前值「{v}」，该列期望类型 {ct or '未标注'}")
+        if itype == IssueType.ENUM_INVALID.value:
+            return (f"「{col}」值「{v}」不在允许白名单内"
+                    + (f"，建议填「{suggested}」" if suggested else "，请填合法枚举值"))
+        if itype == IssueType.COL_NOT_FOUND.value:
+            return (f"「{col}」不是该表的真实列名"
+                    + (f"，最相近的是「{suggested}」" if suggested
+                       else "，请改填真实列名"))
+        if itype == IssueType.UNIQUE_VIOLATION.value:
+            return (f"「{col}」值「{v}」与已有行重复"
+                    + (f"，建议用「{suggested}」" if suggested
+                       else "，请换一个不重复的值"))
+        if itype == IssueType.MISSING_REQUIRED.value:
+            return f"「{col}」是必填列，请补填值"
+        return f"「{col}」校验未通过（{itype}），请修正"
+
+    def _field_enum_suggestion(self, intent, col: str, value, itype: str,
+                               col_type: str, data_getter=None) -> str:
+        """枚举列建议值：中文标签→数字码（enum_resolver 映射），无映射时
+        回退 data_getter.existing_values 最小数字。返回建议值（str）或 ""。"""
+        if itype not in (IssueType.TYPE_MISMATCH.value,
+                         IssueType.ENUM_INVALID.value):
+            return ""
+        if "int" not in str(col_type).lower():
+            return ""
+        _tbl = getattr(intent, "table_hint", "") or ""
+        _sht = getattr(intent, "sheet_hint", "") or ""
+        if not (_tbl and _sht and col):
+            return ""
+        _sug = ""
+        try:
+            from ..core.enum_resolver import get_enum_resolver as _ger
+            _er = _ger()
+            _mapping = _er.get_mapping(_tbl, _sht, col)
+            if _mapping:
+                if value and str(value).strip():
+                    _sug = str(_mapping.get(str(value), ""))
+                if not _sug:
+                    _sug = str(next(iter(_mapping.values())))
+        except Exception:
+            _sug = ""
+        if not _sug and data_getter is not None:
+            try:
+                _data = data_getter(intent) if callable(data_getter) else {}
+                _ev = (_data or {}).get("existing_values") or {}
+                _col_lower = (col or "").split(":")[0].strip().lower()
+                for _k, _v in (_ev or {}).items():
+                    if str(_k).lower() != _col_lower:
+                        continue
+                    if not isinstance(_v, (set, list, tuple)):
+                        continue
+                    _nums = []
+                    for _x in _v:
+                        try:
+                            _nums.append(int(_x))
+                        except (ValueError, TypeError):
+                            pass
+                    if _nums:
+                        _sug = str(min(_nums))
+                    break
+            except Exception:
+                _sug = ""
+        return _sug
+
+    def _build_editable_fields(self, intent, tips, schema_getter,
+                               data_getter=None) -> dict:
+        """构造全字段编辑卡的字段明细 + 可用真实列名。
+
+        Returns:
+            {"fields": [{col, value, suggested, invalid, issue_type,
+                         expected_type, hint}],
+             "available_columns": [...]}
+        """
+        _fields = (getattr(intent, "extras", None) or {}).get("fields")
+        _fields = _fields if isinstance(_fields, dict) else {}
+        headers, type_row = self._get_schema(intent, schema_getter)
+        available = [_norm_col_name(h) for h in headers if h]
+        bad: dict[str, dict] = {}
+        for t in (tips or []):
+            if not isinstance(t, dict):
+                continue
+            col = str(t.get("col") or "").strip()
+            if not col:
+                continue
+            bad[col] = {
+                "issue_type": t.get("issue_type", ""),
+                "suggestion": t.get("suggestion", ""),
+                "expected": t.get("expected", ""),
+                "suggested_id": t.get("_suggested_id"),
+            }
+        rows: list[dict] = []
+        for col, value in _fields.items():
+            col_s = str(col)
+            info = bad.get(col_s, {})
+            suggested = ""
+            if info:
+                itype = info.get("issue_type", "")
+                if itype == IssueType.COL_NOT_FOUND.value:
+                    suggested = self._closest_header(
+                        _norm_col_name(col_s), headers, type_row)
+                elif info.get("suggested_id") is not None:
+                    suggested = str(info.get("suggested_id"))
+            col_type = self._lookup_col_type(col_s, headers, type_row,
+                                             orig_col=col_s)
+            itype = info.get("issue_type", "")
+            # §枚举列建议值：TYPE_MISMATCH/ENUM_INVALID 的中文标签→数字码映射
+            if not suggested and itype in (IssueType.TYPE_MISMATCH.value,
+                                           IssueType.ENUM_INVALID.value):
+                suggested = self._field_enum_suggestion(
+                    intent, col_s, value, itype, col_type or "",
+                    data_getter=data_getter)
+            rows.append({
+                "col": col_s,
+                "value": "" if value is None else value,
+                "suggested": suggested or "",
+                "invalid": bool(info),
+                "issue_type": itype,
+                "expected_type": col_type or "",
+                "hint": self._field_hint(
+                    col_s, value, itype, col_type or "", suggested or ""),
+            })
+        return {"fields": rows, "available_columns": available}
+
+    def _apply_full_field_edit(self, intent, fields_reply: list) -> None:
+        """全字段编辑回写：整表覆盖 fields + 记录修正台账（供 Step4 沉淀）。
+
+        fields_reply: [{col, value, delete}]。delete=true 删列；col 空跳过。
+        重命名（键变化）经旧值匹配记录进 user_resolved_fields，供 Step4 归纳。
+        """
+        _fields = (getattr(intent, "extras", None) or {}).get("fields")
+        if not isinstance(_fields, dict):
+            return
+        _old = dict(_fields)
+        _next: dict = {}
+        for entry in (fields_reply or []):
+            if not isinstance(entry, dict):
+                continue
+            if bool(entry.get("delete")):
+                continue
+            col = str(entry.get("col", "") or "").strip()
+            if not col:
+                continue
+            _next[col] = entry.get("value", "")
+        _fields.clear()
+        _fields.update(_next)
+        _old_norm = {_norm_col(k): k for k in _old}
+        _next_norm = {_norm_col(k): k for k in _next}
+        for k, v in _old.items():
+            if _norm_col(k) not in _next_norm:
+                self._record_resolved_field(intent, k, v, "", "user")
+        for k, v in _next.items():
+            if _norm_col(k) in _old_norm:
+                oldk = _old_norm[_norm_col(k)]
+                if str(_old.get(oldk)) != str(v):
+                    self._record_resolved_field(intent, oldk, _old.get(oldk), v, "user")
+            else:
+                self._record_resolved_field(intent, k, "", v, "user")
+
+    def _revalidate_intents(self, intents, schema_getter=None,
+                            data_getter=None) -> list:
+        """编辑回写后重新跑 Step2 字段层 + 悬空占位符检测。
+
+        返回仍残留的 hard 类 tips（含 subtask_id），不含已解决的 warning。
+        """
+        field_map = self.validate_field_layer(intents, schema_getter, data_getter)
+        produced = self._collect_produced_labels(intents)
+        out: list[dict] = []
+        for it in intents:
+            sid = id(it)
+            for iss in (field_map.get(sid) or []):
+                d = iss.to_dict() if isinstance(iss, Issue) else dict(iss)
+                if _is_issue_hard(d.get("issue_type", "")):
+                    d["subtask_id"] = sid
+                    out.append(d)
+            for iss in self._collect_unresolved_placeholder_issues(it, produced):
+                d = iss.to_dict()
+                d["subtask_id"] = sid
+                out.append(d)
+        return out
+
+    def _ask_full_field_edit(self, intent, tips, schema_getter=None,
+                             data_getter=None) -> dict:
+        """§9.1 全字段可编辑表格 ask：一个失败 intent 展示所有字段供改。
+
+        回复 schema（前端 replyAskFullFieldEdit → /api/agent/reply）：
+          {mode:'field_edit', fields:[{col,value,delete}], delete_intent:bool}
+        - delete_intent=True → 整条 intent 删除（标 skipped，Step3 不写盘）
+        - fields 非空 → 整表回写 + _revalidate_intents 重校验；仍有硬 issue 继续问
+          （最多 3 轮），绝不在用户确认前放行进 Step3。
+        - 兼容遗留单字段回复 {mode:'field', value/custom_id/accept_suggest}。
+
+        无 cb（CI/非交互）→ 对硬 issue 标 skipped（不写盘），返回 skip。
+        """
+        cb = getattr(self, "_ask_callback", None)
+        if cb is None:
+            for t in (tips or []):
+                itype = (t.get("issue_type") if isinstance(t, dict)
+                         else getattr(t, "issue_type", "")) or ""
+                if _is_issue_hard(itype):
+                    self._mark_intent_skipped(intent)
+                    break
+            return {"mode": "skip"}
+        info = self._build_editable_fields(intent, tips, schema_getter,
+                                           data_getter=data_getter)
+        _tbl = getattr(intent, "table_hint", "") or ""
+        _sht = getattr(intent, "sheet_hint", "") or ""
+
+        def _issues_payload(ts):
+            return [dict(t) if isinstance(t, dict) else getattr(t, "to_dict", lambda: {})()
+                    for t in (ts or [])]
+
+        question = {
+            "reason": f"「{_tbl}/{_sht}」这一步有 {len(tips)} 处需要确认，可直接在表格里改。",
+            "error_type": "field_edit_table",
+            "table": _tbl, "sheet": _sht,
+            "action": getattr(intent, "action", "") or "add",
+            "attempted_strategies": "Step2 字段层 + FK 层校验",
+            "suggestion": "改列名/改值/删字段，或整条删除；提交后会重新校验，仍有问题会再次提示。",
+            "snip": (getattr(intent, "raw", "") or "")[:120],
+            "mode_hint": "field_edit_table",
+            "editable_fields": info["fields"],
+            "available_columns": info["available_columns"],
+            "issues": _issues_payload(tips),
+            "user_friendly": {
+                "reason": f"「{_tbl}」这一项有几个地方对不上，下面表格里直接改就行。",
+                "action": "改完点「提交修正」会重新检查一遍；实在不要这项就点「删除整条」。",
+            },
+        }
+        for _round in range(3):
+            try:
+                _reply = cb(question) or {"mode": "skip"}
+            except Exception:
+                logger.warning("_ask_full_field_edit cb 失败", exc_info=True)
+                return {"mode": "skip"}
+            if _reply.get("delete_intent"):
+                self._mark_intent_skipped(intent)
+                return {"mode": "skip"}
+            _fields_reply = _reply.get("fields")
+            if isinstance(_fields_reply, list) and _fields_reply:
+                self._apply_full_field_edit(intent, _fields_reply)
+                residual = self._revalidate_intents(
+                    [intent], schema_getter, data_getter)
+                if not residual:
+                    return {"mode": "field_edit", "resolved": True}
+                info = self._build_editable_fields(intent, residual, schema_getter,
+                                                   data_getter=data_getter)
+                question["editable_fields"] = info["fields"]
+                question["issues"] = _issues_payload(residual)
+                question["reason"] = (
+                    f"改了 {len(_fields_reply)} 处后仍有 {len(residual)} 处未通过，请继续修正。")
+                continue
+            _mode = _reply.get("mode") or ""
+            if _mode in ("field", "field_edit"):
+                _applied = False
+                for t in (tips or []):
+                    if isinstance(t, dict) and self._apply_issue_fix_to_intent(
+                            intent, t, _reply):
+                        _applied = True
+                residual = self._revalidate_intents(
+                    [intent], schema_getter, data_getter) if _applied else list(tips or [])
+                if not residual:
+                    return {"mode": "field_edit", "resolved": True}
+                info = self._build_editable_fields(intent, residual, schema_getter,
+                                                   data_getter=data_getter)
+                question["editable_fields"] = info["fields"]
+                question["issues"] = _issues_payload(residual)
+                question["reason"] = f"仍有 {len(residual)} 处未通过，请继续修正。"
+                continue
+            # skip / 其他未知模式：这些是硬阻断 issue，用户跳过必须标 skipped
+            # 阻断 Step3 写盘（不允许"确认后直接绕过硬错误进入 Step3"）。
+            self._mark_intent_skipped(intent)
+            return {"mode": "skip"}
+        # 3 轮仍未解决 → 标 skipped（不绕过硬错误进 Step3）
+        self._mark_intent_skipped(intent)
+        return {"mode": "skip"}
 
     def _apply_batch_to_intent(self, intent, columns_reply: list,
                                 delete_all: bool = False,

@@ -135,3 +135,11 @@ candidates:
   confidence: 1.0
   ts: '2026-08-20T17:09:14+08:00'
   source: llm_infer
+- stem: item
+  sheet: ItemBase
+  col: quality
+  label: 良品
+  value: 2
+  confidence: 0.7
+  ts: '2026-08-31T14:26:16+08:00'
+  source: llm_infer

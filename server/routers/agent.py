@@ -344,6 +344,9 @@ async def agent_reply(payload: dict = Body(...)):
         # 多行同名删除勾选：mode=field + selected_rows=[行号...]
         # （agent.py:_run_delete 的 row_multiselect ask 卡片消费）
         "selected_rows": payload.get("selected_rows"),
+        # §9.1 全字段可编辑表格：mode=field_edit + fields=[{col,value,delete}]
+        # + delete_intent（整条 intent 删除）
+        "delete_intent": bool(payload.get("delete_intent", False)),
     })
     return {"ok": True, "replied": True}
 

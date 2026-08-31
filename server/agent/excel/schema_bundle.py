@@ -25,6 +25,23 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+# §非业务 sheet 过滤：说明/CONFIG 等辅助 sheet 在 schema 读取时直接跳过，
+# 连读都不读。原因：(1) 它们是给策划看的说明/枚举页，不是业务数据；
+# (2) 空说明 sheet（height=0）会触发 python-calamine 的 Rust panic
+# （pet_evolve.xlsx「灵兽进化表说明」实测），跳过可根治该类崩溃。
+def _is_business_sheet_name(name) -> bool:
+    if not name:
+        return False
+    s = str(name).strip()
+    if s.upper() == "CONFIG":
+        return False
+    return not any(m in s for m in ("说明", "备注", "Sheet1", "程序用勿删", "勿删"))
+
+
+def _business_sheets(sheets) -> list:
+    return [s for s in (sheets or []) if _is_business_sheet_name(s)]
+
+
 def _resolver_of(agent):
     """取 agent 上的 TableResolver 实例（属性名兼容多写法）。"""
     for attr in ("_table_resolver", "resolver", "table_resolver"):
@@ -347,7 +364,9 @@ def build_data_getter(agent, intents: list = None, sheet_resolver=None):
                 get_sheets_fn = getattr(cli, "get_sheets", None)
                 if callable(get_sheets_fn):
                     _all_sheets = get_sheets_fn(path) or []
-                    _others = [s for s in _all_sheets if s != sheet]
+                    # 跳过说明/CONFIG 等非业务 sheet（不读、不参与 PK 冲突检测）
+                    _others = [s for s in _all_sheets
+                               if s != sheet and _is_business_sheet_name(s)]
                     for _sh in _others:
                         try:
                             _hdrs = (read_header(path, _sh)

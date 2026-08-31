@@ -240,6 +240,54 @@ def get_enum_overlay() -> dict:
     return out
 
 
+def get_enum_map_overlay() -> dict:
+    """校验规则中 enum_map:{标签:码} 列 -> {stem: {sheet: {col: {label: code}}}}。
+
+    与 enum:[...]（仅白名单）不同，enum_map 是「中文标签 → 数字码」语义映射，
+    供 label→code 转码（Step1/Step2/Step3 枚举解析链最高优先级——用户业务规则
+    显式声明 > 工作区现场发现 > L1 预生成缓存 > LLM 推断）。
+
+    支持两种写法：
+      enum_map: {凡品: 1, 良品: 2}          # dict 形态
+      enum_map: [{label: 凡品, value: 1}]   # list 形态（与 L1 values 同构）
+    列名键归一（去类型后缀/空白/小写），消费者按 _norm_col 比对。
+    """
+    rules = load_validate_rules()
+    out: dict = {}
+    for stem, sheets in rules.items():
+        if not isinstance(sheets, dict):
+            continue
+        for sheet, cfg in sheets.items():
+            cols = cfg.get("columns") if isinstance(cfg, dict) else None
+            if not isinstance(cols, dict):
+                continue
+            for col, meta in cols.items():
+                if not isinstance(meta, dict):
+                    continue
+                raw = meta.get("enum_map")
+                mapping: dict = {}
+                if isinstance(raw, dict):
+                    for lbl, v in raw.items():
+                        try:
+                            mapping[str(lbl)] = int(v)
+                        except (ValueError, TypeError):
+                            continue
+                elif isinstance(raw, (list, tuple)):
+                    for e in raw:
+                        if not isinstance(e, dict):
+                            continue
+                        lbl, v = e.get("label"), e.get("value")
+                        if lbl is not None and v is not None:
+                            try:
+                                mapping[str(lbl)] = int(v)
+                            except (ValueError, TypeError):
+                                continue
+                if mapping:
+                    col_norm = _norm_col(col)
+                    out.setdefault(stem, {}).setdefault(sheet, {})[col_norm] = mapping
+    return out
+
+
 def get_primary_key_overlay() -> dict:
     """校验规则中 sheet 级 ``primary_key`` 声明 -> {stem: {sheet: [col1, col2, ...]}}。
 
@@ -288,6 +336,7 @@ __all__ = [
     "get_value_constraints_overlay",
     "get_required_fields_overlay",
     "get_enum_overlay",
+    "get_enum_map_overlay",
     "get_primary_key_overlay",
     "reset_cache",
 ]

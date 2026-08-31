@@ -13,15 +13,17 @@ from .excel.codemaker_parser import PromptMode, mode_classify
 from .excel.nl_parser import NLIntent
 from .prompts import ROUTE_SYSTEM_PROMPT
 
-# 命中 ADD/MODIFY/DELETE 关键词即视为明确的表格操作意图，跳过 LLM 分类
-# 这一跳（省一次 create_session + 一次 prompt，最坏节省 50s×2 重试）。
-# 不含 QUERY：QUERY 关键词（"有哪些"/"是什么"等）与纯问答句式高度重叠，
-# 误判风险高，仍走 LLM 判定，保证 qa/crud 路由的语义准确性。
-_CRUD_SHORTCUT_MODES = (PromptMode.ADD, PromptMode.MODIFY, PromptMode.DELETE)
+# 规则兜底关键词：仅当 LLM 分类不可用/返回无法解析时才用（AI 为主判据）。
+# 不在这里做"命中即短路"——LLM 是主分类器，规则只负责兜底。
+_CRUD_RULE_FALLBACK_WORDS = (
+    "新增", "添加", "增加", "加一个", "加一条", "建一个", "配一个", "创建",
+    "放一个", "放个", "改成", "改为", "修改", "删除", "移除", "设置", "赋值",
+    "调整", "add", "insert", "create", "update", "delete", "remove", "set",
+)
 
 
 def make_classify_node(model, client, think=None):
-    """意图分类节点：先规则短路命中明确表格操作，否则 LLM 判定 qa / crud。
+    """意图分类节点：LLM 判定为主，规则兜底。
 
     think: 可选回调 (phase, detail)，分类决策后立即推送「意图分类完成」，
     使该事件早于 CRUD 步骤到达，阶段切分能归入 s1_decompose 气泡。
@@ -32,15 +34,16 @@ def make_classify_node(model, client, think=None):
         if not text:
             return {"intent": "qa", "summary": "空输入",
                     "qa_answer": "请输入您的问题或操作指令。"}
-        if mode_classify(text) in _CRUD_SHORTCUT_MODES:
-            if think:
-                think("意图分类完成", f"→ crud（规则短路）: {text[:60]}")
-            return {"intent": "crud", "summary": text[:60]}
         # 注入对话上下文摘要，帮助 LLM 消解代词（"它/这个/上一句"等）
         context = (state.get("context") or "").strip()
         ctx_block = f"\n\n## 对话上下文（最近操作摘要）\n{context}" if context else ""
         prompt = f"{ROUTE_SYSTEM_PROMPT}{ctx_block}\n\n现在分类：{text}"
-        resp = model.invoke([HumanMessage(content=prompt)])
+        try:
+            resp = model.invoke([HumanMessage(content=prompt)])
+        except Exception as e:
+            if think:
+                think("意图分类完成", f"→ LLM 调用失败，规则兜底: {str(e)[:60]}")
+            return _rule_fallback(text, think)
         parsed = client.extract_json_from_response(resp.content)
         if isinstance(parsed, dict) and "intent" in parsed:
             intent = parsed.get("intent", "qa")
@@ -48,9 +51,23 @@ def make_classify_node(model, client, think=None):
             if think:
                 think("意图分类完成", f"→ {intent}: {summary[:60]}")
             return {"intent": intent, "summary": summary}
-        raise RuntimeError(f"codemaker 意图分类失败：{resp.content[:200]}")
+        # LLM 返回无法解析的 JSON：降级为规则启发式，而不是让整条请求失败
+        if think:
+            think("意图分类完成", "→ LLM 输出无法解析，规则兜底")
+        return _rule_fallback(text, think)
 
     return classify_node
+
+
+def _rule_fallback(text: str, think=None) -> dict:
+    """规则启发式兜底：命中明确改表操作词 → crud；否则按 qa 处理。
+
+    宁可误判进问答，也不让整条链路崩。
+    """
+    t = (text or "").lower()
+    if any(w in t for w in _CRUD_RULE_FALLBACK_WORDS):
+        return {"intent": "crud", "summary": text[:60]}
+    return {"intent": "qa", "summary": text[:60]}
 
 
 def make_qa_node(qa_tool):

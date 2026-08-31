@@ -59,7 +59,7 @@ def test_npc_dialogue_reference_chain_correct():
 
 
 def test_npc_dialogue_produces_complete():
-    """D3: produces 标注完整 + spawn_id 独立。"""
+    """D3: produces 标注完整 + spawn produces 独立（new_spawn_id）。"""
     info = {"name": "铁匠", "model_id": "", "space_id": "100",
             "pos": None, "conv": "你好", "options": ["A"]}
     intents = _build_npc_dialogue_intents(info)
@@ -67,7 +67,7 @@ def test_npc_dialogue_produces_complete():
     assert produces["entity_prefab.Base"] == "new_prefab_id"
     assert produces["interaction.Interaction"] == "new_interaction_id"
     assert produces["interaction.InteractionConv"] == "new_conv_id"
-    assert produces["spawn_world_entity.SpawnWorldEntity"] == "spawn_id"  # D3 独立标注
+    assert produces["spawn_world_entity.SpawnWorldEntity"] == "new_spawn_id"
 
 
 # ── D2 NPC 变体拆表模板 ──────────────────────────────────

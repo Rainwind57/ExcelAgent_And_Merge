@@ -801,6 +801,29 @@ def _extract_enums_from_sheet(ws) -> list[tuple[str, list[dict]]]:
                 if len(entries) >= 2:
                     _merge(col_name, entries)
 
+    # 格式4: 「标签行 + 配置数字行」块状排布（如「道具表说明」）
+    #   行i  : [列名, label1, label2, ...]
+    #   行i+1: [配置数字, value1, value2, ...]
+    _VALUE_MARKERS = ("配置数字", "值", "value", "数值", "数字", "码", "code", "编码")
+    for _i in range(len(rows) - 1):
+        _r = rows[_i]
+        if not _r:
+            continue
+        _col_name = _s(_r[0]) if _r[0] is not None else ""
+        _nxt = rows[_i + 1]
+        if not _col_name or not _nxt:
+            continue
+        if _s(_nxt[0]).lower() not in _VALUE_MARKERS:
+            continue
+        _labels = [_s(x) for x in _r[1:] if _s(x)]
+        _vals = [_int(x) for x in _nxt[1:]]
+        if len(_labels) < 2:
+            continue
+        _entries = [{"label": lbl, "value": val}
+                    for lbl, val in zip(_labels, _vals) if lbl and val is not None]
+        if len(_entries) >= 2:
+            _merge(_col_name, _entries)
+
     return results
 
 
@@ -847,17 +870,32 @@ def _discover_enum_from_explain_sheet(tables: Dict[str, TableMeta]) -> dict:
                 extracted = _extract_enums_from_sheet(ws)
                 if not extracted:
                     continue
-                # 匹配 data_sheets 中 int 列
+                # 匹配 data_sheets 中 int 列（精确优先，contains 放松兜底——
+                # 说明块列名常带前缀，如「道具品质」对应数据列「品质」）
                 for col_name, entries in extracted:
                     for sn, sm in tm.data_sheets.items():
                         for col in sm.columns:
-                            if col.clean_name == col_name and col.col_type == "int":
-                                mappings.setdefault(stem, {}).setdefault(
-                                    sn, {}).setdefault("columns", {})[
-                                    col_name] = {
-                                    "type": "int",
-                                    "values": entries,
-                                }
+                            if col.col_type != "int":
+                                continue
+                            _cn = col.clean_name
+                            _hit = _cn == col_name
+                            if not _hit:
+                                _hit = (col_name and _cn
+                                        and (col_name in _cn or _cn in col_name))
+                            if not _hit:
+                                continue
+                            # 统一以数据列真实名做键（EnumResolver 按数据列名查）
+                            _bucket = mappings.setdefault(stem, {}).setdefault(
+                                sn, {}).setdefault("columns", {})
+                            if _cn not in _bucket:
+                                _bucket[_cn] = {"type": "int", "values": list(entries)}
+                            else:
+                                # 同列多来源合并（保留首次 + 追加新 label）
+                                _existing = {e["label"] for e in _bucket[_cn]["values"]}
+                                for e in entries:
+                                    if e["label"] not in _existing:
+                                        _bucket[_cn]["values"].append(e)
+                                        _existing.add(e["label"])
             wb.close()
         except Exception:
             continue
@@ -865,9 +903,108 @@ def _discover_enum_from_explain_sheet(tables: Dict[str, TableMeta]) -> dict:
     return mappings
 
 
+def _discover_enum_from_type_sheets(tables: Dict[str, TableMeta],
+                                    mappings: dict) -> None:
+    """8.5: 类型查询表（*Type/*类型 sheet）作为权威"码→名称"枚举源。
+
+    通用判据：sheet 标题以 Type/类型 结尾，且含一个 int 码列 + 一个 string
+    名称列。提取 {名称: 码} 后，映射到同工作簿内「int 数据列」——以类型表的
+    码列显示名（row1）为锚点精确匹配（ItemType 的码列「道具类型」↔ ItemBase
+    的「道具类型」），匹配不上则回退名称列 contains 匹配。
+
+    优先级高于说明 sheet 的块状枚举（说明 sheet 可能陈旧，如「道具表说明」的
+    道具类型 1=普通 与 ItemType 的 1=资源 冲突，代码表为准）→ 覆盖写入。
+    """
+    import openpyxl
+
+    def _s(v):
+        return "" if v is None else str(v).strip()
+
+    def _int(v):
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None
+
+    _TYPE_SHEET_RE = re.compile(r"(Type|类型)$", re.IGNORECASE)
+    for stem, tm in tables.items():
+        try:
+            wb = openpyxl.load_workbook(tm.path, data_only=True)
+        except Exception:
+            continue
+        try:
+            data_sheets = tm.data_sheets
+            for ws in wb.worksheets:
+                _title = _s(ws.title)
+                if not _title or not _TYPE_SHEET_RE.search(_title):
+                    continue
+                rows = list(ws.iter_rows(values_only=True))
+                if len(rows) < 3 or not rows[0] or not rows[1]:
+                    continue
+                headers = [_s(h).split(":")[0].strip() for h in rows[0]]
+                # 保留完整类型标注（含 ":int"/":string" 后缀）供类型判定；
+                # 规范名列另算（split ":" 后取 [0]）
+                type_annot = [_s(t).lower() for t in rows[1]]
+                type_base = [_s(t).split(":")[0].strip().lower() for t in rows[1]]
+                code_idx = name_idx = None
+                code_header = name_header = ""
+                for _i, _ta in enumerate(type_annot):
+                    _tb = type_base[_i] if _i < len(type_base) else ""
+                    _hd = headers[_i] if _i < len(headers) else ""
+                    if code_idx is None and (":int" in _ta or _ta.endswith(":int")
+                                             or _ta.endswith(":integer")):
+                        code_idx = _i
+                        code_header = _hd
+                    if name_idx is None and _i != code_idx and (
+                            ":string" in _ta or ":str" in _ta
+                            or "name" in _tb or "title" in _tb
+                            or "名称" in _hd or "名字" in _hd):
+                        name_idx = _i
+                        name_header = _hd
+                    if code_idx is not None and name_idx is not None:
+                        break
+                if code_idx is None or name_idx is None:
+                    continue
+                entries = []
+                for r in rows[2:]:
+                    if not r:
+                        continue
+                    code = _int(r[code_idx]) if code_idx < len(r) else None
+                    label = _s(r[name_idx]) if name_idx < len(r) else ""
+                    if code is not None and label:
+                        entries.append({"label": label, "value": code})
+                if len(entries) < 2:
+                    continue
+                for sn, sm in data_sheets.items():
+                    for col in sm.columns:
+                        if col.col_type != "int":
+                            continue
+                        _cn = col.clean_name
+                        _hit = False
+                        if code_header and (_cn == code_header
+                                            or (code_header in _cn or _cn in code_header)):
+                            _hit = True
+                        elif name_header and (name_header in _cn or _cn in name_header):
+                            _hit = True
+                        if not _hit:
+                            continue
+                        # 权威覆盖：代码表为准，整体替换说明 sheet 的旧映射
+                        mappings.setdefault(stem, {}).setdefault(
+                            sn, {}).setdefault("columns", {})[_cn] = {
+                            "type": "int",
+                            "values": entries,
+                        }
+        finally:
+            wb.close()
+
+
 def generate_enum_mappings(tables: Dict[str, TableMeta]) -> dict:
     """从表结构自动生成枚举值映射配置。"""
     discovered = _discover_enum_from_explain_sheet(tables)
+    # 8.5: 类型查询表（*Type/*类型 sheet，如 ItemType/QuestType/BuildingType）是
+    # 最权威的"码→名称"映射源，优先级高于说明 sheet 的块状枚举（说明可能陈旧）。
+    # 同列名冲突时类型表覆盖说明表条目（值以代码表为准）。
+    _discover_enum_from_type_sheets(tables, discovered)
     return {
         "version": "1.0",
         "auto_generated": True,

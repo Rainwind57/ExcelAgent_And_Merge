@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Optional
 
 from .base import SubAgent
@@ -125,6 +126,40 @@ class DecomposeAgent(LLMSubAgent):
         # 同 session 内主路径+兜底+段级重跑重复读同表头，缓存省 60-70% I/O。
         # 失效靠进程重启（配表 xlsx 结构静态，单进程内不变）。
         self._schema_cache: dict[tuple[str, str], tuple[list, list]] = {}
+        # §session 复用：主线程（串行路径）复用 self._sid；并行工作线程
+        # 用 threading.local 独立 session，避免同 session 并发请求冲突。
+        # 单条指令多次 decompose（主路径+重试+单表重拆）不再每次 create_session，
+        # 省 1 次 HTTP 建会话 RTT/调用。
+        self._tls = threading.local()
+
+    def _ensure_session(self) -> str:
+        """复用 codemaker session，避免每次 LLM 调用新建会话。
+
+        主线程复用 self._sid；工作线程用线程局部 session。
+        用空临时目录隔离（_isolated_empty_dir），避免 serve 端读资源目录致超时。
+        """
+        from .base import _isolated_empty_dir
+        client = getattr(self.parser, "client", None)
+        if client is None:
+            return ""
+        session_dir = _isolated_empty_dir()
+        if threading.current_thread() is threading.main_thread():
+            if getattr(self, "_sid", ""):
+                return self._sid
+            sr = client.create_session(directory=session_dir,
+                                       model=getattr(self.parser, "model", ""))
+            if getattr(sr, "ok", False):
+                self._sid = sr.session_id
+            return getattr(self, "_sid", "")
+        sid = getattr(self._tls, "session_id", "")
+        if sid:
+            return sid
+        sr = client.create_session(directory=session_dir,
+                                   model=getattr(self.parser, "model", ""))
+        if getattr(sr, "ok", False):
+            sid = sr.session_id
+            self._tls.session_id = sid
+        return sid
 
     def decompose(self, text: str, locator_result: LocatorResult,
                   force_single: bool = False) -> list:
@@ -996,21 +1031,19 @@ class DecomposeAgent(LLMSubAgent):
             raw = ""
             _resp_err = ""
             try:
-                sr = client.create_session(
-                    directory=_isolated_empty_dir(),
-                    model=getattr(self.parser, "model", ""))
-                if getattr(sr, "ok", False):
+                session_id = self._ensure_session()
+                if not session_id:
+                    _resp_err = "create_session failed"
+                else:
                     from .llm_gate import llm_throttle
                     with llm_throttle():
-                        resp = client.prompt(sr.session_id, prompt, timeout=per_to,
+                        resp = client.prompt(session_id, prompt, timeout=per_to,
                                               model=getattr(self.parser, "model", ""),
                                               cancel_event=_ce)
                     self._bump_llm("decompose")
                     raw = getattr(resp, "response_text", "") or ""
                     _resp_err = str(getattr(resp, "error", "")
                                     or getattr(resp, "error_type", "") or "")
-                else:
-                    _resp_err = "create_session failed"
                 if raw:
                     break  # 成功 → 出循环
             except Exception as e:  # noqa: BLE001
@@ -1138,15 +1171,13 @@ class DecomposeAgent(LLMSubAgent):
             backoff_base = float(_os.environ.get("CODEMAKER_DECOMPOSE_RETRY_BACKOFF", "1"))
             for _attempt in range(retries + 1):
                 try:
-                    sr = client.create_session(
-                        directory=_isolated_empty_dir(),
-                        model=getattr(self.parser, "model", ""))
-                    if not getattr(sr, "ok", False):
+                    session_id = self._ensure_session()
+                    if not session_id:
                         last_err = "建会话失败"
                     else:
                         from .llm_gate import llm_throttle
                         with llm_throttle():
-                            resp = client.prompt(sr.session_id, prompt, timeout=per_to,
+                            resp = client.prompt(session_id, prompt, timeout=per_to,
                                                   model=getattr(self.parser, "model", ""),
                                                   cancel_event=_local_ce)
                         self._bump_llm("decompose")
@@ -1617,6 +1648,172 @@ class DecomposeAgent(LLMSubAgent):
             lines.append(f"  {e.from_stem}.{e.from_sheet}.{e.from_column} → "
                          f"{e.to_stem}.{e.to_sheet}.{e.to_column}")
         return "\n".join(lines)
+
+    def _build_full_schema_block(self, stems: list[str]) -> tuple[str, dict]:
+        """不截断地构建指定 stem 的全部业务 sheet schema（供 LLM 自检补漏用）。
+
+        主 schema 块按 max_sheets/max_cols 裁剪，漏产的列名可能根本没出现在主
+        prompt 里。自检补漏 pass 必须给全量列，否则 LLM 无从得知还有哪些列可补。
+        返回 (schema 文本, 合法字段键表 {(stem, sheet): {列名...}})。
+        """
+        if self._cli is None:
+            return "", {}
+        try:
+            all_tables = {p.stem: p for p in self._cli.list_tables()}
+        except Exception:
+            return "", {}
+        lines: list[str] = []
+        allowed: dict[tuple[str, str], set] = {}
+        for stem in stems:
+            p = all_tables.get(stem)
+            if p is None:
+                continue
+            try:
+                sheets = self._cli.get_sheets(p) or []
+            except Exception:
+                continue
+            biz = [s for s in sheets if s and "说明" not in s and "CONFIG" not in s]
+            for sh in biz:
+                hdrs, trow = self._read_schema_cached(p, stem, sh)
+                if not hdrs:
+                    continue
+                cols = []
+                keys: set = set()
+                for h, t in zip(hdrs, trow):
+                    if not h:
+                        continue
+                    name = str(h) + (f"（{t}）" if t and str(t) != str(h) else "")
+                    cols.append(name)
+                    _disp = str(h).split(":")[0].strip()
+                    keys.add(_disp)
+                    keys.add(_disp.lower())
+                    if t:
+                        _base = str(t).split(":")[0].strip()
+                        keys.add(_base)
+                        keys.add(_base.lower())
+                lines.append(f"- {stem}/{sh}: " + " | ".join(cols))
+                allowed[(stem, sh)] = keys
+                allowed[(stem, sh.lower())] = keys
+        return "\n".join(lines), allowed
+
+    def _llm_complete_fields(self, text: str, intents: list, per_to: int) -> list:
+        """§能力级自检补漏：LLM 对照原文 + 全量 schema，补齐自己漏产的字面值字段。
+
+        不写死任何业务列名：漏哪个列、值取原文哪处，全部由 LLM 判断。代码只做两件
+        grounding 事——①给全量 schema（主块被裁剪，LLM 可能没看到那些列名）
+        ②把补出的列限制在真实表头白名单内（防幻觉列）。失败/关闭时原样返回不阻断。
+
+        兼容 SplitIntent（.fields 直挂）与 NLIntent（fields 在 .extras["fields"]）：
+        两类都在 ParseAgent._assemble 汇合后调用一次，避免每段各补一遍的 N× LLM 开销。
+        """
+        import os as _os
+        import json as _json
+        if not intents or self.parser is None:
+            return intents
+        if _os.getenv("CODEMAKER_DECOMPOSE_COMPLETE", "1") == "0":
+            return intents
+        client = getattr(self.parser, "client", None)
+        if client is None:
+            return intents
+        _add = [it for it in intents
+                if (getattr(it, "action", "") or "").strip().lower() == "add"]
+        if not _add:
+            return intents
+        stems = sorted({str(getattr(it, "table_hint", "") or "").strip()
+                        for it in _add if getattr(it, "table_hint", "")})
+        if not stems:
+            return intents
+        schema_full, allowed = self._build_full_schema_block(stems)
+        if not schema_full:
+            return intents
+
+        def _fields_of(it):
+            f = getattr(it, "fields", None)
+            if isinstance(f, dict):
+                return f
+            ex = getattr(it, "extras", None) or {}
+            f = ex.get("fields")
+            return f if isinstance(f, dict) else None
+
+        _cur = []
+        for it in intents:
+            _cur.append({
+                "table": getattr(it, "table_hint", "") or "",
+                "sheet": getattr(it, "sheet_hint", "") or "",
+                "action": getattr(it, "action", "") or "add",
+                "fields": dict(_fields_of(it) or {}),
+            })
+        prompt = (
+            "你是配表拆分自检员。下面是同一条指令的「真实表 schema」与你刚才拆出的"
+            "「意图清单」。请逐条对照指令，把【指令明确给了值、但意图 fields 里缺失】"
+            "的列补齐。\n\n"
+            f"## 指令\n{text}\n\n"
+            f"## 真实表 schema（全量列）\n{schema_full}\n\n"
+            "## 你刚才拆出的意图\n"
+            + _json.dumps(_cur, ensure_ascii=False, indent=2)
+            + "\n\n"
+            "## 规则\n"
+            "1. 只补真实 schema 里存在的列，值必须严格取自指令原文，不得瞎编；\n"
+            "2. int/float/bool 数字列：指令给中文标签就保留中文标签原词（下游会转码），"
+            "不要臆测数字；\n"
+            "3. 不得修改已有字段的值，不得增删/重排意图，不得改 table/sheet/action；\n"
+            "4. 指令没给值的列不要补。\n\n"
+            "## 输出\n只输出 JSON 数组（与输入意图同序同构，仅 fields 补缺），无其他文字。"
+        )
+        raw = self._call_llm_raw(prompt, timeout=max(20, per_to))
+        if not raw:
+            return intents
+        arr = self._parse_json_array(raw)
+        if not isinstance(arr, list):
+            return intents
+        merged = 0
+        for idx, item in enumerate(arr):
+            if idx >= len(intents) or not isinstance(item, dict):
+                continue
+            it = intents[idx]
+            if str(item.get("table", "") or "").strip().lower() != \
+                    str(getattr(it, "table_hint", "") or "").strip().lower():
+                continue
+            if str(item.get("sheet", "") or "").strip().lower() != \
+                    str(getattr(it, "sheet_hint", "") or "").strip().lower():
+                continue
+            if str(item.get("action", "") or "add").strip().lower() != "add":
+                continue
+            fields = _fields_of(it)
+            if fields is None:
+                fields = {}
+                ex = getattr(it, "extras", None)
+                if isinstance(ex, dict):
+                    ex["fields"] = fields
+                else:
+                    it.extras = {"fields": fields}
+            keys = allowed.get(
+                (str(getattr(it, "table_hint", "") or "").strip(),
+                 str(getattr(it, "sheet_hint", "") or "").strip()),
+                set())
+            if not keys:
+                continue
+            nf = item.get("fields") or {}
+            if not isinstance(nf, dict):
+                continue
+            for k, v in nf.items():
+                if not k:
+                    continue
+                _kb = str(k).split(":")[0].strip()
+                if any(str(ek).split(":")[0].strip() == _kb
+                       for ek in fields.keys()):
+                    continue  # 已有列不动
+                if _kb not in keys and _kb.lower() not in keys:
+                    continue  # 幻觉列不补
+                sv = v if v is not None else ""
+                if sv in ("", "<auto>"):
+                    continue
+                fields[k] = v
+                merged += 1
+        if merged:
+            self.add_thinking("细分",
+                f"DecomposeAgent 自检补漏 {merged} 个字段（LLM 对照原文补齐漏产）")
+        return intents
 
     # ── LLM prompt ─────────────────────────────────────────────
 

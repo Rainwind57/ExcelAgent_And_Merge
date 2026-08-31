@@ -745,9 +745,9 @@ class TestSplitterProducesPreserved:
         assert ("interaction", "new_interaction_id") in produces  # D1 新增 Interaction 链接表
         assert ("interaction", "new_conv_id") in produces or \
                ("interaction", "option_1_id") in produces
-        # D1/D3: spawn 现在有 produces=spawn_id（独立标注避免撞）
+        # D1/D3: spawn 有独立 produces=new_spawn_id（避免与 prefab 撞）
         spawn = [i for i in its if i.table_hint == "spawn_world_entity"]
-        assert spawn and spawn[0].extras.get("produces") == "spawn_id"
+        assert spawn and spawn[0].extras.get("produces") == "new_spawn_id"
 
     def test_produces_none_not_in_extras(self):
         from agent.excel.cross_table_splitter import SplitIntent

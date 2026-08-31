@@ -48,7 +48,9 @@ def _make_xlsx(tmp: Path) -> tuple[Path, Path, Path]:
 def test_reverse_cascade_delete(tmp_path, monkeypatch):
     quest_p, spawn_p, reward_p = _make_xlsx(tmp_path)
     cli = StubCodeMakerCLI(workspace=tmp_path)
-    agent = TableAgent(cli=cli, parser=_MockParser())
+    # live_index=False：临时目录 Agent 不刷新全局 _table_index.json，避免测试夹具
+    # 污染生产索引、破坏其它依赖索引的用例。
+    agent = TableAgent(cli=cli, parser=_MockParser(), live_index=False)
     # row_data 快照：quest 250003 行的 id 值
     row_data = {1: 250003}
 

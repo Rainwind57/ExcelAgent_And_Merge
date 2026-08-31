@@ -1885,3 +1885,21 @@ anti_patterns:
   action: require_confirm
   status: active
   source: rule
+- id: ap_ind__global__any_c393fec7
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-08-24T14:16:25+08:00'
+  last_seen: '2026-08-31T13:31:28+08:00'
+  action: require_confirm
+  status: active
+  source: ai_induction
+  trigger_pattern: 新增失败,ID,已存在
+  rationale: 新增行时用户手动指定的 ID 与表中已有主键冲突，报错'ID [xxx] 已存在'（如 600、25060001、100600），属典型高复发的主键冲突操作失败，多发生在未确认已占用
+    ID 就执行插入时。命中应提示改用自增分配或更换未占用 ID；同类'新增行失败'笼统错误多亦源于此。; 两条执行失败均为新增记录时手动指定的主键 ID 与已有记录冲突（30018、21），错误结构与文案完全一致，非单次偶发：凡以手工指定
+    ID 执行新增的批次操作都会重复触发撞号。正确修法是主键走自增分配而非手工指定，命中时应向用户确认后自动改用自增，避免再次失败。; 6条失败中有2条明确报'ID
+    [x] 已存在'，说明新增操作未先做主键查重，重复写入直接失败；同类操作重复发生，命中时应暂停让用户确认更换ID或改走自增分配，避免盲目重试同一ID。
+  fix:
+    auto_assign_pk: id

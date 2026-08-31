@@ -53,6 +53,75 @@ def _collect_placeholder_refs(value: Any) -> list[str]:
     return refs
 
 
+def _compile_entity_keys(plan: dict) -> tuple[dict, list[dict]]:
+    """§9.3：把 entity_key 引用编译为 produces 占位符协议（代码层唯一编译点）。
+
+    输入语义计划，扫描 entities 里的 entity_key / entity_id / produces：
+      - 有 produces → 该实体产出占位符，登记 label。
+      - 有 entity_key 但无 produces → 若其为「新增实体」且被其他实体引用，
+        分配稳定 produces label（new_<stem>_<key>_id），登记 key→label。
+    产出：
+      index: {key_str: {"idx": pos, "label": produces_label, "stem": table}}
+      report: [{type, idx, severity, extra}]（重复 key / 缺 produces 提示）。
+
+    这是纯数据变换（0 LLM），不绑定业务表；LLM 只需产出 entity_key + 中文名，
+    不再随意编 placeholder 名称，减少占位符漂移导致的连锁失败。
+    """
+    entities = _as_list(plan.get("entities"))
+    index: dict[str, dict] = {}
+    report: list[dict] = []
+    consumed_keys: set[str] = set()
+
+    # 第一遍：登记显式 produces / entity_key
+    for pos, entity in enumerate(entities, start=1):
+        if not isinstance(entity, dict):
+            continue
+        key = str(entity.get("entity_key") or entity.get("entity_id") or "").strip()
+        produces = _label(entity.get("produces"))
+        target = _as_dict(entity.get("target"))
+        stem = str(target.get("table") or entity.get("table") or "").strip()
+        if key:
+            if key in index:
+                report.append({
+                    "type": "duplicate_entity_key", "idx": pos,
+                    "severity": "soft", "extra": {"entity_key": key},
+                })
+                continue
+            if produces:
+                index[key] = {"idx": pos, "label": produces, "stem": stem}
+        # 收集被引用的 entity_key（references.entity_key）
+        for ref in _as_list(entity.get("references")):
+            if not isinstance(ref, dict):
+                continue
+            rk = str(ref.get("entity_key") or ref.get("ref") or "").strip()
+            if rk:
+                consumed_keys.add(rk)
+
+    # 第二遍：被引用的新增实体若未显式 produces → 分配稳定 label
+    for pos, entity in enumerate(entities, start=1):
+        if not isinstance(entity, dict):
+            continue
+        key = str(entity.get("entity_key") or "").strip()
+        if not key or key in index:
+            continue
+        op = str(entity.get("operation") or entity.get("action") or "add").strip().lower()
+        if op != "add":
+            continue  # set/delete/get 不产新 ID，不分配 produces
+        target = _as_dict(entity.get("target"))
+        stem = str(target.get("table") or entity.get("table") or "").strip()
+        if key in consumed_keys or any(r.get("entity_key") == key
+                                       for e2 in entities if isinstance(e2, dict)
+                                       for r in _as_list(e2.get("references"))
+                                       if isinstance(r, dict)):
+            label = f"new_{stem}_{key}_id" if stem else f"new_{key}_id"
+            index[key] = {"idx": pos, "label": label, "stem": stem}
+            report.append({
+                "type": "entity_key_compiled", "idx": pos,
+                "severity": "soft", "extra": {"entity_key": key, "label": label},
+            })
+    return index, report
+
+
 def compile_semantic_plan_to_intents(
         semantic_plan: dict, schema_getter=None) -> tuple[list[NLIntent], dict]:
     plan = _as_dict(semantic_plan)
@@ -65,6 +134,15 @@ def compile_semantic_plan_to_intents(
         row = {"type": issue_type, "idx": idx, "severity": severity}
         row.update(extra)
         issues.append(row)
+
+    # §9.3 entity reference 编译：LLM 输出 entity_key（稳定实体引用）+ 中文名，
+    # 代码层把「同实体多表配置」的引用统一编译为 produces 占位符。编译器产出
+    # {key, idx, produces_label} 映射，供 references 里 label 缺失时回填。
+    # 禁止 LLM 直接控制占位符协议（<resolved_from_xxx> 等），此处是唯一编译点。
+    _entity_key_index, _entity_compile_report = _compile_entity_keys(plan)
+    key_to_label = {str(k): v["label"] for k, v in _entity_key_index.items()}
+    for issue in _entity_compile_report:
+        add_issue(issue["type"], issue["idx"], issue["severity"], **issue.get("extra", {}))
 
     for pos, entity in enumerate(entities, start=1):
         if not isinstance(entity, dict):
@@ -107,6 +185,11 @@ def compile_semantic_plan_to_intents(
             add_issue("locator_missing", pos, severity="soft")
 
         produces = _label(entity.get("produces"))
+        # §9.3：entity_key 被引用但未显式 produces → 采用编译器分配的稳定 label
+        if not produces:
+            _ek = str(entity.get("entity_key") or "").strip()
+            if _ek and _ek in key_to_label:
+                produces = key_to_label[_ek]
         consumes: list[str] = []
         for value in fields.values():
             for label in _collect_placeholder_refs(value):
@@ -115,7 +198,16 @@ def compile_semantic_plan_to_intents(
         for ref in _as_list(entity.get("references")):
             if not isinstance(ref, dict):
                 continue
+            # §9.3 entity_key 引用：LLM 写 references 里 entity_key 时，
+            # 由编译器把 key 映射到对应实体的 produces_label（代码层编译
+            # 成 placeholder，LLM 不直接控制占位符协议）。
             label = _label(ref.get("label"))
+            if not label:
+                _ref_key = str(ref.get("entity_key") or ref.get("ref") or "").strip()
+                if _ref_key:
+                    _compiled = key_to_label.get(_ref_key) or key_to_label.get(_ref_key.lstrip("#"))
+                    if _compiled:
+                        label = _compiled
             if label and label != produces and label not in consumes:
                 consumes.append(label)
             field = str(ref.get("field") or "").strip()

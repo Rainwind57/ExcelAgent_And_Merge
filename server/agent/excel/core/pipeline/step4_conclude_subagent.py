@@ -18,11 +18,57 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 from .contracts import STEP4_CONCLUDE, StepContext, StepError, StepResult
 
 logger = logging.getLogger(__name__)
+
+
+def _collect_field_corrections(validated: list) -> list[dict]:
+    """§9.6：从 Step2 校验后的 intent 台账（user_resolved_fields）重建列别名纠正对。
+
+    Step2 全字段编辑里，用户把旧列名改成新列名时，_apply_full_field_edit 会记
+    两条台账：旧列 {old: 值, new: ""}（删除）+ 新列 {old: "", new: 值}（新增）。
+    此处按「同一值从旧列名移到新列名」重建改名对 (query=旧列名, resolved=新列名)，
+    供 Step4 沉淀为可审查的列别名候选（走既有 promote 门控，非写死代码）。
+
+    只取 source="user" 的黄金信号（用户明确手改）；source="auto" 是 AI 建议，
+    不作别名候选（避免把 LLM 猜测当真理）。
+    """
+    out: list[dict] = []
+    for it in (validated or []):
+        if not isinstance(it, dict) and not hasattr(it, "extras"):
+            continue
+        extras = getattr(it, "extras", None) or {}
+        book = extras.get("user_resolved_fields") or {}
+        if not isinstance(book, dict):
+            continue
+        table = getattr(it, "table_hint", "") or ""
+        sheet = getattr(it, "sheet_hint", "") or ""
+        deletes: dict[str, str] = {}  # 旧列名 -> 被删除列的原值
+        adds: dict[str, str] = {}     # 新列名 -> 新增列的值
+        for col, rec in book.items():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("source") != "user":
+                continue
+            old = str(rec.get("old", "") or "").strip()
+            new = str(rec.get("new", "") or "").strip()
+            if old and not new:
+                deletes[str(col)] = old
+            elif new and not old:
+                adds[str(col)] = new
+        for dcol, dval in deletes.items():
+            for acol, aval in adds.items():
+                if dval and dval == aval and dcol != acol:
+                    out.append({
+                        "table_stem": table, "sheet": sheet,
+                        "query": dcol, "resolved": acol,
+                    })
+                    break
+    return out
 
 
 def _prior_step_failures(ctx: StepContext) -> list[dict]:
@@ -147,6 +193,24 @@ class Step4ConcludeSubAgent:
                 logger.warning("Step4 反模式归纳失败（降级）", exc_info=True)
                 warnings.append(f"反模式归纳失败：{e}")
 
+        # §9.6 修复经验沉淀：把 Step2 用户手动字段修正（user_resolved_fields
+        # 台账里的改名对）沉淀为可审查的列别名候选，走 skill_updater 既有
+        # promote_with_guard 门控（快照→回归→回滚/隔离），不写死代码。
+        alias_ingested = 0
+        try:
+            s2 = ctx.get_result("step2_validate")
+            validated = (s2.artifacts.get("validated") if s2 else None) or []
+            _corrections = _collect_field_corrections(validated)
+            if _corrections:
+                from ..skill_updater import get_skill_updater
+                alias_ingested = get_skill_updater().ingest_field_corrections(_corrections)
+                if alias_ingested:
+                    warnings.append(
+                        f"沉淀 {alias_ingested} 条用户字段修正候选"
+                        f"（column_alias_candidates，待 promote 门控）")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Step4 修复经验沉淀失败（降级）", exc_info=True)
+
         return StepResult(
             step_id=STEP4_CONCLUDE, ok=all_ok,
             errors=errors, warnings=warnings,
@@ -155,6 +219,7 @@ class Step4ConcludeSubAgent:
                 "subtasks_ok": n_ok, "subtasks_fail": n_fail,
                 "subtasks_pending": n_pending,
                 "failures": len(failures),
+                "alias_ingested": alias_ingested,
             },
             artifacts={
                 # 不再复制 s3 的 failures/subtasks（run_v2 顶层直接从 s3 取，避免口径漂移）。

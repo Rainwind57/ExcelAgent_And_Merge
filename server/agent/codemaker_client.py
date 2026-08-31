@@ -641,6 +641,8 @@ class CodemakerClient:
         依次尝试：
           1. 整段直接 json.loads（最理想：纯 JSON 响应）
           2. 栈匹配提取首个完整 JSON 数组或对象（支持嵌套、跳过字符串内的括号）
+          3. 修复式解析：中文字符串内混入未转义 ASCII 双引号时修复（serve LLM 常见）
+          4. YAML 兼容：serve LLM 偶返 fenced ```yaml 或裸 YAML（无 {/[ 可栈匹配）
         返回 dict / list / None。多指令解析依赖此函数能正确返回数组。
         """
         if not response_text:
@@ -688,7 +690,13 @@ class CodemakerClient:
                 return json.loads(cand)
             except json.JSONDecodeError:
                 continue
-        # 3. YAML 兼容：serve LLM 偶返 fenced ```yaml 或裸 YAML（无 {/[ 可栈匹配）。
+
+        # 3. 修复式解析：中文字符串内混入未转义 ASCII 双引号
+        repaired = self._repair_quoted_json(response_text)
+        if repaired is not None:
+            return repaired
+
+        # 4. YAML 兼容：serve LLM 偶返 fenced ```yaml 或裸 YAML（无 {/[ 可栈匹配）。
         #    先剥 fence，再 yaml.safe_load，成功则返回（dict/list 均可）。
         #    失败静默降级返 None（保持原 None 语义，调用方走空响应处理）。
         yaml_text = response_text
@@ -705,6 +713,89 @@ class CodemakerClient:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _repair_quoted_json(response_text: str):
+        """修复中文字符串内未转义 ASCII 双引号的 JSON（serve LLM 常见故障）。
+
+        策略：定位最外层 { … }，逐字符扫描串值区域，把「串值内部成对的
+        裸 ASCII 双引号」还原为中文引号，再 json.loads。失败返回 None。
+        """
+        try:
+            open_idx = response_text.find("{")
+            if open_idx < 0:
+                return None
+            # 定位匹配的最外层 { }
+            depth = 0
+            close_idx = -1
+            in_str = False
+            esc = False
+            for i in range(open_idx, len(response_text)):
+                ch = response_text[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = i
+                        break
+            if close_idx < 0:
+                return None
+            body = response_text[open_idx:close_idx + 1]
+
+            # 逐字符重建：在串值内部遇到裸 "（前后都是非结构字符）→ 换中文引号
+            out = []
+            i = 0
+            n = len(body)
+            in_str = False
+            # 闭合引号后紧跟的结构字符（真实字符串结束的标志）
+            close_struct = (":", ",", "}", "]", " ", "\n", "\t")
+            while i < n:
+                ch = body[i]
+                if in_str:
+                    if ch == "\\" and i + 1 < n:
+                        out.append(ch)
+                        out.append(body[i + 1])
+                        i += 2
+                        continue
+                    if ch == '"':
+                        nxt = body[i + 1] if i + 1 < n else ""
+                        prev = body[i - 1] if i > 0 else ""
+                        # 真实闭合：后面是结构字符（: , } ] 空白/结尾）
+                        if nxt in close_struct or nxt == "":
+                            in_str = False
+                            out.append(ch)
+                        else:
+                            # 串值内部的裸引号 → 还原为中文引号
+                            out.append("\u201c")
+                        i += 1
+                        continue
+                    out.append(ch)
+                    i += 1
+                    continue
+                if ch == '"':
+                    in_str = True
+                    out.append(ch)
+                    i += 1
+                    continue
+                out.append(ch)
+                i += 1
+            try:
+                return json.loads("".join(out))
+            except json.JSONDecodeError:
+                return None
+        except Exception:
+            return None
 
     def list_models(self) -> list[dict]:
         """列出 codemaker serve 可用模型（GET /api/model）。

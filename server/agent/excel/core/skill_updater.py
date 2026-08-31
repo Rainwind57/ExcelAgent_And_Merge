@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -48,6 +49,8 @@ from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 import hashlib
 import threading
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .step_ai_enhancer import StepAIEnhancer
@@ -336,8 +339,46 @@ class SkillUpdater:
             "user_corrected": user_corrected,
         })
 
+    def ingest_field_corrections(self, corrections: list[dict]) -> int:
+        """§9.6：Step2 用户手动字段修正 → 沉淀为可审查的列别名候选。
+
+        corrections: [{table_stem, sheet, query(旧列名), resolved(新列名)}]。
+        这是 user_corrected=True 的黄金信号（用户明确手改，非 LLM 猜），
+        直接追加进 _pending/column_alias_candidates.jsonl，走既有 try_promote
+        的 promote_with_guard 门控（快照→回归→回滚/隔离），不写死代码。
+
+        返回实际落盘条数。失败只 warn，不阻断主流程。
+        """
+        if not corrections:
+            return 0
+        n = 0
+        ts = _now_iso()
+        for c in corrections:
+            if not isinstance(c, dict):
+                continue
+            query = (c.get("query") or "").strip()
+            resolved = (c.get("resolved") or "").strip()
+            table_stem = (c.get("table_stem") or "").strip()
+            if not query or not resolved or query == resolved:
+                continue
+            try:
+                _append_jsonl(self.candidates_path, {
+                    "table_stem": table_stem,
+                    "sheet": c.get("sheet") or "",
+                    "query": query,
+                    "resolved": resolved,
+                    "ts": ts,
+                    "confidence": 0.5,
+                    "user_corrected": True,
+                    "source": "step2_field_edit",
+                })
+                n += 1
+            except Exception:
+                logger.warning("ingest_field_corrections 追加候选失败", exc_info=True)
+        return n
+
     def _bump_runtime_alias(self, table_stem: str, sheet: str, query: str,
-                            resolved: str, ts: str) -> bool:
+                             resolved: str, ts: str) -> bool:
         """若 (table,sheet,query→resolved) 已在 runtime yaml → 更新 hits/last_seen/conf_avg。
         命中返回 True。"""
         if not _HAS_YAML or not self.runtime_aliases_path.exists():

@@ -43,7 +43,7 @@ def test_compare_runs_improved(tmp_path, monkeypatch):
     archive_run("s", {"summary": {"ok_rate": 0.80, "avg_elapsed_ms": 5000}}, "", tag="b")
     base_id = [p for p in tmp_path.glob("s_*.json")][0].stem[len("s_"):]
     archive_run("s", {"summary": {"ok_rate": 0.88, "avg_elapsed_ms": 4500}}, "", tag="c")
-    curr_id = [p for p in tmp_path.glob("s_*.json") if "c" in p.stem][0].stem[len("s_"):]
+    curr_id = [p for p in tmp_path.glob("s_*.json") if p.stem.endswith("_c")][0].stem[len("s_"):]
     diff = compare_runs(base_id, curr_id, "s")
     ok_diff = [d for d in diff["diffs"] if d["metric"] == "ok_rate"][0]
     assert ok_diff["status"] == "improved"
@@ -57,7 +57,7 @@ def test_compare_runs_regressed(tmp_path, monkeypatch):
     archive_run("s", {"summary": {"ok_rate": 0.9}}, "", tag="b")
     base_id = [p for p in tmp_path.glob("s_*.json")][0].stem[len("s_"):]
     archive_run("s", {"summary": {"ok_rate": 0.85}}, "", tag="c")
-    curr_id = [p for p in tmp_path.glob("s_*.json") if "c" in p.stem][0].stem[len("s_"):]
+    curr_id = [p for p in tmp_path.glob("s_*.json") if p.stem.endswith("_c")][0].stem[len("s_"):]
     diff = compare_runs(base_id, curr_id, "s")
     ok_diff = [d for d in diff["diffs"] if d["metric"] == "ok_rate"][0]
     assert ok_diff["status"] == "regressed"
@@ -68,7 +68,7 @@ def test_compare_runs_missing_metric_neutral(tmp_path, monkeypatch):
     archive_run("s", {"summary": {"ok_rate": 0.9}}, "", tag="b")
     base_id = [p for p in tmp_path.glob("s_*.json")][0].stem[len("s_"):]
     archive_run("s", {"summary": {"coverage": 0.8}}, "", tag="c")
-    curr_id = [p for p in tmp_path.glob("s_*.json") if "c" in p.stem][0].stem[len("s_"):]
+    curr_id = [p for p in tmp_path.glob("s_*.json") if p.stem.endswith("_c")][0].stem[len("s_"):]
     diff = compare_runs(base_id, curr_id, "s")
     ok_diff = [d for d in diff["diffs"] if d["metric"] == "ok_rate"][0]
     assert ok_diff["status"] == "neutral"
@@ -103,7 +103,7 @@ def test_error_type_distribution_diff(tmp_path, monkeypatch):
     base_id = [p for p in tmp_path.glob("s_*.json")][0].stem[len("s_"):]
     archive_run("s", {"summary": {"ok_rate": 0.85},
                       "error_type_distribution": {"type_mismatch": 8, "unknown": 7}}, "", tag="c")
-    curr_id = [p for p in tmp_path.glob("s_*.json") if "c" in p.stem][0].stem[len("s_"):]
+    curr_id = [p for p in tmp_path.glob("s_*.json") if p.stem.endswith("_c")][0].stem[len("s_"):]
     diff = compare_runs(base_id, curr_id, "s")
     etd = [d for d in diff["diffs"] if d["metric"] == "error_type_distribution"][0]
     tm = [e for e in etd["delta"] if e["error_type"] == "type_mismatch"][0]

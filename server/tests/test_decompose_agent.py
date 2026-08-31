@@ -23,6 +23,7 @@ from agent.excel.subagent.locator_agent import (
 from agent.excel.subagent.decompose_agent import DecomposeAgent
 from agent.excel.subagent.validator_agent import ValidatorAgent
 from agent.excel.cli_interface import StubCodeMakerCLI
+from agent.excel.core.cross_table_splitter import SplitIntent
 
 
 # ── Mock LLM:返回预设 JSON 数组 ──────────────────────────────
@@ -36,6 +37,7 @@ class MockLLMResponse:
 class MockClient:
     def __init__(self):
         self._next_response = ""
+        self._completion_response = ""
         self._llm_responses = {}  # 关键词 → 响应文本(模拟 Locator 的 LLM 裁决)
         # DecomposeAgent per-candidate 调用计数(R8g 改每表一 prompt,但测试预设是全表数组):
         # 首次调用返全数组(模拟 LLM 一次产全部 op),后续候选返空,避免每候选返全数组致翻倍。
@@ -45,6 +47,9 @@ class MockClient:
 
     def set_response(self, json_text):
         self._next_response = json_text
+
+    def set_completion_response(self, json_text):
+        self._completion_response = json_text
 
     def create_session(self, **kw):
         @dataclass
@@ -66,6 +71,9 @@ class MockClient:
                 cands = m.group(1).split("、")
                 return MockLLMResponse(cands[0].strip())
             return MockLLMResponse("pet")
+        # 自检补漏 pass 的 prompt
+        if "拆分自检员" in prompt:
+            return MockLLMResponse(self._completion_response or "[]")
         # DecomposeAgent per-candidate prompt(R8g 改每表一 prompt,但测试预设是全表数组):
         # 首次调用返全数组(模拟 LLM 一次产全部 op),后续候选返空数组,避免每候选返全数组致翻倍。
         # 多候选 ThreadPoolExecutor 并发调 prompt,用 lock 保首次计数原子。
@@ -494,6 +502,61 @@ def test_action_passthrough():
     assert len(intents) == 1
     assert intents[0].action == "set", f"action 透传错: {intents[0].action}"
     print("PASS action_passthrough: set action 正确透传")
+
+
+# ── 样例9b: 自检补漏 pass（LLM 对照原文+全量 schema 补齐漏产字段）──
+def test_llm_complete_fields_backfills_dropped_literals():
+    """LLM 漏产名称/描述时，自检 pass 用全量 schema + 原文补回，不硬编码列名。"""
+    parser = MockParser()
+    cli = make_cli()
+    da = DecomposeAgent(parser=parser, thinking_sink=lambda p, d: None, cli=cli)
+    # 自检 pass 的 LLM 响应：补回 名称/道具描述
+    parser.client.set_completion_response("""```json
+[
+  {"table":"item","sheet":"ItemBase","action":"add",
+   "fields":{"item_id":"<new_item_id>","quality":"良品","droppable":"True",
+             "icon":"Icon_iron_ore","名称":"寒铁矿石","道具描述":"打造装备的基础材料"}}
+]
+```""")
+    it = SplitIntent(
+        text='新增一个资源道具叫"寒铁矿石"',
+        table_hint="item", sheet_hint="ItemBase", action="add",
+        fields={"item_id": "<new_item_id>", "quality": "良品",
+                "droppable": "True", "icon": "Icon_iron_ore"},
+        produces="new_item_id",
+    )
+    out = da._llm_complete_fields(
+        '新增一个资源道具叫"寒铁矿石"，品质 2（良品），最大堆叠 999，'
+        '可丢弃，图标用 Icon_iron_ore，描述写"打造装备的基础材料"',
+        [it], 40)
+    assert len(out) == 1
+    assert out[0].fields.get("名称") == "寒铁矿石"
+    assert out[0].fields.get("道具描述") == "打造装备的基础材料"
+    # 已有字段不被覆盖
+    assert out[0].fields.get("icon") == "Icon_iron_ore"
+    assert out[0].fields.get("quality") == "良品"
+
+
+def test_llm_complete_fields_rejects_hallucinated_columns():
+    """自检 pass 只接受真实表头列名，LLM 幻觉列被丢弃。"""
+    parser = MockParser()
+    cli = make_cli()
+    da = DecomposeAgent(parser=parser, thinking_sink=lambda p, d: None, cli=cli)
+    parser.client.set_completion_response("""```json
+[
+  {"table":"item","sheet":"ItemBase","action":"add",
+   "fields":{"物品编号":"<new_item_id>","名称":"寒铁矿石","不存在的列":"幻觉值"}}
+]
+```""")
+    it = SplitIntent(
+        text='新增一个资源道具叫"寒铁矿石"',
+        table_hint="item", sheet_hint="ItemBase", action="add",
+        fields={"物品编号": "<new_item_id>"}, produces="new_item_id")
+    out = da._llm_complete_fields(
+        '新增一个资源道具叫"寒铁矿石"', [it], 40)
+    assert len(out) == 1
+    assert "名称" in out[0].fields
+    assert "不存在的列" not in out[0].fields
 
 
 # ── 样例10: 三 agent 完整链路 Locator→Decompose→Validator ──

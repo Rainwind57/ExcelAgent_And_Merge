@@ -2185,6 +2185,17 @@ class AgentService:
             # V2 路径：SSE event 已带 step_id（step1_parse 等），thinking 的 phase
             # 映射到对应 V2 阶段。废弃旧字符串前缀「Step1:」猜测（contracts 已禁）。
             if _V2:
+                # run_v2 的 stage_start/stage_end 用 title（"Step1 解析"）与
+                # step_id（"step1_parse"）作 phase 发 thinking，前端必须都能映射回
+                # 对应阶段，否则 step 卡片打不开（阶段气泡缺失）。
+                _sid_map = {
+                    "step1_parse": "step1_parse", "step2_validate": "step2_validate",
+                    "step3_execute": "step3_execute", "step4_conclude": "step4_conclude",
+                    "Step1 解析": "step1_parse", "Step2 校验": "step2_validate",
+                    "Step3 执行": "step3_execute", "Step4 汇总": "step4_conclude",
+                }
+                if phase in _sid_map:
+                    return _sid_map[phase]
                 if phase in ("意图分类", "问题分析", "解析", "路由",
                              "定位", "跨表探索", "计划", "分区"):
                     return "step1_parse"

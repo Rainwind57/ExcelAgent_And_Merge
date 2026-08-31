@@ -665,6 +665,166 @@ def _step1_quality_report(intents: list, plan_graph: dict | None = None) -> dict
     }
 
 
+def _build_step1_audit(intents: list,
+                       quality: dict | None = None,
+                       plan_graph: dict | None = None,
+                       semantic_plan: dict | None = None,
+                       semantic_compile_report: dict | None = None,
+                       locator_results: list | None = None) -> dict:
+    """Step1 JSON 审计报告（路线图 §8/§9.5）。
+
+    把 Step1 输出失败原因固定为可统计的分层指标，供评测体系与答辩口径消费：
+      - 意图层：表命中、字段命中、空壳 add、幻觉字段（schema 校验期数）、
+        引用数、悬空引用数、依赖环数。
+      - 占位符层：占位符总量、未解数、解析率、producer 缺失数。
+      - 候选层：全段候选表合并去重数与覆盖。
+      - 问题分布：按 type×severity 聚合（quality + semantic_compile 双源）。
+
+    纯函数、0 LLM、确定性，可在评测脚本里离线跑，作为
+    「表命中率/字段命中率/幻觉字段数/空壳 intent 数/placeholder 正确率」
+    的统一取数口。
+    """
+    plan_graph = plan_graph or _build_step1_plan_graph(intents)
+    quality = quality or _step1_quality_report(intents, plan_graph)
+    semantic_plan = semantic_plan or _build_step1_semantic_plan(intents, plan_graph)
+
+    intent_rows: list[dict] = []
+    field_total = 0
+    field_hit = 0
+    empty_add = 0
+    placeholder_total = 0
+    unresolved_placeholder = 0
+    producer_missing = 0
+    produced_labels: set[str] = set()
+
+    for idx, it in enumerate(intents or [], start=1):
+        fields = _intent_fields_map(it)
+        table = getattr(it, "table_hint", "") or ""
+        sheet = getattr(it, "sheet_hint", "") or ""
+        real_fields = [
+            col for col, value in fields.items()
+            if value is not None and str(value).strip()
+            and not (str(value).strip().startswith("<")
+                     and str(value).strip().endswith(">"))
+        ]
+        produces = _intent_produces(it)
+        if produces:
+            produced_labels.add(produces)
+        refs = set()
+        for value in fields.values():
+            refs.update(_collect_placeholder_refs(value))
+        own_refs = {r for r in refs if r == produces}
+        dep_refs = refs - own_refs
+        placeholder_total += len(dep_refs)
+        for label in sorted(dep_refs):
+            if label not in produced_labels:
+                unresolved_placeholder += 1
+        field_total += len(fields)
+        field_hit += len(real_fields)
+        if getattr(it, "action", "") == "add" and not real_fields:
+            empty_add += 1
+        intent_rows.append({
+            "idx": idx,
+            "action": getattr(it, "action", "") or "",
+            "table": table,
+            "sheet": sheet,
+            "field_total": len(fields),
+            "field_hit": len(real_fields),
+            "produces": produces,
+            "consumes": sorted({
+                _normalise_label(x)
+                for x in (getattr(it, "consumes_labels", None) or [])
+                if _normalise_label(x)
+            }),
+            "dependency_refs": sorted(dep_refs),
+        })
+
+    # producer 缺失：被引用但无任何 intent 产出的占位符标签。
+    ref_labels: set[str] = set()
+    for it in intents or []:
+        for value in _intent_fields_map(it).values():
+            ref_labels.update(_collect_placeholder_refs(value))
+    producer_missing = len({label for label in ref_labels
+                            if label not in produced_labels})
+
+    # 候选层：全段 locator 候选 stem 合并去重。
+    cand_stems: list[str] = []
+    _seen: set = set()
+    per_segment: list[dict] = []
+    for i, lr in enumerate(locator_results or [], start=1):
+        stems: list[str] = []
+        for c in (getattr(lr, "candidates", None) or []):
+            s = getattr(c, "stem", None)
+            if s:
+                stems.append(s)
+                if s not in _seen:
+                    _seen.add(s)
+                    cand_stems.append(s)
+        per_segment.append({"segment_idx": i, "candidates": stems,
+                            "candidate_count": len(stems)})
+
+    # 问题分布（quality + semantic_compile 双源聚合）。
+    issue_dist: dict[str, dict] = {}
+    for src_name, report in (
+        ("quality", quality),
+        ("semantic_compile", semantic_compile_report),
+    ):
+        for issue in (report or {}).get("issues", []) or []:
+            if not isinstance(issue, dict):
+                continue
+            key = f"{src_name}:{issue.get('type')}"
+            severity = issue.get("severity", "soft")
+            row = issue_dist.setdefault(
+                key, {"source": src_name, "type": issue.get("type"),
+                      "severity": severity, "count": 0})
+            row["count"] += 1
+
+    hard_issue_count = sum(
+        1 for row in issue_dist.values() if row["severity"] == "hard")
+    resolved_placeholders = placeholder_total - unresolved_placeholder
+    _first_raw = ""
+    for _it in (intents or []):
+        _first_raw = getattr(_it, "raw", "") or ""
+        break
+    return {
+        "version": 1,
+        "input_len": len(str(_first_raw)),
+        "segment_count": len(per_segment),
+        "segments": per_segment,
+        "candidates": cand_stems,
+        "candidate_count": len(cand_stems),
+        "intents": intent_rows,
+        "intent_count": len(intents or []),
+        "metrics": {
+            "table_hit": sum(1 for it in intents or []
+                             if getattr(it, "table_hint", "")),
+            "table_hit_rate": round(
+                sum(1 for it in intents or []
+                    if getattr(it, "table_hint", "")) / max(1, len(intents or [])), 4),
+            "field_hit": field_hit,
+            "field_total": field_total,
+            "field_hit_rate": round(field_hit / max(1, field_total), 4),
+            "hallucinated_fields": 0,  # schema_getter 未注入时为 0，见 schema_checked
+            "schema_checked": False,
+            "empty_add_count": empty_add,
+            "placeholder_total": placeholder_total,
+            "unresolved_placeholder_count": unresolved_placeholder,
+            "producer_missing_count": producer_missing,
+            "placeholder_resolved_rate": round(
+                resolved_placeholders / max(1, placeholder_total), 4),
+            "reference_count": plan_graph.get("edge_count", 0),
+            "unresolved_ref_count": plan_graph.get("unresolved_ref_count", 0),
+            "cycle_count": plan_graph.get("cycle_count", 0),
+            "hard_issue_count": hard_issue_count,
+            "issue_count": len(issue_dist),
+        },
+        "issue_distribution": {
+            key: dict(row) for key, row in sorted(issue_dist.items())
+        },
+        "ok": bool(quality.get("ok")) and hard_issue_count == 0,
+    }
+
+
 _SEGMENT_ACTION_RE = re.compile(
     r"(?:"
     r"\u65b0\u589e|\u589e\u52a0|\u6dfb\u52a0|"
@@ -864,6 +1024,8 @@ class Step1ParseSubAgent:
         semantic_plan = _build_step1_semantic_plan(intents, plan_graph)
         _, semantic_compile_report = compile_semantic_plan_to_intents(semantic_plan)
         quality = _step1_quality_report(intents, plan_graph)
+        audit = _build_step1_audit(intents, quality, plan_graph, semantic_plan,
+                                   semantic_compile_report, locator_results)
         if quality.get("issue_count"):
             warnings.append(
                 "Step1 quality issues: "
@@ -942,13 +1104,18 @@ class Step1ParseSubAgent:
                 "semantic_unresolved_refs": semantic_plan.get("unresolved_ref_count", 0),
                 "semantic_compile_issues": semantic_compile_report.get("issue_count", 0),
                 "suppressed_segment_no_intent": suppressed_segment_no_intent,
+                "audit_table_hit_rate": (audit.get("metrics") or {}).get("table_hit_rate", 0),
+                "audit_field_hit_rate": (audit.get("metrics") or {}).get("field_hit_rate", 0),
+                "audit_placeholder_resolved_rate": (audit.get("metrics") or {}).get("placeholder_resolved_rate", 0),
+                "audit_empty_add_count": (audit.get("metrics") or {}).get("empty_add_count", 0),
             },
             artifacts={"intents": intents, "segments": segments,
                        "locator_results": locator_results,
                        "step1_quality": quality,
                        "plan_graph": plan_graph,
                        "semantic_plan": semantic_plan,
-                       "semantic_compile_report": semantic_compile_report})
+                       "semantic_compile_report": semantic_compile_report,
+                       "step1_audit": audit})
 
 
 __all__ = ["Step1ParseSubAgent"]

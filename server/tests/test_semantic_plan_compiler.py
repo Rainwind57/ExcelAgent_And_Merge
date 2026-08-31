@@ -263,3 +263,64 @@ def test_compile_semantic_plan_skips_self_reference_consumes():
     assert report["ok"] is True
     assert intents[0].consumes_labels == []
     assert items[0]["consumes"] == {}
+
+
+def test_compile_entity_key_reference_to_placeholder():
+    """§9.3：LLM 只产 entity_key 引用 → 编译器映射为 produces 占位符。"""
+    plan = {
+        "entities": [
+            {
+                "entity_key": "boss",
+                "operation": "add",
+                "target": {"table": "entity_prefab", "sheet": "Base"},
+                "attributes": [{"name": "name", "value": "BOSS"}],
+                "produces": "new_prefab_id",
+            },
+            {
+                "entity_key": "boss_spawn",
+                "operation": "add",
+                "target": {"table": "spawn_world_entity", "sheet": "SpawnWorldEntity"},
+                "attributes": [{"name": "entity_prefab_id", "value": ""}],
+                "references": [
+                    {"field": "entity_prefab_id", "entity_key": "boss"},
+                ],
+            },
+        ],
+    }
+
+    intents, report = compile_semantic_plan_to_intents(plan)
+
+    assert report["ok"] is True
+    spawn = intents[1]
+    assert spawn.extras["fields"]["entity_prefab_id"] == "<new_prefab_id>"
+    assert spawn.consumes_labels == ["new_prefab_id"]
+
+
+def test_compile_entity_key_without_produces_gets_stable_label():
+    """被引用但未显式 produces 的 entity_key → 编译器分配稳定 label。"""
+    plan = {
+        "entities": [
+            {
+                "entity_key": "boss",
+                "operation": "add",
+                "target": {"table": "entity_prefab", "sheet": "Base"},
+                "attributes": [{"name": "name", "value": "BOSS"}],
+            },
+            {
+                "operation": "add",
+                "target": {"table": "spawn_world_entity", "sheet": "SpawnWorldEntity"},
+                "attributes": [{"name": "entity_prefab_id", "value": ""}],
+                "references": [
+                    {"field": "entity_prefab_id", "entity_key": "boss"},
+                ],
+            },
+        ],
+    }
+
+    intents, report = compile_semantic_plan_to_intents(plan)
+
+    assert report["ok"] is True
+    # 编译器分配的稳定 label：new_<stem>_<key>_id
+    assert intents[0].produces_label == "new_entity_prefab_boss_id"
+    assert intents[1].extras["fields"]["entity_prefab_id"] == "<new_entity_prefab_boss_id>"
+    assert intents[1].consumes_labels == ["new_entity_prefab_boss_id"]

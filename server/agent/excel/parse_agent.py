@@ -183,8 +183,24 @@ class ParseAgent:
         # 设 CODEMAKER_PARSE_SEGMENT_CONCURRENCY=0 可显式退回串行。
         concurrency = os.getenv("CODEMAKER_PARSE_SEGMENT_CONCURRENCY", "1") == "1"
 
-        def _do_one(seg):
-            seg_text = getattr(seg, "text", seg) if not isinstance(seg, str) else seg
+        # §9.2 跨段引用上下文继承：先对全部段做 0 LLM 指代消解，含回指的后段
+        # 拼「上文实体继承」上下文块（它/这个/前面那个→具体实体名），让段级
+        # decompose 知道指代对象，不再瞎猜。locate 也读增强文本（实体名利于别名命中）。
+        _raw_seg_texts = [
+            (getattr(s, "text", s) if not isinstance(s, str) else s)
+            for s in segs
+        ]
+        try:
+            from .parser.cross_ref_context import enrich_segments as _enrich_segs
+            _enriched_segs = _enrich_segs(_raw_seg_texts)
+        except Exception:
+            logger.warning("ParseAgent 跨段上下文继承失败,降级原段文本", exc_info=True)
+            _enriched_segs = list(_raw_seg_texts)
+
+        def _do_one(idx_seg):
+            idx, seg = idx_seg
+            seg_text = _enriched_segs[idx] if 0 <= idx < len(_enriched_segs) \
+                else (getattr(seg, "text", seg) if not isinstance(seg, str) else seg)
             if not seg_text or not seg_text.strip():
                 return []
             try:
@@ -234,6 +250,7 @@ class ParseAgent:
             return intents
 
         all_split: list = []
+        _seg_pairs = [(i, s) for i, s in enumerate(segs)]
         if concurrency and len(segs) >= 2:
             from concurrent.futures import ThreadPoolExecutor
             # §P1-2.1 deadline 检查：并发前若已超 Step1 deadline，冻结产出走 baseline
@@ -244,17 +261,17 @@ class ParseAgent:
                 return []  # 调用方走 _splitter_baseline
             with ThreadPoolExecutor(
                     max_workers=min(5, len(segs))) as ex:
-                for r in ex.map(_do_one, segs):
+                for r in ex.map(_do_one, _seg_pairs):
                     all_split.extend(r)
         else:
             import time as _t_dl2
             _dl = getattr(self, "_step1_deadline", None)
-            for seg in segs:
+            for idx, seg in enumerate(segs):
                 # §P1-2.1 每段前查 deadline，超时冻结剩余段
                 if _dl is not None and _t_dl2.monotonic() > _dl:
-                    self._think(f"ParseAgent Step1 deadline 超时，剩余 {len(segs)-segs.index(seg)} 段冻结")
+                    self._think(f"ParseAgent Step1 deadline 超时，剩余 {len(segs)-idx} 段冻结")
                     break
-                all_split.extend(_do_one(seg))
+                all_split.extend(_do_one((idx, seg)))
         if not all_split:
             self._think("ParseAgent 多段全产空,回退 splitter_baseline")
             return []
@@ -343,8 +360,10 @@ class ParseAgent:
                     _mapped = None
                     try:
                         from .core.enum_resolver import get_enum_resolver as _ger
+                        from .core.live_enum import resolve_label_full as _rlf
                         _er = _ger()
-                        _mapped = _er.resolve_label(stem, sheet, str(_fk), _fvs)
+                        _mapped = _rlf(getattr(self, "_cli", None), stem, sheet,
+                                        str(_fk), _fvs, resolver=_er)
                     except Exception:
                         _mapped = None
                     if _mapped is not None:
@@ -414,6 +433,16 @@ class ParseAgent:
         # 本批 producer 的 name refs，这里补既有表：按 FK 边定位目标表 → 精确名匹配
         # 唯一行 → 改写为该行 PK 值。命中唯一才改，多命中/无命中保留原文交 Step2 ask。
         self._resolve_existing_name_fk(nl_intents, locator_result)
+        # §能力级自检补漏：LLM 对照原文 + 全量 schema 补齐漏产字段（每请求一次）。
+        # 不硬编码列名——漏哪列、值取原文哪处由 LLM 判断，代码仅做 schema grounding。
+        try:
+            _da2 = self._decompose_agent
+            if _da2 is not None and _da2.parser is not None:
+                import os as _os
+                _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+                nl_intents = _da2._llm_complete_fields(text, nl_intents, _per_to)
+        except Exception:  # noqa: BLE001
+            logger.warning("ParseAgent 自检补漏失败,保持原产出", exc_info=True)
         nl_intents = self._compile_step1_references(nl_intents, text, locator_result)
         self._think(f"ParseAgent 产出 {len(nl_intents)} 条 NLIntent(source=llm_decompose)")
         return nl_intents

@@ -118,7 +118,7 @@ class TestExpandByFkMultiHop:
         rg = _make_relation_graph()
         loc = self._make_locator(rg)
         candidates = [CandidateTable(stem="quest", confidence=0.9, level="rule")]
-        out = loc._expand_by_fk(candidates)
+        out = loc._expand_by_fk(candidates, complex_input=True)
         stems = {c.stem for c in out}
         assert "combat" in stems
         assert "reward" in stems
@@ -128,7 +128,7 @@ class TestExpandByFkMultiHop:
         rg = _make_relation_graph()
         loc = self._make_locator(rg)
         candidates = [CandidateTable(stem="quest", confidence=0.9, level="rule")]
-        out = loc._expand_by_fk(candidates)
+        out = loc._expand_by_fk(candidates, complex_input=True)
         by_stem = {c.stem: c for c in out}
         assert by_stem["combat"].confidence == 0.50
         assert by_stem["reward"].confidence == 0.40
@@ -142,7 +142,7 @@ class TestExpandByFkMultiHop:
             rg = _make_relation_graph()
             loc = self._make_locator(rg)
             candidates = [CandidateTable(stem="quest", confidence=0.9, level="rule")]
-            out = loc._expand_by_fk(candidates)
+            out = loc._expand_by_fk(candidates, complex_input=True)
             stems = {c.stem for c in out}
             assert "combat" in stems
             assert "reward" not in stems
@@ -154,7 +154,7 @@ class TestExpandByFkMultiHop:
         rg = _make_relation_graph()
         loc = self._make_locator(rg)
         candidates = [CandidateTable(stem="reward", confidence=0.9, level="rule")]
-        out = loc._expand_by_fk(candidates)
+        out = loc._expand_by_fk(candidates, complex_input=True)
         stems = {c.stem for c in out}
         assert "combat" in stems
         assert "quest" in stems
@@ -167,7 +167,7 @@ class TestExpandByFkMultiHop:
             CandidateTable(stem="quest", confidence=0.9, level="rule"),
             CandidateTable(stem="combat", confidence=0.8, level="rule"),
         ]
-        out = loc._expand_by_fk(candidates)
+        out = loc._expand_by_fk(candidates, complex_input=True)
         stems = [c.stem for c in out]
         assert stems.count("combat") == 0  # combat 已在候选，仅扩 reward
         assert "reward" in stems

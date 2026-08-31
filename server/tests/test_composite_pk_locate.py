@@ -38,7 +38,9 @@ def _make_test_xlsx(tmp: Path) -> Path:
 def _make_agent(tmp: Path) -> tuple[TableAgent, Path]:
     p = _make_test_xlsx(tmp)
     cli = StubCodeMakerCLI(workspace=tmp)
-    agent = TableAgent(cli=cli, parser=_MockParser())
+    # live_index=False：临时目录 Agent 不刷新全局 _table_index.json，
+    # 避免把测试夹具写进生产索引、污染其它依赖索引的用例（如 test_decompose_agent）。
+    agent = TableAgent(cli=cli, parser=_MockParser(), live_index=False)
     return agent, p
 
 

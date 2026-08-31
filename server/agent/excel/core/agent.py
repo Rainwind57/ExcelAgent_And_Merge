@@ -15,6 +15,7 @@ from typing import Any, Optional, Tuple
 from ..cli.cli_interface import CodeMakerCLI, CLICallResult
 from ..locator.column_matcher import ColumnMatcher, ColumnMatch, _clean_header
 from .enum_resolver import get_enum_resolver
+from .live_enum import resolve_label_full
 from .cross_table_splitter import CrossTableIntentSplitter, detect_cross_table_action
 from ..parser.nl_parser import NLIntent
 from ..parser.codemaker_parser import CodemakerNLParser
@@ -2535,10 +2536,12 @@ class TableAgent:
                             return int(m_area.group(1)), None, None
                         except (ValueError, TypeError):
                             pass
-                # 尝试枚举映射（中文标签→int）
+                # 尝试枚举映射（中文标签→int）：规则 enum_map > 工作区现场发现 > L1/pending
                 if stem and sheet and col_name:
                     er = get_enum_resolver()
-                    enum_val = er.resolve_label(stem, sheet, col_name, sv)
+                    enum_val = resolve_label_full(
+                        getattr(self, "cli", None), stem, sheet, col_name, sv,
+                        resolver=er)
                     if enum_val is not None:
                         return enum_val, None, None
                     # §中文枚举列放行：int 列标注但现有数据存中文 → 中文值合法，
@@ -7571,9 +7574,9 @@ class TableAgent:
                 f"建议：{merged.get('suggestions', [])}")
         res.add_thinking("计划",
             f"构造操作计划(合并)——单表指令 {intent.action}，目标 {path.stem}/{sheet}")
-        res.add("写入计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
+        res.add("Step3计划", True, f"操作计划：{intent.action} {path.stem}/{sheet}")
         res.add_thinking("校验", "写前校验——硬规则类型/约束校验由分支内部执行")
-        res.add("写前校验", True, "写前校验通过")
+        res.add("Step4校验", True, "写前校验通过")
         return path, sheet
 
     def _phase_execute(self, intent: NLIntent, path: Path, sheet: str,

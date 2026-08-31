@@ -574,6 +574,42 @@ function askSelectedRows(msg) {
   return (msg.ask?.rows || []).filter(r => sel[r.row]).map(r => r.row)
 }
 
+// §9.1 全字段可编辑表格：提交整表回写，后端重跑 Step2 校验。
+async function replyAskFullFieldEdit(agentMsg, deleteIntent = false) {
+  if (agentMsg.askResolved) return
+  agentMsg.askResolved = true
+  agentMsg.askMode = deleteIntent ? 'skip' : 'field_edit'
+  const fieldsForReply = (agentMsg.askFullFields || [])
+    .filter(f => String(f.col || '').trim())
+    .map(f => ({
+      col: String(f.col || '').trim(),
+      value: f.value ?? '',
+      delete: !!f.delete,
+    }))
+  if (deleteIntent) {
+    agentMsg.askUserReply = '已删除整条，继续后续任务。'
+  } else {
+    const nDelete = fieldsForReply.filter(f => f.delete).length
+    agentMsg.askUserReply = `提交 ${fieldsForReply.length} 个字段（删 ${nDelete}），重新校验中...`
+  }
+  agentMsg.askCollapsed = true
+  try {
+    await fetch('/api/agent/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId.value,
+        mode: deleteIntent ? 'skip' : 'field_edit',
+        fields: deleteIntent ? undefined : fieldsForReply,
+        delete_intent: deleteIntent,
+      }),
+    })
+  } catch (e) {
+    // 静默
+  }
+}
+
+
 function toggleAllAskRows(msg, on) {
   if (!msg.askSelectedRows) msg.askSelectedRows = {}
   ;(msg.ask?.rows || []).forEach(r => { msg.askSelectedRows[r.row] = on })
@@ -609,6 +645,9 @@ function normalizeAskEditableFields(ask) {
     value: f.value == null ? '' : String(f.value),
     suggested: f.suggested || '',
     invalid: !!f.invalid,
+    issue_type: f.issue_type || '',
+    expected_type: f.expected_type || '',
+    hint: f.hint || '',
     delete: false,
   }))
 }
@@ -621,12 +660,20 @@ function addAskFullFieldRow(agentMsg) {
     value: '',
     suggested: '',
     invalid: false,
+    issue_type: '',
+    expected_type: '',
+    hint: '',
     delete: false,
   })
 }
 
 function applyAskFieldSuggestion(row) {
-  if (row && row.suggested) row.col = row.suggested
+  if (!row || !row.suggested) return
+  if (row.issue_type === 'col_not_found') {
+    row.col = row.suggested          // 列名建议 → 填列名
+  } else {
+    row.value = row.suggested        // 枚举/值建议（type_mismatch/enum_invalid）→ 填值
+  }
 }
 
 function fmtCountdown(sec) {
@@ -924,7 +971,7 @@ onMounted(() => {
                     </div>
                   </div>
                 </div>
-                <div v-else class="think-line">
+                <div v-else class="think-line" :class="{ 'think-noise': isNoiseStep(ts) }">
                   <span class="think-phase">{{ stepLabel(ts.phase) }}</span>
                   <span class="think-desc">{{ sanitizeDetail(ts.detail) }}</span>
                 </div>
@@ -1241,7 +1288,10 @@ onMounted(() => {
                           @click="applyAskFieldSuggestion(row)"
                         >用 {{ row.suggested }}</button>
                       </div>
-                      <textarea v-model="row.value" class="ask-input ask-input--field-value"></textarea>
+                      <div class="ask-full-field-val">
+                        <textarea v-model="row.value" class="ask-input ask-input--field-value"></textarea>
+                        <div v-if="row.invalid && row.hint" class="ask-field-hint">⚠ {{ row.hint }}</div>
+                      </div>
                       <label class="ask-batch-delete-label">
                         <input type="checkbox" v-model="row.delete" class="ask-batch-delete-cb"> 删除
                       </label>
@@ -1252,6 +1302,52 @@ onMounted(() => {
                   <button class="confirm-btn confirm-yes" @click="replyAskColNotFoundBatch(msg, {})">提交修正</button>
                   <button class="confirm-btn confirm-warn" @click="replyAskColNotFoundBatch(msg, { delete_all: true })">全部删除</button>
                   <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
+                </div>
+              </template>
+              <!-- §9.1 全字段可编辑表格：目标表/动作/所有字段+值 逐格编辑，提交后重校验 -->
+              <template v-else-if="msg.ask.mode_hint === 'field_edit_table'">
+                <div class="ask-full-fields">
+                  <div class="ask-full-fields-head">
+                    <span>字段明细<span class="ask-loc"> 📍 {{ msg.ask.table }}/{{ msg.ask.sheet }}（{{ msg.ask.action }}）</span></span>
+                    <button type="button" class="mini-btn" @click="addAskFullFieldRow(msg)">加字段</button>
+                  </div>
+                  <datalist :id="'availCols_' + msg.id">
+                    <option v-for="c in (msg.ask.available_columns || [])" :key="c" :value="c"></option>
+                  </datalist>
+                  <div class="ask-full-field-table">
+                    <div class="ask-full-field-row ask-full-field-row--head">
+                      <span>列名</span>
+                      <span>值</span>
+                      <span>操作</span>
+                    </div>
+                    <div
+                      v-for="row in msg.askFullFields"
+                      :key="row.id"
+                      class="ask-full-field-row"
+                      :class="{ 'ask-full-field-row--invalid': row.invalid }"
+                    >
+                      <div class="ask-full-field-col">
+                        <input v-model="row.col" type="text" class="ask-input ask-input--field-col" :list="'availCols_' + msg.id">
+                        <button
+                          v-if="row.suggested"
+                          type="button"
+                          class="mini-btn mini-btn--ghost"
+                          @click="applyAskFieldSuggestion(row)"
+                        >用 {{ row.suggested }}</button>
+                      </div>
+                      <div class="ask-full-field-val">
+                        <textarea v-model="row.value" class="ask-input ask-input--field-value"></textarea>
+                        <div v-if="row.invalid && row.hint" class="ask-field-hint">⚠ {{ row.hint }}</div>
+                      </div>
+                      <label class="ask-batch-delete-label">
+                        <input type="checkbox" v-model="row.delete" class="ask-batch-delete-cb"> 删除
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="ask-actions">
+                  <button class="confirm-btn confirm-yes" @click="replyAskFullFieldEdit(msg, false)">提交修正</button>
+                  <button class="confirm-btn confirm-warn" @click="replyAskFullFieldEdit(msg, true)">删除整条</button>
                 </div>
               </template>
               <!-- 多行同名删除：勾选要删的行后确认（删除不可逆，默认不勾选） -->
@@ -1472,12 +1568,18 @@ export default {
       })
       return out
     },
-    // 折叠头实时摘要：不展开也知道"现在在做什么"
+    // 折叠头实时摘要：不展开也能看懂"现在在做什么"。只取关键结论，过滤技术噪音。
     thinkSummary(msg) {
       if (!msg) return ''
+      // 有结构化 intent 卡片时优先展示拆分结果，不给模型耗时细节刷屏
+      const card = (msg.thinking_steps || []).find(t => t.jsonKind === 'intent_list' && t.jsonData)
+      if (card && card.jsonData && card.jsonData.total) {
+        return `已拆出 ${card.jsonData.total} 个子任务`
+      }
       const all = []
       ;(msg.thinking_steps || []).forEach(t => {
-        if (t.jsonKind) return  // 结构化卡片（意图清单表）不进摘要
+        if (t.jsonKind) return  // 结构化卡片不进摘要
+        if (this.isNoiseStep(t)) return  // 技术噪音不进摘要
         const d = this.sanitizeDetail(t.detail || '')
         if (d) all.push(String(d))
       })
@@ -1488,6 +1590,21 @@ export default {
       if (!all.length) return ''
       const last = all[all.length - 1]
       return last.length > 40 ? last.slice(0, 40) + '…' : last
+    },
+    // 技术噪音判定：内部实现细节（探测/参数/重试/清洗/守卫等）弱化展示，
+    // 只保留对用户有意义的关键结论（拆出几条、校验问题、写入成败）。
+    isNoiseStep(ts) {
+      if (!ts) return true
+      const ph = String(ts.phase || '')
+      const d = String(ts.detail || '')
+      // 心跳、细分（DecomposeAgent 内部日志）整体视为噪音
+      if (ph === '心跳' || ph === '细分') return true
+      // 技术参数/内部动作关键词：看到即弱化
+      if (/(timeout|超时.*s|候选表|探测|重跑|重拆|兜底|清洗引号|灌值|守卫|漏产回填|退避|retry|stems=|\.py:)/i.test(d)) return true
+      // 组件内部日志（DecomposeAgent/LocatorAgent/ParseAgent 开头 + 技术细节）
+      if (/^(DecomposeAgent|LocatorAgent|ParseAgent|ColumnExtractor|splitter)/.test(d)
+          && /(产|丢弃|分解|路径|阈值|并发|串行|单 prompt|重试|响应)/.test(d)) return true
+      return false
     },
     subtaskTitle(st) {
       const map = { add: '新增', delete: '删除', set: '修改', get: '查询' }
@@ -1761,8 +1878,10 @@ export default {
 .ask-full-field-row--head { padding: 0 6px; border: 0; background: transparent; color: var(--text-muted); font-size: 0.78rem; font-weight: 600; }
 .ask-full-field-row--invalid { border-color: var(--warning, #f59e0b); }
 .ask-full-field-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ask-full-field-val { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ask-input--field-col { width: 100%; min-width: 0; min-height: 0; padding: 4px 8px; font-size: 0.88rem; }
 .ask-input--field-value { width: 100%; min-height: 38px; resize: vertical; white-space: pre-wrap; word-break: break-word; padding: 4px 8px; font-size: 0.88rem; }
+.ask-field-hint { color: var(--warning, #f59e0b); font-size: 0.8rem; line-height: 1.35; word-break: break-word; }
 .mini-btn { border: 1px solid var(--border); background: var(--bg-hover); color: var(--text-primary); border-radius: 6px; padding: 3px 8px; font-size: 0.78rem; cursor: pointer; }
 .mini-btn--ghost { align-self: flex-start; color: var(--primary, #2563eb); background: transparent; }
 .confirm-warn { background: rgba(255, 165, 0, 0.85); color: #fff; }
@@ -2091,6 +2210,12 @@ export default {
 .think-line .think-phase { color: var(--accent); font-weight: 600; min-width: 40px; flex-shrink: 0; }
 .think-line .think-desc { color: var(--text-muted); word-break: break-all; }
 .think-line .think-desc b { color: var(--text-secondary); }
+/* 技术噪音行：弱化展示（小字号 + 低对比），保留过程但不喧宾夺主 */
+.think-line.think-noise .think-phase,
+.think-line.think-noise .think-desc {
+  opacity: 0.55;
+  font-size: 0.7rem;
+}
 /* Step1 意图清单表格：清晰对齐展示解析结果，便于人工校验漏意图/错路由 */
 .think-intent-card { margin: 6px 0; padding: 8px; border: 1px solid var(--info, #2563eb); border-radius: 6px; background: rgba(37, 99, 235, 0.06); }
 .think-intent-title { font-size: 0.85rem; font-weight: 600; color: var(--info, #2563eb); margin-bottom: 6px; }

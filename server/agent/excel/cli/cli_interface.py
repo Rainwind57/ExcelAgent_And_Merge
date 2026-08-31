@@ -552,6 +552,25 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 result.append(nrow)
         return result
 
+    @staticmethod
+    def _calamine_rows(path, sheet) -> list[list]:
+        """用 calamine to_python() 读 sheet 全部行。
+
+        不用 iter_rows()：python-calamine 0.8.2 对空 sheet（height=0）调 iter_rows()
+        触发 Rust `Option::unwrap()` panic（见 pet_evolve.xlsx「灵兽进化表说明」），
+        而 to_python() 对空 sheet 安全返回 []。空 sheet / 异常统一返回 []，
+        调用方据此走 openpyxl 回退或空表头。
+        """
+        from python_calamine import CalamineWorkbook
+        cw = CalamineWorkbook.from_path(str(path))
+        sh = cw.get_sheet_by_name(sheet)
+        try:
+            if sh.height == 0:
+                return []
+            return sh.to_python()
+        except BaseException:
+            return []
+
     def _detect_formula(self, path: Path, sheet: str, row: int, col: int) -> str | None:
         """检测单元格是否为公式。
 
@@ -662,13 +681,10 @@ class StubCodeMakerCLI(CodeMakerCLI):
         # 同时免 openpyxl 大表 load（~22s）。表头是元数据，读前2行毫秒级。
         if not self._sheet_has_formula(path):
             try:
-                from python_calamine import CalamineWorkbook
                 from ..locator.column_name_resolver import resolve_header_cell
-                cw = CalamineWorkbook.from_path(str(path))
-                sh = cw.get_sheet_by_name(sheet)
-                it = sh.iter_rows()
-                first = next(it, None)
-                second = next(it, None)
+                rows = self._calamine_rows(path, sheet)
+                first = rows[0] if rows else None
+                second = rows[1] if len(rows) > 1 else None
                 if first is None:
                     return []
                 header_vals = [self._normalize_calamine(v) for v in first]
@@ -685,7 +701,9 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 while result and result[-1] == "":
                     result.pop()
                 return result
-            except Exception:
+            except BaseException:
+                # calamine 内部 Rust panic（pyo3 PanicException 继承 BaseException，
+                # `except Exception` 接不住会杀死线程）或解析异常：一律回退 openpyxl。
                 pass
         # 含公式表或 calamine 失败：openpyxl 实读（不读索引缓存，避免过期脏读）
         ws = self._load(path)[sheet]
@@ -702,17 +720,15 @@ class StubCodeMakerCLI(CodeMakerCLI):
         # 无公式表：calamine 读前 2 行取类型行，绕过 openpyxl load（大表 ~22s → ~1.4s）
         if not self._sheet_has_formula(path):
             try:
-                from python_calamine import CalamineWorkbook
-                cw = CalamineWorkbook.from_path(str(path))
-                sh = cw.get_sheet_by_name(sheet)
-                it = sh.iter_rows()
-                first = next(it, None)
-                second = next(it, None)
+                rows = self._calamine_rows(path, sheet)
+                first = rows[0] if rows else None
+                second = rows[1] if len(rows) > 1 else None
                 if first is None:
                     return []
                 type_row = second if second is not None else []
                 return [self._normalize_calamine(v) for v in type_row]
-            except Exception:
+            except BaseException:
+                # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退 openpyxl
                 pass
         ws = self._load(path)[sheet]
         type_row_idx = self.header_row + 1 if (ws.max_row or 0) >= self.header_row + 1 else None
@@ -739,7 +755,8 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 # （10w 行 load 约 22s，calamine 全表 ~1.4s）。失败回退 openpyxl。
                 try:
                     rows = self._read_sheet_calamine(path, sheet)
-                except Exception:
+                except BaseException:
+                    # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退 openpyxl
                     rows = None
             if rows is None:
                 # 含公式表 或 calamine 失败：openpyxl 路径（公式格需 data_only=True 缓存值回退）
@@ -840,7 +857,8 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 start = (page - 1) * page_size
                 end = start + page_size
                 return headers, all_rows[start:end], total
-            except Exception:
+            except BaseException:
+                # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退 openpyxl
                 pass
         ws = self._load(path)[sheet]
         header_row = self._detect_header_row(ws)
@@ -1239,7 +1257,8 @@ class StubCodeMakerCLI(CodeMakerCLI):
                     if 1 <= row <= len(raw) and 1 <= col <= len(raw[row - 1]):
                         return CLICallResult(ok=True,
                                              data=self._normalize_calamine(raw[row - 1][col - 1]))
-                except Exception:
+                except BaseException:
+                    # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退
                     pass
             return CLICallResult(ok=True, data=self._read_cell_value(path, sheet, row, col))
         except Exception as e:
@@ -1420,7 +1439,8 @@ class StubCodeMakerCLI(CodeMakerCLI):
         try:
             from python_calamine import CalamineWorkbook
             cw = CalamineWorkbook.from_path(str(path))
-        except Exception:
+        except BaseException:
+            # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退
             return None
         kw_lower = (keyword or "").lower()
         # 索引中取该表各 sheet 的表头（col 名匹配用）
@@ -1701,7 +1721,8 @@ class StubCodeMakerCLI(CodeMakerCLI):
                         if v_lower in cs:
                             return i + 1
                 return None
-            except Exception:
+            except BaseException:
+                # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退 openpyxl
                 pass
         ws = self._load(path)[sheet]
         dsr = self._resolve_data_start(path, sheet)

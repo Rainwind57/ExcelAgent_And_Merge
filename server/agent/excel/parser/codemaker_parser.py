@@ -208,7 +208,7 @@ def _try_rule_parse_multi(text: str) -> Optional[list]:
 _MODE_KEYWORDS: dict[PromptMode, tuple[str, ...]] = {
     PromptMode.QUERY: ("查询", "查看", "显示", "找一下", "列出", "是什么", "有哪些", "多少", "get", "show", "list", "find"),
     PromptMode.MODIFY: ("改成", "设为", "改为", "修改", "换成", "调整", "变为", "set ", "update", "change"),
-    PromptMode.ADD: ("新增", "添加", "增加", "加一个", "加一条", "add ", "insert", "create"),
+    PromptMode.ADD: ("新增", "添加", "增加", "加一个", "加一条", "建一个", "配一个", "创建一个", "放一个", "放个", "建个", "add ", "insert", "create"),
     PromptMode.DELETE: ("删除", "移除", "去掉", "删掉", "清除", "delete", "remove", "drop"),
 }
 

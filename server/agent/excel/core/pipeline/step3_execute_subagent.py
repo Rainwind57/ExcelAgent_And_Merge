@@ -43,15 +43,29 @@ def _find_unresolved_placeholders(it: Any) -> list[str]:
     或已执行但 res.ok is False 未被 _capture_produced 收录）——继续跑 run_single
     会让 _coerce_value 把该 FK 列静默置空写入（只留 needs_user_fill 提示，行本身
     仍落盘），产出缺外键的孤儿行。改为执行前显式拦截 + 清晰上报，不产生残缺行。
+
+    §自增主键占位符豁免：Step1 对"主键自动分配"的 add 会给主键列填
+    `<new_<stem>_id>`（本 intent 自己的 produces_label），这是"本行待分配主键"，
+    不是引用上游产出。若把它当悬空依赖拦截，所有自增主键的 add 都会被误跳过
+    （寒铁矿石单条新增即因此 Step3 假失败）。本函数排除本 intent 自身的
+    produces_label（及 extras.produces）后再判悬空。
     """
     found: list[str] = []
+    _own_labels = set()
+    for _src in (getattr(it, "produces_label", None),
+                 (getattr(it, "extras", None) or {}).get("produces")):
+        if isinstance(_src, str) and _src.strip():
+            _own_labels.add(_src.strip().strip("<>").strip())
 
     def _scan(v: Any) -> None:
         if isinstance(v, str) and "<" in v:
             for m in _PLACEHOLDER_RE.finditer(v):
                 label = m.group(1)
-                if label.lower() != "auto":
-                    found.append(label)
+                if label.lower() == "auto":
+                    continue
+                if label in _own_labels:
+                    continue  # 本行自增主键占位符，非上游引用
+                found.append(label)
 
     _scan(getattr(it, "locator_value", None))
     _scan(getattr(it, "value", None))

@@ -203,6 +203,66 @@ def test_step1_exports_semantic_plan_entities_and_refs(monkeypatch):
     assert result.artifacts["semantic_compile_report"]["ok"] is True
 
 
+def test_step1_audit_report_aggregates_metrics(monkeypatch):
+    """Step1 JSON 审计报告（路线图 §9.5）：把失败原因固定为可统计指标。"""
+    monkeypatch.delenv("CODEMAKER_STEP1_QUALITY_GATE", raising=False)
+    parent = NLIntent(
+        action="add", table_hint="parent", sheet_hint="Parent", raw="make parent",
+        extras={"fields": {"id": "<new_parent_id>", "name": "P"},
+                "produces": "new_parent_id"},
+    )
+    parent.produces_label = "new_parent_id"
+    child = NLIntent(
+        action="add", table_hint="child", sheet_hint="Child", raw="make child",
+        extras={"fields": {"parent_id": "<new_parent_id>",
+                           "missing_id": "<missing_id>",
+                           "name": "C"}},
+    )
+    child.consumes_labels = ["new_parent_id"]
+    step = Step1ParseSubAgent()
+    step._parse_agent = _FakeParseAgent([parent, child])
+
+    result = step.execute(StepContext(session_id="s", user_text="x"))
+
+    audit = result.artifacts["step1_audit"]
+    assert audit["version"] == 1
+    assert audit["intent_count"] == 2
+    assert audit["candidate_count"] == 0
+    metrics = audit["metrics"]
+    assert metrics["table_hit"] == 2
+    assert metrics["table_hit_rate"] == 1.0
+    assert metrics["field_total"] == 5
+    assert metrics["field_hit"] == 2  # 仅 name 列为实值，id/引用列是占位符
+    assert metrics["field_hit_rate"] == 0.4
+    assert metrics["placeholder_total"] == 2  # new_parent_id + missing_id 引用
+    assert metrics["unresolved_placeholder_count"] == 1  # missing_id 无 producer
+    assert metrics["producer_missing_count"] == 1
+    assert metrics["cycle_count"] == 0
+    assert metrics["hard_issue_count"] >= 1  # unresolved_placeholder 是 hard
+    assert audit["ok"] is False
+    # 指标镜像到 StepResult.metrics（评测聚合取数口）
+    assert result.metrics["audit_table_hit_rate"] == 1.0
+    assert result.metrics["audit_field_hit_rate"] == 0.4
+    assert result.metrics["audit_placeholder_resolved_rate"] == 0.5
+
+
+def test_step1_audit_flags_empty_add_and_placeholder_resolution(monkeypatch):
+    monkeypatch.delenv("CODEMAKER_STEP1_QUALITY_GATE", raising=False)
+    empty = NLIntent(
+        action="add", table_hint="mail", sheet_hint="MailTemplate", raw="add empty",
+        extras={"fields": {"template_id": "<new_template_id>"}},
+    )
+    step = Step1ParseSubAgent()
+    step._parse_agent = _FakeParseAgent([empty])
+
+    result = step.execute(StepContext(session_id="s", user_text="x"))
+
+    audit = result.artifacts["step1_audit"]
+    assert audit["metrics"]["empty_add_count"] == 1
+    assert audit["metrics"]["field_hit_rate"] == 0.0
+    assert audit["metrics"]["placeholder_resolved_rate"] == 0.0
+
+
 def test_step1_semantic_plan_does_not_treat_own_produces_as_dependency(monkeypatch):
     monkeypatch.delenv("CODEMAKER_STEP1_QUALITY_GATE", raising=False)
     intent = NLIntent(
@@ -390,6 +450,33 @@ def test_step1_keeps_uncovered_action_segment_as_warning(monkeypatch):
     assert any(e.error_type == "segment_no_intent" for e in result.errors)
 
 
+def test_step3_self_pk_placeholder_not_treated_as_unresolved():
+    """自增主键占位符 <new_item_id> 是本行待分配主键，不是上游引用，不应被拦截。"""
+    from server.agent.excel.core.pipeline.step3_execute_subagent import (
+        _find_unresolved_placeholders,
+    )
+    it = NLIntent(
+        action="add", table_hint="item", sheet_hint="ItemBase", raw="x",
+        extras={"fields": {"item_id": "<new_item_id>", "name": "寒铁矿石"},
+                "produces": "new_item_id"},
+    )
+    it.produces_label = "new_item_id"
+    assert _find_unresolved_placeholders(it) == []
+
+
+def test_step3_still_flags_real_unresolved_reference():
+    """真正的上游引用占位符（非本行 produces）仍应被拦截。"""
+    from server.agent.excel.core.pipeline.step3_execute_subagent import (
+        _find_unresolved_placeholders,
+    )
+    it = NLIntent(
+        action="add", table_hint="child", sheet_hint="Child", raw="x",
+        extras={"fields": {"parent_id": "<missing_parent_id>", "name": "C"}},
+    )
+    it.produces_label = "new_child_id"
+    assert _find_unresolved_placeholders(it) == ["missing_parent_id"]
+
+
 def test_step3_missing_services_is_hard_not_silent_success():
     ctx = StepContext(session_id="s", user_text="x")
     ctx.set_result(STEP2_VALIDATE, StepResult(
@@ -412,8 +499,6 @@ class _NoneRunServices:
 
     def run_single(self, *args, **kwargs):
         return None
-
-
 def test_step3_empty_dispatch_result_does_not_report_ok():
     ctx = StepContext(session_id="s", user_text="x")
     ctx.set_result(STEP2_VALIDATE, StepResult(

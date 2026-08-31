@@ -1,51 +1,326 @@
 {
   "cases_file": "planner_style_inputs.json",
-  "model": "netease-codemaker/deepseek-v4-flash",
+  "model": "opencode/deepseek-v4-flash-free",
   "results": [
     {
-      "name": "限时活动·九霄论剑（中文策划口吻，activity 单表 add + 日期段）",
-      "input": "开一个限时活动叫'九霄论剑'，活动编号 3060，活动描述'九霄之上，群雄论剑，活动期间内每日可参与一次剑试'，开始时间 2026-11-01 00:00:00，结束时间 2026-11-15 23:59:59。",
-      "dur_s": 37.5,
+      "name": "新门派·太虚剑宗全套配置（中文策划口吻，4表 add + 门派神通树 + 灵根映射 + 天赋二层 + 邮件公告）",
+      "input": "新增一个门派叫'太虚剑宗'，门派编号 9，门派类型 1，大世界模型 1027，战斗模型 1074，先配四个神通：第一个神通'太虚剑意'，描述'以虚御实，剑出无痕，每回合自动凝成太虚剑气，剑气越多，追斩伤害越高'，配两套心法，心法一叫'剑意·蓄'，描述'开局即得剑气，快速进入节奏'，心法二叫'剑意·绝'，描述'击杀敌方时额外获得剑气'；第二个神通'裂空斩'，描述'撕开空间，对单体打出三段斩击，每段威力递增'，心法一叫'裂空·碎'，描述'暴击概率逐段提升'，心法二叫'裂空·连'，描述'释放后不进入休息'；第三个神通'万剑归宗'，描述'驱使剑气齐射多个敌人，命中越多剑气越多'，心法一叫'归宗·雨'，描述'覆盖范围扩大'，心法二叫'归宗·化劲'，描述'暴击转化为稳定伤害'；第四个神通'无相护体'，描述'以无相罡气护身，受击时概率格挡并反击'，心法一叫'无相·觉'，描述'面对高速敌人格挡概率提升'，心法二叫'无相·传'，描述'释放时人宠共同护体'。这四个神通每级消耗灵石 0，一级升一级要人物 1 级，技能编号按顺序 901、902、903、904。再把神通和灵根绑定：太虚剑意绑金灵根给天赋 600001，裂空斩绑木灵根给天赋 600002，万剑归宗绑水灵根给天赋 600002，无相护体绑火灵根给天赋 600001。门派天赋盘配一个：天赋主键 9011，名字'破军'，功法描述'伤害提升20%'，图标'Icon_120_shentong_1.png'，门派 9，层级 1，所在列 1；它的下层天赋 9021，名字'贪狼'，功法描述'伤害提升30%'，图标'Icon_120_shentong_2.png'，门派 9，层级 2，所在列 1，上一层功法所在列填'1'。再补两条天赋等级：破军 1 级描述'伤害提升20%'被动 600003，破军 2 级描述'伤害提升40%'被动 600003。最后给新门派发一封开宗立派的全服邮件：邮件模板标题'太虚剑宗开宗立派'，内容'太虚剑宗今日开宗，广纳天下英才，共证剑道'，全服邮件 global_id 20，邮件类型 1，发送人'系统'，发送时间 2026-09-01 00:00:00，不带奖励。",
+      "dur_s": 43.2,
       "loc_err": "",
       "parse_err": "",
       "locator": {
         "candidates": [
-          "activity",
-          "id_mgr",
+          "school",
+          "ability",
+          "school_ability",
+          "spirit",
+          "school_spirit",
+          "spell",
+          "spell_group",
+          "hero",
+          "reward",
           "mail",
-          "interaction"
+          "combat",
+          "model_prefab",
+          "map",
+          "residence_putuan",
+          "hero_level",
+          "item",
+          "school_talent"
         ],
-        "fk_edges": 0,
-        "is_cross_table": false
+        "fk_edges": 35,
+        "is_cross_table": true
       },
-      "n_expected": 1,
-      "n_actual": 1,
+      "n_expected": 19,
+      "n_actual": 5,
       "actual": [
         {
           "action": "add",
-          "table": "activity",
-          "sheet": "Activity",
+          "table": "school",
+          "sheet": "School",
           "fields": {
-            "活动id": 3060,
-            "活动类型": 3,
-            "活动名称": "九霄论剑",
-            "活动描述": "九霄之上，群雄论剑，活动期间内每日可参与一次剑试",
-            "活动开始时间": "2026-11-01 00:00:00",
-            "活动结束时间": "2026-11-15 23:59:59"
+            "school": "9"
+          },
+          "produces": "new_school_id"
+        },
+        {
+          "action": "add",
+          "table": "school",
+          "sheet": "",
+          "fields": {
+            "门派": "9"
           }
+        },
+        {
+          "action": "add",
+          "table": "hero_level",
+          "sheet": "",
+          "fields": {
+            "等级": "1"
+          },
+          "produces": "new_hero_level_id"
+        },
+        {
+          "action": "add",
+          "table": "school_talent",
+          "sheet": "",
+          "fields": {
+            "等级": "1"
+          },
+          "produces": "new_school_talent_id"
+        },
+        {
+          "action": "add",
+          "table": "item",
+          "sheet": "GameplayAbilityChoicePool",
+          "fields": {
+            "entry_id": "<new_item_id>"
+          },
+          "produces": "new_item_id"
         }
       ],
       "rows": [
         {
-          "exp": "activity/activity/add",
-          "act": "activity/activity/add",
+          "exp": "school/school/add",
+          "act": "school/school/add",
           "table_ok": true,
           "sheet_ok": true,
           "action_ok": true,
-          "exp_keys": 6,
-          "keys_found": 6,
-          "keys_value_ok": 5,
+          "exp_keys": 9,
+          "keys_found": 1,
+          "keys_value_ok": 0,
           "extra_keys": [],
+          "ph_total": 1,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/schoolability/add",
+          "act": "school//add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 8,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "门派"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/schoolabilitylevel/add",
+          "act": "item/gameplayabilitychoicepool/add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 6,
+          "keys_found": 1,
+          "keys_value_ok": 0,
+          "extra_keys": [],
+          "ph_total": 1,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/schoolability/add",
+          "act": "hero_level//add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 8,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "等级"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/schoolabilitylevel/add",
+          "act": "school_talent//add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 6,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "等级"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/SchoolAbility/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbilityLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbility/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbilityLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_talent/SchoolTalent/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_talent/SchoolTalent/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_talent/SchoolTalentLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_talent/SchoolTalentLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "mail/MailTemplate/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "mail/GlobalMail/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        }
+      ],
+      "metrics": {
+        "full_match": 0,
+        "table_hit": 1,
+        "sheet_hit": 1,
+        "action_hit": 5,
+        "keys_found": 2,
+        "keys_ok": 0,
+        "keys_exp": 37,
+        "extra_key_ops": 3,
+        "ph_total": 2,
+        "ph_ok": 0,
+        "ph_unresolved": 1,
+        "ph_resolved_total": 0,
+        "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "新江湖公告·月华庆典全服邮件（中文策划口吻，单意图两表联动）",
+      "input": "月华庆典要开了，帮我发一封全服邮件。邮件模板：标题'月华庆典开启'，内容'月华照耀九州，庆典开启，登录即可领取好礼，祝少侠武运昌隆'。全服邮件编号 21，类型 1，发送人'系统'，发送时间 2026-10-01 00:00:00，附上奖励包 10001。",
+      "dur_s": 13.9,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "reward",
+          "mail",
+          "item",
+          "combat",
+          "equipment",
+          "activity",
+          "interaction",
+          "residence",
+          "space",
+          "spell",
+          "world_buff",
+          "assistant_mystic"
+        ],
+        "fk_edges": 51,
+        "is_cross_table": true
+      },
+      "n_expected": 2,
+      "n_actual": 2,
+      "actual": [
+        {
+          "action": "add",
+          "table": "mail",
+          "sheet": "",
+          "fields": {
+            "发送时间": "2026",
+            "奖励": "10001"
+          },
+          "produces": "new_mail_id"
+        },
+        {
+          "action": "add",
+          "table": "interaction",
+          "sheet": "Interaction",
+          "fields": {
+            "interaction_id": "21"
+          },
+          "produces": "new_interaction_id"
+        }
+      ],
+      "rows": [
+        {
+          "exp": "mail/mailtemplate/add",
+          "act": "mail//add",
+          "table_ok": true,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 3,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "发送时间",
+            "奖励"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "mail/globalmail/add",
+          "act": "interaction/interaction/add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 6,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "interaction_id"
+          ],
           "ph_total": 0,
           "ph_ok": 0,
           "full_match": false
@@ -54,10 +329,221 @@
       "metrics": {
         "full_match": 0,
         "table_hit": 1,
-        "sheet_hit": 1,
+        "sheet_hit": 0,
+        "action_hit": 2,
+        "keys_found": 0,
+        "keys_ok": 0,
+        "keys_exp": 9,
+        "extra_key_ops": 2,
+        "ph_total": 0,
+        "ph_ok": 0,
+        "ph_unresolved": 0,
+        "ph_resolved_total": 0,
+        "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "游戏内提示文案·日常提醒批量新增（中文策划口吻，tips 单表批量 add）",
+      "input": "帮我把几条游戏内提示文案配一下。第一条：'使用药品获得经验已达到今日上限'，程序引用 key 用 TID_TIPS_POTION_EXP_LIMITED_2，类型 tips；第二条：'灵兽升级已达到当前等级上限'，key 用 TID_TIPS_PET_EXP_LIMIT_TIPS_2，类型 tips；第三条：'帮派资金不足，无法升级该建筑'，key 用 TID_TIPS_GUILD_FUNDS_LACK，类型 tips；第四条：'当前网络波动，请稍后重试'，key 用 TID_TIPS_NETWORK_RETRY，类型 tips。",
+      "dur_s": 22.5,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "pet",
+          "guild",
+          "building",
+          "item",
+          "tips",
+          "assistant_level",
+          "hero_level",
+          "residence_building"
+        ],
+        "fk_edges": 20,
+        "is_cross_table": true
+      },
+      "n_expected": 4,
+      "n_actual": 4,
+      "actual": [
+        {
+          "action": "add",
+          "table": "tips",
+          "sheet": "ui_txt",
+          "fields": {
+            "value": "使用药品获得经验已达到今日上限",
+            "key": "TID_TIPS_POTION_EXP_LIMITED_2",
+            "type": "tips",
+            "None": "<new_tips_1_id>"
+          },
+          "produces": "new_tips_1_id"
+        },
+        {
+          "action": "add",
+          "table": "tips",
+          "sheet": "ui_txt",
+          "fields": {
+            "value": "帮派资金不足，无法升级该建筑",
+            "key": "TID_TIPS_GUILD_FUNDS_LACK",
+            "type": "tips",
+            "None": "<new_tips_1_id>"
+          }
+        },
+        {
+          "action": "add",
+          "table": "tips",
+          "sheet": "ui_txt",
+          "fields": {
+            "value": "当前网络波动，请稍后重试",
+            "key": "TID_TIPS_NETWORK_RETRY",
+            "type": "tips",
+            "None": "<new_tips_1_id>"
+          }
+        },
+        {
+          "action": "add",
+          "table": "tips",
+          "sheet": "ui_txt",
+          "fields": {
+            "key": "TID_TIPS_PET_EXP_LIMIT_TIPS_2",
+            "type": "tips",
+            "value": "灵兽升级已达到当前等级上限"
+          }
+        }
+      ],
+      "rows": [
+        {
+          "exp": "tips/tips/add",
+          "act": "tips/ui_txt/add",
+          "table_ok": true,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 3,
+          "keys_found": 3,
+          "keys_value_ok": 3,
+          "extra_keys": [
+            "None"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "tips/tips/add",
+          "act": "tips/ui_txt/add",
+          "table_ok": true,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 3,
+          "keys_found": 3,
+          "keys_value_ok": 1,
+          "extra_keys": [
+            "None"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "tips/tips/add",
+          "act": "tips/ui_txt/add",
+          "table_ok": true,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 3,
+          "keys_found": 3,
+          "keys_value_ok": 1,
+          "extra_keys": [
+            "None"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "tips/tips/add",
+          "act": "tips/ui_txt/add",
+          "table_ok": true,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 3,
+          "keys_found": 3,
+          "keys_value_ok": 1,
+          "extra_keys": [],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        }
+      ],
+      "metrics": {
+        "full_match": 0,
+        "table_hit": 4,
+        "sheet_hit": 0,
+        "action_hit": 4,
+        "keys_found": 12,
+        "keys_ok": 6,
+        "keys_exp": 12,
+        "extra_key_ops": 3,
+        "ph_total": 0,
+        "ph_ok": 0,
+        "ph_unresolved": 3,
+        "ph_resolved_total": 0,
+        "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "限时活动·九霄论剑（中文策划口吻，activity 单表 add + 日期段）",
+      "input": "开一个限时活动叫'九霄论剑'，活动编号 3060，活动描述'九霄之上，群雄论剑，活动期间内每日可参与一次剑试'，开始时间 2026-11-01 00:00:00，结束时间 2026-11-15 23:59:59。",
+      "dur_s": 11.0,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "activity",
+          "id_mgr",
+          "combat",
+          "interaction"
+        ],
+        "fk_edges": 6,
+        "is_cross_table": false
+      },
+      "n_expected": 1,
+      "n_actual": 1,
+      "actual": [
+        {
+          "action": "add",
+          "table": "interaction",
+          "sheet": "Interaction",
+          "fields": {
+            "interaction_id": "3060"
+          },
+          "produces": "new_interaction_id"
+        }
+      ],
+      "rows": [
+        {
+          "exp": "activity/activity/add",
+          "act": "interaction/interaction/add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 6,
+          "keys_found": 1,
+          "keys_value_ok": 1,
+          "extra_keys": [],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        }
+      ],
+      "metrics": {
+        "full_match": 0,
+        "table_hit": 0,
+        "sheet_hit": 0,
         "action_hit": 1,
-        "keys_found": 6,
-        "keys_ok": 5,
+        "keys_found": 1,
+        "keys_ok": 1,
         "keys_exp": 6,
         "extra_key_ops": 0,
         "ph_total": 0,
@@ -71,132 +557,260 @@
     {
       "name": "门派神通微调·两个门派各改一处（中文策划口吻，school 2表 modify + row_key 定位）",
       "input": "剑修的战斗模型换成 1075，然后把'驭风'这条神通的描述改成'每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势'。",
-      "dur_s": 105.4,
+      "dur_s": 33.4,
       "loc_err": "",
       "parse_err": "",
       "locator": {
         "candidates": [
           "ability",
+          "school_ability",
           "combat",
           "model_prefab",
           "exclusive_state",
           "spell",
-          "school",
           "assistant_level",
-          "item_recipe"
+          "school"
         ],
-        "fk_edges": 1,
+        "fk_edges": 10,
         "is_cross_table": true
       },
       "n_expected": 2,
-      "n_actual": 4,
-      "actual": [
-        {
-          "action": "set",
-          "table": "combat",
-          "sheet": "combat_data",
-          "fields": {
-            "战斗模式": 1075
-          },
-          "locator_field": "战斗类型",
-          "locator_value": "剑修"
-        },
-        {
-          "action": "set",
-          "table": "ability",
-          "sheet": "Ability",
-          "fields": {
-            "神通描述": "每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势"
-          },
-          "locator_field": "名称",
-          "locator_value": "驭风"
-        },
-        {
-          "action": "set",
-          "table": "school",
-          "sheet": "School",
-          "fields": {
-            "combat_model_id": 1075
-          },
-          "locator_field": "name",
-          "locator_value": "剑修"
-        },
-        {
-          "action": "set",
-          "table": "school_ability",
-          "sheet": "SchoolAbility",
-          "fields": {
-            "desc": "每次施法积累风势，风势满溢后进入狂风状态，获得额外行动机会，首回合必得一层风势"
-          },
-          "locator_field": "name",
-          "locator_value": "驭风"
-        }
-      ],
+      "n_actual": 0,
+      "actual": [],
       "rows": [
         {
-          "exp": "school/school/set",
-          "act": "school/school/set",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "locator_ok": false,
-          "exp_keys": 1,
-          "keys_found": 1,
-          "keys_value_ok": 1,
-          "extra_keys": [],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": true
+          "exp": "school/School/modify",
+          "act": "〈缺失〉",
+          "unmatched": true
         },
         {
-          "exp": "school_ability/schoolability/set",
-          "act": "school_ability/schoolability/set",
-          "table_ok": true,
-          "sheet_ok": true,
-          "action_ok": true,
-          "locator_ok": false,
-          "exp_keys": 1,
-          "keys_found": 1,
-          "keys_value_ok": 1,
-          "extra_keys": [],
-          "ph_total": 0,
-          "ph_ok": 0,
-          "full_match": true
+          "exp": "school_ability/SchoolAbility/modify",
+          "act": "〈缺失〉",
+          "unmatched": true
         }
       ],
       "metrics": {
-        "full_match": 2,
-        "table_hit": 2,
-        "sheet_hit": 2,
-        "action_hit": 2,
-        "keys_found": 2,
-        "keys_ok": 2,
-        "keys_exp": 2,
+        "full_match": 0,
+        "table_hit": 0,
+        "sheet_hit": 0,
+        "action_hit": 0,
+        "keys_found": 0,
+        "keys_ok": 0,
+        "keys_exp": 0,
         "extra_key_ops": 0,
         "ph_total": 0,
         "ph_ok": 0,
         "ph_unresolved": 0,
         "ph_resolved_total": 0,
-        "loc_total": 2,
+        "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "新建门派归属神兽·青鸾（中文策划口吻，跨3表 add + 门派神通 + 灵根 + 全服邮件）",
+      "input": "新建一个法术门派叫'青鸾阁'，门派编号 10，门派类型 2，大世界模型 1028，战斗模型 1068。给它配两个神通：第一个叫'鸾鸣九霄'，描述'召唤青鸾鸣啼，对多个敌人造成法术伤害并削弱其速度'，心法一叫'鸾鸣·迅'，描述'额外降低敌人速度'，心法二叫'鸾鸣·愈'，描述'命中时回复自身真元'，每级消耗灵石 0，一级升一级要人物 1 级，技能编号 1001；第二个叫'青羽庇护'，描述'以青鸾羽翼庇护全队，持续回复气血'，心法一叫'青羽·固'，描述'护盾额外抵挡法术伤害'，心法二叫'青羽·扬'，描述'治疗目标时额外清除减益'，每级消耗灵石 0，一级升一级要人物 1 级，技能编号 1002。灵根映射：鸾鸣九霄绑木灵根给天赋 600002，青羽庇护绑水灵根给天赋 600001。最后发一封全服邮件：标题'青鸾阁新门派上线'，内容'青鸾阁今日现世，修炼法术的少侠可前往拜师'，全服邮件编号 22，类型 1，发送人'系统'，发送时间 2026-12-01 00:00:00，不带奖励。",
+      "dur_s": 19.7,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "school",
+          "ability",
+          "school_ability",
+          "spirit",
+          "school_spirit",
+          "spell",
+          "spell_group",
+          "hero",
+          "reward",
+          "mail",
+          "combat",
+          "model_prefab",
+          "item",
+          "school_talent"
+        ],
+        "fk_edges": 33,
+        "is_cross_table": true
+      },
+      "n_expected": 9,
+      "n_actual": 2,
+      "actual": [
+        {
+          "action": "add",
+          "table": "school",
+          "sheet": "School",
+          "fields": {
+            "school": "10"
+          },
+          "produces": "new_school_id"
+        },
+        {
+          "action": "add",
+          "table": "spell",
+          "sheet": "",
+          "fields": {
+            "技能编号": "1001"
+          },
+          "produces": "new_spell_id"
+        }
+      ],
+      "rows": [
+        {
+          "exp": "school/school/add",
+          "act": "school/school/add",
+          "table_ok": true,
+          "sheet_ok": true,
+          "action_ok": true,
+          "exp_keys": 7,
+          "keys_found": 1,
+          "keys_value_ok": 0,
+          "extra_keys": [],
+          "ph_total": 1,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/schoolability/add",
+          "act": "spell//add",
+          "table_ok": false,
+          "sheet_ok": false,
+          "action_ok": true,
+          "exp_keys": 8,
+          "keys_found": 0,
+          "keys_value_ok": 0,
+          "extra_keys": [
+            "技能编号"
+          ],
+          "ph_total": 0,
+          "ph_ok": 0,
+          "full_match": false
+        },
+        {
+          "exp": "school_ability/SchoolAbilityLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbility/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbilityLevel/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_spirit/SchoolSpirit/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "mail/MailTemplate/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "mail/GlobalMail/add",
+          "act": "〈缺失〉",
+          "unmatched": true
+        }
+      ],
+      "metrics": {
+        "full_match": 0,
+        "table_hit": 1,
+        "sheet_hit": 1,
+        "action_hit": 2,
+        "keys_found": 1,
+        "keys_ok": 0,
+        "keys_exp": 15,
+        "extra_key_ops": 1,
+        "ph_total": 1,
+        "ph_ok": 0,
+        "ph_unresolved": 0,
+        "ph_resolved_total": 0,
+        "loc_total": 0,
+        "loc_ok": 0
+      }
+    },
+    {
+      "name": "门派神通删除与名称修正（中文策划口吻，school 2表 delete+modify 混合）",
+      "input": "把测试神通'TEST'下架掉，它对应的等级数据也一起清掉；另外把门派'剑修'的名字改成'剑宗'。",
+      "dur_s": 26.4,
+      "loc_err": "",
+      "parse_err": "",
+      "locator": {
+        "candidates": [
+          "ability",
+          "school_ability",
+          "school_spirit",
+          "school",
+          "hero_level",
+          "assistant_ability",
+          "pet_spell_book",
+          "assistant_level"
+        ],
+        "fk_edges": 8,
+        "is_cross_table": true
+      },
+      "n_expected": 3,
+      "n_actual": 0,
+      "actual": [],
+      "rows": [
+        {
+          "exp": "school_ability/SchoolAbility/delete",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school_ability/SchoolAbilityLevel/delete",
+          "act": "〈缺失〉",
+          "unmatched": true
+        },
+        {
+          "exp": "school/School/modify",
+          "act": "〈缺失〉",
+          "unmatched": true
+        }
+      ],
+      "metrics": {
+        "full_match": 0,
+        "table_hit": 0,
+        "sheet_hit": 0,
+        "action_hit": 0,
+        "keys_found": 0,
+        "keys_ok": 0,
+        "keys_exp": 0,
+        "extra_key_ops": 0,
+        "ph_total": 0,
+        "ph_ok": 0,
+        "ph_unresolved": 0,
+        "ph_resolved_total": 0,
+        "loc_total": 0,
         "loc_ok": 0
       }
     }
   ],
   "summary": {
-    "cases": 2,
-    "expected": 3,
-    "actual": 5,
-    "table_hit": 3,
-    "sheet_hit": 3,
-    "action_hit": 3,
-    "full": 2,
-    "keys_exp": 8,
-    "keys_found": 8,
+    "cases": 7,
+    "expected": 40,
+    "actual": 14,
+    "table_hit": 7,
+    "sheet_hit": 2,
+    "action_hit": 14,
+    "full": 0,
+    "keys_exp": 79,
+    "keys_found": 16,
     "keys_ok": 7,
-    "ph_total": 0,
+    "ph_total": 3,
     "ph_ok": 0,
-    "ph_unresolved": 0,
-    "loc_total": 2,
+    "ph_unresolved": 4,
+    "loc_total": 0,
     "loc_ok": 0
   }
 }
