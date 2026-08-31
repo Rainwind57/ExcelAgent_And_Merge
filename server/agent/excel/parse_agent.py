@@ -424,17 +424,21 @@ class ParseAgent:
         if not intents:
             return intents
         fk_edges = getattr(locator_result, "fk_edges", None) or []
+        self._normalize_intent_targets(intents)
         self._prune_fields_not_in_schema(intents)
         self._align_placeholder_families(intents)
         self._ensure_produced_primary_fields(intents)
         self._replace_reused_explicit_pks_with_placeholders(intents, fk_edges)
         self._backfill_missing_fk_fields(intents, fk_edges)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._resolve_ordinal_placeholders(intents, fk_edges)
         self._expand_repeated_child_configs(intents, text, fk_edges)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._resolve_placeholders_to_explicit_pks(intents)
         self._resolve_placeholders_by_embedded_explicit_pks(intents, fk_edges)
         self._fill_empty_fks_from_explicit_pks(intents, fk_edges)
         self._drop_foreign_placeholder_primary_fields(intents, fk_edges)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._backfill_same_workbook_placeholder_fields(intents)
         self._expand_enumerated_same_sheet_adds(intents, text)
         self._supplement_option_rows_from_text(intents, text)
@@ -444,6 +448,7 @@ class ParseAgent:
         intents = self._dedupe_same_sheet_shadows(intents)
         intents = self._dedupe_same_sheet_natural_duplicates(intents)
         self._uniquify_reused_placeholder_primary_fields(intents)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._demote_consumed_duplicate_producers(intents)
         self._clean_self_consumes(intents)
         self._clean_dangling_consumes(intents)
@@ -463,8 +468,11 @@ class ParseAgent:
         self._resolve_placeholders_by_embedded_explicit_pks(intents, fk_edges)
         self._fill_empty_fks_from_explicit_pks(intents, fk_edges)
         self._replace_reused_explicit_pks_with_placeholders(intents, fk_edges)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._drop_foreign_placeholder_primary_fields(intents, fk_edges)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._uniquify_reused_placeholder_primary_fields(intents)
+        self._repair_fk_placeholder_targets(intents, fk_edges)
         self._demote_consumed_duplicate_producers(intents)
         self._clean_self_consumes(intents)
         self._clean_dangling_consumes(intents)
@@ -988,6 +996,49 @@ class ParseAgent:
                 if src:
                     m[ParseAgent._field_name_norm(src)] = canon
         return m
+
+    def _normalize_intent_targets(self, intents: list[NLIntent]) -> int:
+        if not intents or self._cli is None:
+            return 0
+        try:
+            tables = list(self._cli.list_tables() or [])
+        except Exception:
+            return 0
+        by_norm = {
+            self._field_name_norm(getattr(p, "stem", "") or ""): p
+            for p in tables
+            if getattr(p, "stem", "")
+        }
+        n = 0
+        for it in intents:
+            stem = str(getattr(it, "table_hint", "") or "").strip()
+            stem_norm = self._field_name_norm(stem)
+            path = by_norm.get(stem_norm)
+            if path is None:
+                continue
+            real_stem = getattr(path, "stem", "") or stem
+            if real_stem and real_stem != stem:
+                it.table_hint = real_stem
+                n += 1
+            sheet = str(getattr(it, "sheet_hint", "") or "").strip()
+            if not sheet:
+                continue
+            try:
+                sheets = list(self._cli.get_sheets(path) or [])
+            except Exception:
+                continue
+            sheet_by_norm = {
+                self._field_name_norm(s): s
+                for s in sheets
+                if s and str(s).upper() != "CONFIG"
+            }
+            real_sheet = sheet_by_norm.get(self._field_name_norm(sheet))
+            if real_sheet and real_sheet != sheet:
+                it.sheet_hint = real_sheet
+                n += 1
+        if n:
+            self._think(f"Step1 intent targets normalized: {n}")
+        return n
 
     @staticmethod
     def _drop_orphan_empty_adds(intents: list[NLIntent]) -> list[NLIntent]:
@@ -2158,6 +2209,148 @@ class ParseAgent:
             if fs and fsh and fc and ts and tsh and (fs, fsh) != (ts, tsh):
                 out.setdefault((fs, fsh, fc), set()).add((ts, tsh))
         return out
+
+    def _repair_fk_placeholder_targets(self, intents: list[NLIntent],
+                                       fk_edges: list) -> int:
+        if not intents:
+            return 0
+
+        def _label(it) -> str:
+            lab = getattr(it, "produces_label", None)
+            if not lab and getattr(it, "extras", None):
+                lab = it.extras.get("produces")
+            return str(lab or "").strip().strip("<>").strip()
+
+        def _placeholder(value) -> str:
+            if not isinstance(value, str):
+                return ""
+            raw = value.strip()
+            if raw.startswith("<") and raw.endswith(">"):
+                return raw.strip("<>").strip()
+            return ""
+
+        def _set_consume(it: NLIntent, col: str, label: str) -> None:
+            own = _label(it)
+            it.consumes_labels = [
+                x for x in (getattr(it, "consumes_labels", None) or [])
+                if str(x).strip().strip("<>").strip() != own
+            ]
+            if label not in it.consumes_labels:
+                it.consumes_labels.append(label)
+            extras = getattr(it, "extras", None)
+            if isinstance(extras, dict):
+                consumes = extras.get("consumes")
+                if isinstance(consumes, dict):
+                    consumes[col] = label
+
+        produced_at: dict[str, tuple[str, str]] = {}
+        producers_by_target: dict[tuple[str, str], list[str]] = {}
+        for it in intents:
+            if getattr(it, "action", "") != "add":
+                continue
+            lab = _label(it)
+            if not lab:
+                continue
+            target = (
+                (getattr(it, "table_hint", "") or "").strip().lower(),
+                (getattr(it, "sheet_hint", "") or "").strip().lower(),
+            )
+            produced_at[lab] = target
+            producers_by_target.setdefault(target, []).append(lab)
+
+        fk_by_child_col: dict[tuple[str, str, str], tuple[str, str]] = {}
+        for edge in fk_edges or []:
+            child = (
+                (getattr(edge, "from_stem", "") or "").strip().lower(),
+                (getattr(edge, "from_sheet", "") or "").strip().lower(),
+                self._field_name_norm(getattr(edge, "from_column", "") or ""),
+            )
+            target = (
+                (getattr(edge, "to_stem", "") or "").strip().lower(),
+                (getattr(edge, "to_sheet", "") or "").strip().lower(),
+            )
+            if child[0] and child[1] and child[2] and target[0] and child[:2] != target:
+                fk_by_child_col[child] = target
+        if not produced_at:
+            return 0
+
+        repair_groups: dict[tuple[str, str, str, tuple[str, str]],
+                            list[tuple[NLIntent, str, str]]] = {}
+        n = 0
+        def _hinted_target(col_norm: str) -> tuple[str, str] | None:
+            hinted = []
+            col_base = re.sub(r"\d+$", "", col_norm)
+            for maybe_target in producers_by_target:
+                t_stem, t_sheet = maybe_target
+                stem_norm = self._field_name_norm(t_stem)
+                sheet_norm = self._field_name_norm(t_sheet)
+                pk_names = {
+                    self._field_name_norm(x)
+                    for x in self._primary_field_names(t_stem, t_sheet)
+                }
+                pk_names = {x for x in pk_names if x and x != "id"}
+                pk_hit = any(
+                    col_base == pk
+                    or col_base == f"{pk}s"
+                    or col_base.endswith(f"{pk}s")
+                    for pk in pk_names
+                )
+                if (((stem_norm and col_norm == f"{stem_norm}id")
+                     or (sheet_norm and col_norm == f"{sheet_norm}id"))
+                        or pk_hit):
+                    hinted.append(maybe_target)
+            return hinted[0] if len(hinted) == 1 else None
+
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").strip().lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").strip().lower()
+            canon = self._field_canon_map(stem, sheet)
+            for col, value in list(fields.items()):
+                label = _placeholder(value)
+                if not label or label not in produced_at:
+                    continue
+                raw_norm = self._field_name_norm(col)
+                col_norm = canon.get(raw_norm, raw_norm)
+                target = fk_by_child_col.get((stem, sheet, col_norm))
+                hint_target = _hinted_target(col_norm)
+                if hint_target is not None and (
+                        target is None
+                        or not producers_by_target.get(target)
+                        or target == produced_at.get(label)):
+                    target = hint_target
+                if target is None:
+                    continue
+                if produced_at.get(label) == target:
+                    continue
+                candidates = producers_by_target.get(target) or []
+                if len(candidates) == 1:
+                    fields[col] = f"<{candidates[0]}>"
+                    _set_consume(it, col, candidates[0])
+                    n += 1
+                    continue
+                repair_groups.setdefault(
+                    (stem, sheet, col_norm, target), [],
+                ).append((it, col, label))
+
+        for (_stem, _sheet, _col_norm, target), rows in repair_groups.items():
+            candidates = producers_by_target.get(target) or []
+            if len(candidates) != len(rows) or len(candidates) <= 1:
+                continue
+            for (it, col, old_label), new_label in zip(rows, candidates):
+                if old_label == new_label:
+                    continue
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if not isinstance(fields, dict):
+                    continue
+                fields[col] = f"<{new_label}>"
+                _set_consume(it, col, new_label)
+                n += 1
+        if n:
+            self._think(f"Step1 FK placeholder targets repaired: {n}")
+        return n
 
     def _bind_self_primary_to_upstream(self, intents: list[NLIntent],
                                        fk_edges: list) -> int:

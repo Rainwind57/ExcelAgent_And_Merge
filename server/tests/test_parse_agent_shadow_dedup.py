@@ -51,7 +51,46 @@ class _MailCli:
         return self._sheets[sheet][1]
 
 
+class _TargetCli(_MailCli):
+    def __init__(self):
+        super().__init__()
+        self._sheets.update({
+            "combat_data": (
+                ["战斗ID", "NPC列表"],
+                ["combat_id:int", "npc_ids[0]:int"],
+            ),
+            "PveCombatNpc": (
+                ["ID", "名称"],
+                ["npc_id:int", "name:string"],
+            ),
+        })
+
+    def list_tables(self):
+        class _P:
+            def __init__(self, stem):
+                self.stem = stem
+        return [_P("combat"), _P("pve_combat_npc")]
+
+    def get_sheets(self, path):
+        if path.stem == "combat":
+            return ["CONFIG", "combat_data"]
+        if path.stem == "pve_combat_npc":
+            return ["CONFIG", "PveCombatNpc"]
+        return []
+
+
 class TestDedupeSameSheetShadows:
+    def test_normalize_intent_targets_maps_sheet_name_by_normalized_form(self):
+        pa = ParseAgent(cli=_TargetCli())
+        intent = _it({"combat_id": "<new_combat_id>"},
+                     stem="combat", sheet="CombatData")
+
+        changed = pa._normalize_intent_targets([intent])
+
+        assert changed == 1
+        assert intent.table_hint == "combat"
+        assert intent.sheet_hint == "combat_data"
+
     def test_same_explicit_pk_duplicates_are_merged(self):
         pa = ParseAgent(cli=_MailCli())
         sparse = _it({"template_id": 30020, "title": "月华庆典", "content": ""})
@@ -237,6 +276,97 @@ class TestDedupeSameSheetShadows:
 
         assert changed == 1
         assert it.consumes_labels == ["new_template_id"]
+
+    def test_repair_fk_placeholder_targets_uses_fk_target_table_order(self):
+        pa = ParseAgent(cli=_MailCli())
+        p1 = _it({"id": "<new_parent_1_id>", "name": "P1"},
+                 stem="parent", sheet="Parent")
+        p1.produces_label = "new_parent_1_id"
+        p1.extras["produces"] = "new_parent_1_id"
+        p2 = _it({"id": "<new_parent_2_id>", "name": "P2"},
+                 stem="parent", sheet="Parent")
+        p2.produces_label = "new_parent_2_id"
+        p2.extras["produces"] = "new_parent_2_id"
+        c1 = _it({"parent_id": "<new_child_1_id>", "value": 1},
+                 stem="child", sheet="Child")
+        c1.produces_label = "new_child_1_id"
+        c1.extras["produces"] = "new_child_1_id"
+        c2 = _it({"parent_id": "<new_child_2_id>", "value": 2},
+                 stem="child", sheet="Child")
+        c2.produces_label = "new_child_2_id"
+        c2.extras["produces"] = "new_child_2_id"
+        edges = [FKEdge("child", "Child", "parent_id",
+                        "parent", "Parent", "id")]
+
+        changed = pa._repair_fk_placeholder_targets([p1, p2, c1, c2], edges)
+
+        assert changed == 2
+        assert c1.extras["fields"]["parent_id"] == "<new_parent_1_id>"
+        assert c2.extras["fields"]["parent_id"] == "<new_parent_2_id>"
+        assert c1.consumes_labels == ["new_parent_1_id"]
+        assert c2.consumes_labels == ["new_parent_2_id"]
+
+    def test_repair_fk_placeholder_targets_overrides_self_target_edge_with_name_hint(self):
+        pa = ParseAgent(cli=_MailCli())
+        p = _it({"parent_id": "<new_parent_id>", "name": "P"},
+                stem="parent", sheet="Parent")
+        p.produces_label = "new_parent_id"
+        p.extras["produces"] = "new_parent_id"
+        c = _it({"parent_id": "<new_child_id>", "value": 1},
+                stem="child", sheet="Child")
+        c.produces_label = "new_child_id"
+        c.extras["produces"] = "new_child_id"
+        edges = [FKEdge("child", "Child", "parent_id",
+                        "child", "Child", "id")]
+
+        changed = pa._repair_fk_placeholder_targets([p, c], edges)
+
+        assert changed == 1
+        assert c.extras["fields"]["parent_id"] == "<new_parent_id>"
+        assert c.consumes_labels == ["new_parent_id"]
+
+    def test_repair_fk_placeholder_targets_uses_producer_primary_name_for_list_fk(self):
+        pa = ParseAgent(cli=_TargetCli())
+        combat = _it({"combat_id": "<new_combat_id>",
+                      "npc_ids[0]": "<new_combat_id>"},
+                     stem="combat", sheet="combat_data")
+        combat.produces_label = "new_combat_id"
+        combat.extras["produces"] = "new_combat_id"
+        npc = _it({"npc_id": "<new_npc_id>", "name": "Boss"},
+                  stem="pve_combat_npc", sheet="PveCombatNpc")
+        npc.produces_label = "new_npc_id"
+        npc.extras["produces"] = "new_npc_id"
+
+        changed = pa._repair_fk_placeholder_targets([combat, npc], [])
+
+        assert changed == 1
+        assert combat.extras["fields"]["npc_ids[0]"] == "<new_npc_id>"
+        assert combat.consumes_labels == ["new_npc_id"]
+
+    def test_repair_fk_placeholder_targets_uses_column_name_when_fk_edge_missing(self):
+        pa = ParseAgent(cli=_MailCli())
+        p1 = _it({"school_ability_id": "<new_ability1_id>", "name": "A"},
+                 stem="school_ability", sheet="SchoolAbility")
+        p1.produces_label = "new_ability1_id"
+        p1.extras["produces"] = "new_ability1_id"
+        p2 = _it({"school_ability_id": "<new_ability2_id>", "name": "B"},
+                 stem="school_ability", sheet="SchoolAbility")
+        p2.produces_label = "new_ability2_id"
+        p2.extras["produces"] = "new_ability2_id"
+        c1 = _it({"school_ability_id": "<new_child_1_id>", "spirit_id": 1},
+                 stem="school_spirit", sheet="SchoolSpirit")
+        c1.produces_label = "new_child_1_id"
+        c1.extras["produces"] = "new_child_1_id"
+        c2 = _it({"school_ability_id": "<new_child_2_id>", "spirit_id": 2},
+                 stem="school_spirit", sheet="SchoolSpirit")
+        c2.produces_label = "new_child_2_id"
+        c2.extras["produces"] = "new_child_2_id"
+
+        changed = pa._repair_fk_placeholder_targets([p1, p2, c1, c2], [])
+
+        assert changed == 2
+        assert c1.extras["fields"]["school_ability_id"] == "<new_ability1_id>"
+        assert c2.extras["fields"]["school_ability_id"] == "<new_ability2_id>"
 
     def test_expand_repeated_child_configs_by_fk_and_ordered_sequence(self):
         pa = ParseAgent(cli=_MailCli())
