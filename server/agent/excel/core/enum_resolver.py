@@ -205,10 +205,58 @@ class EnumResolver:
         key = self._make_keys(stem, sheet, col_name)
         return key in self._label_to_value
 
+    @staticmethod
+    def _approximate_label(l2v: dict, label: str) -> Optional[int]:
+        """规则已有该列枚举、但用户用了近义/含修饰词表述时，近似匹配出唯一值。
+
+        判据（保守，绝不臆测多义）：
+          1. 精确/去空格 匹配由调用方先做，此处只做近似；
+          2. 子串包含（label 与规则标签互为子串，如「限时」↔「限时活动」）命中
+             且唯一 → 采用；
+          3. 否则 difflib 相似度 ≥ 阈值且唯一最优（与次优拉开差距）→ 采用；
+          4. 命中不唯一 / 相似度不足 → 返回 None（交上层 ask，不猜错业务值）。
+        """
+        if not l2v or not label:
+            return None
+        nl = label.strip()
+        if not nl:
+            return None
+        keys = [str(k) for k in l2v]
+        # 子串包含（用户值短于规则标签常见：限时 / 限时活动）
+        contains = [k for k in keys if nl in k or k in nl]
+        if len(contains) == 1:
+            return l2v[contains[0]]
+        if contains:
+            # 多命中时取最短规则标签（最接近原词），仍不唯一则放弃
+            shortest = min(contains, key=len)
+            if sum(1 for k in contains if len(k) == len(shortest)) == 1:
+                return l2v[shortest]
+            return None
+        # 相似度兜底（拼写变体），阈值高且须与次优拉开差距防误判
+        try:
+            from difflib import SequenceMatcher
+        except ImportError:
+            return None
+        _THRESHOLD = 0.82
+        scored = sorted(
+            ((SequenceMatcher(None, nl, k).ratio(), k) for k in keys),
+            reverse=True)
+        if not scored:
+            return None
+        best_ratio, best_key = scored[0]
+        if best_ratio < _THRESHOLD:
+            return None
+        if len(scored) > 1 and scored[1][0] >= best_ratio - 0.06:
+            return None  # 与次优太近，可能多义
+        return l2v[best_key]
+
     def resolve_label(self, stem: str, sheet: str, col_name: str, label: str) -> Optional[int]:
         """中文标签 → int 值。未命中返回 None。
 
         D10: L1 严格映射未命中时，回退查 pending 候选（register_label 写入）。
+        近似匹配：规则里已有该列枚举但用户用了近义/含修饰词表述（如
+        「限时」vs「限时活动」、「炼器」vs「炼器」）时，按唯一性保守近似命中，
+        不臆测多义值。
         """
         key = self._make_keys(stem, sheet, col_name)
         l2v = self._label_to_value.get(key)
@@ -221,6 +269,10 @@ class EnumResolver:
             for k, v in l2v.items():
                 if k.strip() == nl:
                     return v
+            # 近似匹配（规则有映射但措辞不同）
+            approx = self._approximate_label(l2v, nl)
+            if approx is not None:
+                return approx
         # D10: 回退 pending 候选
         pl2v = self._pending_l2v.get(key)
         if pl2v is not None:
@@ -230,6 +282,9 @@ class EnumResolver:
             for k, v in pl2v.items():
                 if k.strip() == nl:
                     return v
+            approx = self._approximate_label(pl2v, nl)
+            if approx is not None:
+                return approx
         return None
 
     def resolve_value(self, stem: str, sheet: str, col_name: str, value: Any) -> Optional[str]:

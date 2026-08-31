@@ -1794,9 +1794,9 @@ anti_patterns:
   sheet: Activity
   column: 活动名称
   trigger: ambiguous
-  occurrences: 3
+  occurrences: 25
   first_seen: '2026-08-28T14:41:49+08:00'
-  last_seen: '2026-08-28T14:41:49+08:00'
+  last_seen: '2026-08-31T10:33:18+08:00'
   action: force_exact
   status: active
   source: rule
@@ -1873,3 +1873,15 @@ anti_patterns:
   rationale: 输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型包含限时活动），而枚举列表仅覆盖了部分类型。此类失败源于枚举定义与业务语义不一致，属于可复用的语义触发模式。;
     输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型为限时活动），而枚举列表仅包含数字编码。此类失败源于语义值与编码值之间的映射缺失，属于可复用的模式：当输入为中文业务词而枚举为数字编码时，应提示而非阻断，并建议补充映射或确认。;
     输入值「限时」不在枚举白名单中，但该值可能是业务上合法的语义描述（如活动类型为限时活动），而枚举列表仅包含数字编码。此类失败源于枚举校验与业务语义脱节，可复用模式为：当输入文本包含业务语义词（如限时）且目标列为枚举类型时，应提示而非阻断，避免误杀合法配置。
+- id: ap_fail_activity_Activity_delete_row
+  type: failed_operation
+  table_stem: activity
+  sheet: Activity
+  operation: delete_row
+  trigger: confirm_abandoned
+  occurrences: 7
+  first_seen: '2026-08-31T09:35:43+08:00'
+  last_seen: '2026-08-31T10:02:08+08:00'
+  action: require_confirm
+  status: active
+  source: rule
