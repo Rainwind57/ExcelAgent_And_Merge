@@ -438,6 +438,9 @@ class ParseAgent:
         self._backfill_same_workbook_placeholder_fields(intents)
         self._expand_enumerated_same_sheet_adds(intents, text)
         self._supplement_option_rows_from_text(intents, text)
+        if self._backfill_dangling_placeholder_producers(intents, text, fk_edges):
+            self._scrub_narrative_scalar(intents)
+            self._prune_fields_not_in_schema(intents)
         self._compact_indexed_field_gaps(intents)
         self._prune_fields_not_in_schema(intents)
         intents = self._dedupe_same_sheet_same_explicit_pk(intents)
@@ -2930,6 +2933,186 @@ class ParseAgent:
         return n
 
     @staticmethod
+    def _fk_wildcard_base(raw_col: str) -> Optional[str]:
+        """FK 边 from_column 是否用大写「N」代表任意序号（如「选项N」代表
+        选项1~选项6 集合）。命中返回去掉 N 的基名，否则返回 None。
+
+        真实列名不会以裸大写 N 结尾（中文列名无大小写；英文规范名以数字
+        索引 [0]/1 为主），故直接判断原始大写 N 结尾足够安全，不会误伤。
+        """
+        s = str(raw_col or "").strip()
+        if len(s) > 1 and s.endswith("N"):
+            return s[:-1]
+        return None
+
+    def _edge_target_keys(self, stem: str, sheet: str, raw_col: str) -> set[str]:
+        """把 FK 边的 from_column（可能是真实列名，也可能带 N 通配符）解析为
+        该 sheet 下匹配到的规范键（通配符边按去尾号族展开），供跟 Step1
+        清洗后的字段键（英文规范名，如 options[0]）互认比较。
+        """
+        wild_base = self._fk_wildcard_base(raw_col)
+        keys: set[str] = set()
+        if wild_base:
+            headers = self._headers_for(stem, sheet) or []
+            types = self._type_row_for(stem, sheet) or []
+            for h, t in zip(headers, types):
+                h_s = str(h or "").strip()
+                if not h_s.startswith(wild_base):
+                    continue
+                t_base = str(t or "").split(":", 1)[0].strip()
+                canon_key = self._field_name_norm(t_base or h_s)
+                if canon_key:
+                    keys.add(re.sub(r"\d+$", "", canon_key))
+            return keys
+        canon = self._field_canon_map(stem, sheet)
+        norm_raw = self._field_name_norm(raw_col)
+        canon_key = canon.get(norm_raw, norm_raw)
+        if canon_key:
+            keys.add(canon_key)
+        return keys
+
+    def _consumer_col_key(self, stem: str, sheet: str, col: str, *,
+                          wildcard: bool = False) -> str:
+        """消费者字段键 → 规范键（中英文桥），wildcard=True 时再去尾号，
+        跟 `_edge_target_keys` 对同一族的通配符边对齐。
+        """
+        canon = self._field_canon_map(stem, sheet)
+        norm_col = self._field_name_norm(col)
+        canon_key = canon.get(norm_col, norm_col)
+        if wildcard:
+            canon_key = re.sub(r"\d+$", "", canon_key)
+        return canon_key
+
+    def _backfill_dangling_placeholder_producers(self, intents: list[NLIntent],
+                                                 text: str, fk_edges: list) -> int:
+        """悬空占位符定向补拆（框架级，不绑业务词）。
+
+        场景：DecomposeAgent 对复杂输入分段/单 prompt 退化时，consumer 侧已经
+        产出「引用 <label>」的字段（如 InteractionConv.options[0]=<opt_done_id>），
+        但对应的 producer 行（InteractionConvOption「知道了」）本身没被拆出来，
+        整条 <label> 悬空 → Step2 报 unresolved_placeholder 硬失败，拖累整条
+        指令链（哪怕其余 90% 都已正确产出）。
+
+        判据（保守，不瞎猜/不无限重拆）：
+          1. 收集所有 intent 字段里引用的占位符标签（排除 <auto>），与本批已
+             产出的 produces_label 集合求差 = 悬空标签。
+          2. 每个悬空标签按其消费者 (stem, sheet, col) 查 FK 边，定位唯一目标
+             (to_stem, to_sheet)；查不到就跳过——交 Step2 原有降级路径处理，
+             不臆测目标表。
+          3. 同一目标 (stem, sheet) 只补一次 LLM 调用（即使多个悬空标签指向
+             它），全批次上限 3 次调用防爆。
+          4. 定向 prompt = 原文 + 「只补缺失的 N 条 xxx 记录」提示，产出按顺位
+             绑定悬空标签为 produces_label。
+          5. 重拆仍产空 / 异常 → 静默跳过，悬空标签留给 Step2/_clean_dangling_
+             consumes 走原有软降级，不阻塞主链路（零回归底线）。
+        """
+        if not intents or self._decompose_agent is None:
+            return 0
+        # §多段路径修复：_compile_step1_references 传入的 fk_edges 只来自
+        # 首段 locator_result（_parse_segments 的已知限制，历史遗留），跨段
+        # 指令（如「引导 NPC」段的对话树在别的段）会漏掉该段真实产出的 FK 边，
+        # 目标定位必然落空。这里额外并入全段收集的 _last_locator_results，
+        # 覆盖面对齐多段实际候选，不改动既有调用方签名。
+        all_fk_edges = list(fk_edges or [])
+        for lr in getattr(self, "_last_locator_results", None) or []:
+            all_fk_edges.extend(getattr(lr, "fk_edges", None) or [])
+        fk_edges = all_fk_edges
+        referenced: set[str] = set()
+        consumer_ctx: dict[str, tuple[str, str, str]] = {}
+        for it in intents:
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = getattr(it, "sheet_hint", "") or ""
+            for col, val in fields.items():
+                if not isinstance(val, str):
+                    continue
+                s = val.strip()
+                if s.startswith("<") and s.endswith(">"):
+                    label = s.strip("<>").strip()
+                    if label and label.lower() != "auto":
+                        referenced.add(label)
+                        consumer_ctx.setdefault(label, (stem, sheet, str(col)))
+        produced: set[str] = set()
+        for it in intents:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if label:
+                produced.add(str(label).strip().strip("<>").strip())
+        dangling = sorted(referenced - produced)
+        if not dangling:
+            return 0
+
+        edge_by_child_col: dict[tuple[str, str, str], tuple[str, str]] = {}
+        for edge in fk_edges or []:
+            fs = (getattr(edge, "from_stem", "") or "").lower()
+            fsh = (getattr(edge, "from_sheet", "") or "")
+            fc_raw = getattr(edge, "from_column", "") or ""
+            ts = (getattr(edge, "to_stem", "") or "").lower()
+            tsh = (getattr(edge, "to_sheet", "") or "")
+            if not (fs and fc_raw and ts):
+                continue
+            for key in self._edge_target_keys(fs, fsh, fc_raw):
+                edge_by_child_col.setdefault((fs, fsh.lower(), key), (ts, tsh))
+
+        targets: dict[tuple[str, str], list[str]] = {}
+        for label in dangling:
+            ctx = consumer_ctx.get(label)
+            if not ctx:
+                continue
+            c_stem, c_sheet, c_col = ctx
+            key_exact = self._consumer_col_key(c_stem, c_sheet, c_col, wildcard=False)
+            key_wild = self._consumer_col_key(c_stem, c_sheet, c_col, wildcard=True)
+            target = (edge_by_child_col.get((c_stem, c_sheet.lower(), key_exact))
+                     or edge_by_child_col.get((c_stem, c_sheet.lower(), key_wild)))
+            if target is None or not target[0]:
+                continue
+            targets.setdefault(target, []).append(label)
+        if not targets:
+            return 0
+
+        _MAX_CALLS = 3
+        n_added = 0
+        calls = 0
+        for (t_stem, t_sheet), labels in targets.items():
+            if calls >= _MAX_CALLS:
+                break
+            calls += 1
+            try:
+                from .subagent.locator_agent import CandidateTable
+                cand = CandidateTable(stem=t_stem, sheet=t_sheet, confidence=0.5,
+                                      level="dangling_backfill", matched_term="")
+                hint = (f"\n\n【补充说明】上文指令里，{t_stem}/{t_sheet} 表还缺"
+                        f"{len(labels)} 条记录还没配出来，请只补出这些缺失的记录，"
+                        f"已经配置过的行不要重复产出。")
+                fk_block = self._decompose_agent._build_fk_block(fk_edges)
+                per_to = int(os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+                result = self._decompose_agent._decompose_single_prompt(
+                    text + hint, [cand], fk_block, per_to)
+                new_split = result[0] if isinstance(result, tuple) else result
+            except Exception:
+                logger.debug("悬空占位符定向重拆异常 target=%s/%s",
+                            t_stem, t_sheet, exc_info=True)
+                continue
+            if not new_split:
+                self._think(f"悬空占位符定向重拆 {t_stem}/{t_sheet} 仍产空"
+                            f"（标签 {labels}）")
+                continue
+            for idx, si in enumerate(new_split):
+                nl = self._split_to_nl(si, text)
+                if idx < len(labels):
+                    nl.produces_label = labels[idx]
+                    if nl.extras is not None:
+                        nl.extras["produces"] = labels[idx]
+                intents.append(nl)
+                n_added += 1
+            self._think(f"悬空占位符定向重拆 {t_stem}/{t_sheet} 补 {len(new_split)} "
+                        f"条（标签 {labels}）")
+        return n_added
+
+    @staticmethod
     def _compact_indexed_field_gaps(intents: list[NLIntent]) -> int:
         n = 0
         idx_re = re.compile(r"^(?P<base>.+)\[(?P<idx>\d+)\]$")
@@ -3204,10 +3387,32 @@ class ParseAgent:
         fb = (getattr(b, "extras", None) or {}).get("fields") or {}
         if not isinstance(fa, dict) or not isinstance(fb, dict):
             return False
-        vals_a = {repr(v) for v in fa.values()
-                  if str(v).strip() and not str(v).strip().startswith("<")}
-        vals_b = {repr(v) for v in fb.values()
-                  if str(v).strip() and not str(v).strip().startswith("<")}
+
+        def _real(v) -> str | None:
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or (s.startswith("<") and s.endswith(">")):
+                return None
+            return s
+
+        # 键值对视角判重：先剔除占位符/空值，再比较。
+        # 两层：
+        #  1) 任一「共享键」取值不同 → 是同表不同记录（保底掉落池 Phy/Mag/Crit
+        #     仅 attr_mod 不同、tips 多条仅 value/key 不同），绝不判重。
+        #  2) 共享键全一致 → 回退旧的值集合启发式，仍能识别「同一目标但列名用了
+        #     别名」的 retry/backfill 重复（如 活动id vs 活动编号 同值）。
+        pa = {str(k): _real(v) for k, v in fa.items()}
+        pb = {str(k): _real(v) for k, v in fb.items()}
+        pa = {k: v for k, v in pa.items() if v is not None}
+        pb = {k: v for k, v in pb.items() if v is not None}
+        if not pa or not pb:
+            return False
+        shared = set(pa) & set(pb)
+        if any(pa[k] != pb[k] for k in shared):
+            return False
+        vals_a = set(pa.values())
+        vals_b = set(pb.values())
         if len(vals_a) < 2 or len(vals_b) < 2:
             return False
         overlap = len(vals_a & vals_b)

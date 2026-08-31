@@ -820,12 +820,21 @@ class LocatorAgent(LLMSubAgent):
             edges.append(e)
 
         # 1) 静态 json（人工覆盖层，优先）
+        # §修复：原 `fs != ts` 把同 stem（同一 workbook）跨 sheet 的人工登记
+        # 关系也滤掉了——如 interaction.InteractionConv.选项N → interaction.
+        # InteractionConvOption（对话树选项引用），from/to 同属 interaction stem
+        # 但是不同 sheet，属于合法且需要的 FK 边，不应被当"同表自环"丢弃。
+        # 改为只排除真正的自环（同 stem 同 sheet 同列，无跨行/跨 sheet 语义）。
         rg = self._get_relation_graph()
         if rg is not None:
             for r in rg.relations:
                 fs = _stem_of_path(r.from_path)
                 ts = _stem_of_path(r.to_path)
-                if fs in cand_stems and ts in cand_stems and fs != ts:
+                is_self_loop = (
+                    fs == ts and (r.from_sheet or "") == (r.to_sheet or "")
+                    and (r.from_column or "").strip().lower()
+                    == (r.to_column or "").strip().lower())
+                if fs in cand_stems and ts in cand_stems and not is_self_loop:
                     _add(FKEdge(
                         from_stem=fs, from_sheet=r.from_sheet,
                         from_column=r.from_column,

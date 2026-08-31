@@ -2543,7 +2543,8 @@ class TableAgent:
                         return enum_val, None, None
                     # §中文枚举列放行：int 列标注但现有数据存中文 → 中文值合法，
                     # 直接写入原值（activity_type:int 实际存「春节活动」）。
-                    if self._is_cn_enum_column(stem, sheet, col_name):
+                    _is_cn_enum = getattr(self, "_is_cn_enum_column", None)
+                    if _is_cn_enum is not None and _is_cn_enum(stem, sheet, col_name):
                         return value, None, None
                     # D10: LLM 辅助枚举发现（resolve 未命中 → LLM 推断 + register pending）
                     # §P0-4 零LLM gate：Step3 (execute_no_llm=True) 禁止发 LLM，
@@ -3285,7 +3286,7 @@ class TableAgent:
             # 语义失真。预演场景直接回落 needs_confirm（只读不删）。
             if (_ask_cb is not None
                     and not getattr(self, "_dry_run_flag", False)
-                    and os.getenv("CODEMAKER_AMBIG_DELETE_ASK", "0") == "1"):
+                    and os.getenv("CODEMAKER_AMBIG_DELETE_ASK", "1") != "0"):
                 _cand_rows = [
                     {"row": _r, "value": _v,
                      "summary": self._row_summary(path, sheet, _r,
