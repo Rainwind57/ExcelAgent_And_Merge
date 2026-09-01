@@ -1,9 +1,0 @@
-﻿=== space_data head ===
-0 ['Space缂栧彿', '鎻忚堪', '鍚嶇О', 'Space绫诲瀷', '鏈嶅姟绔満鏅祫婧愬悕', '瀹㈡埛绔満鏅祫婧愬悕绉?, '杩涘叆鍦烘櫙浣嶇疆', '闀滃ごYaw瑙?, '闀滃ごPitch瑙?, '闀滃ご璺濈', '闀滃ごfov', '鍒濆瀵昏矾缃戞牸鏄惁浠庣墿鐞嗙敓鎴?, '鏄惁鍔犺浇瀵昏矾', '鏈嶅姟绔繘鍏ュ満鏅湞鍚?, '澶ч檰id', '鍖哄煙閰嶇疆鏂囦欢', '瀹㈡埛绔疓ameMode绫诲瀷', '瀹㈡埛绔疓ameMode瀹炰緥ID', '鍦烘櫙BGM浜嬩欢ID']
-1 ['space_id:int', '_desc:string', 'name:string', 'space_type:string', 'server_map_res_name:', 'client_map_res_name:', 'enter_pos:list[float', 'camera.yaw:float', 'camera.pitch:float', 'camera.arm_length:fl', 'camera.fov:float', 'navmesh_from_physic:', 'is_load_navmesh:int', 'enter_yaw:float', 'continent_id:int', 'areatag_maps:list[st', 'client_gamemode_type', 'client_gamemode_inst', 'bgm_event_id:int']
-2 ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
-3 ['', '', '', '', '', '', '0, 0, 0', '0', '45', '27', '30', '', '1', '0', '', '', 'gamemode_round_world', '1', '0']
-4 ['10001', '', 'BattleGround', 'BigWorldSpace', 'BattleGround', 'Worlds/BattleGround.', '70, 0, 78', '', '', '', '', '1', '', '0', '0', '', '', '', '0']
-5 ['10002', '', 'InnerLogin', 'ClientScene', '', 'Worlds/LoginWorld.iw', '', '', '', '', '', '', '', '', '', '', 'gamemode_login_insta', '1', '1001']
-6 ['10003', '', 'Test6k', 'BigWorldSpace', 'AuroraTest0520', 'Worlds/AuroraTest052', '43, 2, 128', '', '', '', '', '0', '', '', '', 'AuroraTest0520.regio', '', '', '']
-7 ['10004', '', 'AuroraTest_gym', 'BigWorldSpace', '', 'Worlds/AuroraTest_gy', '-200, 1, -99', '', '', '', '', '', '', '', '', '', '', '', '']

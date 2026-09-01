@@ -1,5 +1,0 @@
-calamine version: builtins
-path exists: True
-sheets: ['CONFIG', '道具表说明', 'ItemType', 'ItemBase', 'Chest', 'Potion', 'ResidencePlantAccelerate', 'Equipment', 'Gem', 'GameplayAbilityChoicePool', 'Fabao', 'FabaoAbilityChoicePool']
-got sheet ItemBase: CalamineSheet(name='ItemBase')
-first: ['物品编号', '名称', '备注', '品质', '道具类型', '程序处理type', '道具描述', '图标', '最大堆叠数量', '可丢弃', '可使用的场景', '是否自动使用', '境界']

@@ -1,9 +1,0 @@
-﻿=== Model head ===
-0 ['缂栧彿', '濉〃璇存槑', '妯″瀷鍒楄〃', '楠ㄩ', '鏀诲嚮鍑烘墜楠ㄩ', '鍙楀嚮楠ㄩ', '瑙掕壊鍥?, '鍔ㄧ敾鍥?, '榛樿鍔ㄤ綔', '鏄惁鐢盙raph鎺у埗Yaw']
-1 ['model_id:int', '_desc:string', 'Model.model_paths:li', 'Animation.skeleton_p', 'Animation.attack_bon', 'Animation.be_hit_bon', 'Animation.cbp_path:s', 'Animation.abp_path:s', 'Animation.default_an', 'Animation.is_yaw_ctr']
-2 ['', '', '', '', '', '', '', '', '', '']
-3 ['', '', '', '', '', '', '', '', '', '']
-4 ['0', '绌烘ā鍨?, '', 'Char/Effect/base.ske', '', '', 'Graph/Effect/Empty.g', '', '', '']
-5 ['9999', '鐢ㄤ簬鎵胯浇EffectSequence鐨勭壒', '', 'Char/Effect/base.ske', '', '', 'Graph/Effect/Empty.g', '', '', '']
-6 ['1011', '鍥炲悎鍒舵垬鏂楀崟浣?- 闃垮叞', 'UEAnimationForMessia', 'Char/UEAnimationForM', 'WeaponA_01_JNT', 'Chest_M', 'Graph/CharacterBP/ba', 'Graph/StarRail/Arlan', '', '1']
-7 ['1012', '鍥炲悎鍒舵垬鏂楀崟浣?- 浜洪┈', 'UEAnimationForMessia', 'Char/UEAnimationForM', 'WeaponArrow_JNT', 'Chest_M', 'Graph/CharacterBP/ba', 'Graph/StarRail/Elite', '', '1']

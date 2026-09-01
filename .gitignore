@@ -119,3 +119,19 @@ _dbg_*.py
 _dbg_*.txt
 *.err
 *.out.txt
+
+# Root-level temporary dumps and presentation backups
+/_dump*
+/_tmp*
+/_panic*
+/_col_alias*
+/_tbl_dump*
+/_vc.txt
+/_current_ppt_dump.md
+/_fonts_dump.txt
+/_m.py
+/_r1.py
+/_s.py
+/*.backup*.pptx
+~$*.pptx
+server/tests/_tmp*
