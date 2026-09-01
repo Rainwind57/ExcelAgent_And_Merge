@@ -2651,6 +2651,8 @@ class AgentService:
                 "text": text,
                 "expires_at": time.time() + self._CONFIRM_TTL_SECONDS,
             }
+            # 复合操作中即便某个子任务需要确认，其余已定位/已解析的子任务
+            # 仍应把分段结果表格带给前端展示，避免确认期间"表格消失"。
             return AgentChatResponse(
                 ok=bool(result.ok) if result.ok is not None else False,
                 session_id=session_id,
@@ -2666,6 +2668,8 @@ class AgentService:
                 thinking_steps=self._build_thinking_steps(result),
                 cross_table_candidates=getattr(result, "cross_table_candidates", []) or [],
                 pending_search=getattr(result, "pending_search", None),
+                result_table=self._build_result_table(result),
+                sub_tasks=self._build_sub_tasks_info(result),
             )
 
         diff_preview = None
@@ -2694,30 +2698,7 @@ class AgentService:
 
         # 复合操作：把每个子任务的步骤/结果行/定位表各自归组，前端可分段渲染。
         # 单指令时 result.sub_tasks 为空，sub_tasks 也为空，前端走原平铺路径。
-        sub_tasks: list[SubTaskInfo] = []
-        for sub in result.sub_tasks:
-            sub_rt = self._build_result_table_from_subtask(sub)
-            _sub_steps = sub.get("steps", []) if isinstance(sub, dict) else []
-            sub_tasks.append(SubTaskInfo(
-                index=sub.get("index", 1),
-                intent_action=sub.get("intent_action", ""),
-                ok=sub.get("ok", True),
-                message=sub.get("message", ""),
-                steps=[AgentStepInfo(
-                           name=(s.get("name", "") if isinstance(s, dict)
-                                 else getattr(s, "name", "")),
-                           ok=(s.get("ok", False) if isinstance(s, dict)
-                               else getattr(s, "ok", False)),
-                           detail=(s.get("detail", "") if isinstance(s, dict)
-                                   else getattr(s, "detail", "")))
-                       for s in _sub_steps],
-                result_table=sub_rt,
-                table_stem=sub.get("table_stem", ""),
-                table_sheet=sub.get("table_sheet", ""),
-                skipped=bool(sub.get("skipped", False)),
-                needs_user_fill=sub.get("needs_user_fill", []) or [],
-                partial=sub.get("partial", False),
-            ))
+        sub_tasks = self._build_sub_tasks_info(result)
 
         # D5: ok=False 时用规范化 aggregated_message（不含成功步骤文本）
         final_message = (result.aggregated_message if result.ok is False
@@ -3001,6 +2982,39 @@ class AgentService:
                 )],
             )
         return None
+
+    def _build_sub_tasks_info(self, result: AgentResult) -> "list[SubTaskInfo]":
+        """把 result.sub_tasks（复合操作的子任务列表）转换为前端可渲染的
+        SubTaskInfo 列表，每项各自归组结果表/步骤，供分段渲染。
+
+        供正常完成分支与需二次确认分支共用，避免确认阶段丢失已定位的
+        分段结果表格（R: 确认卡片下方也应能看到已解析出的表格）。
+        """
+        sub_tasks: list[SubTaskInfo] = []
+        for sub in result.sub_tasks:
+            sub_rt = self._build_result_table_from_subtask(sub)
+            _sub_steps = sub.get("steps", []) if isinstance(sub, dict) else []
+            sub_tasks.append(SubTaskInfo(
+                index=sub.get("index", 1),
+                intent_action=sub.get("intent_action", ""),
+                ok=sub.get("ok", True),
+                message=sub.get("message", ""),
+                steps=[AgentStepInfo(
+                           name=(s.get("name", "") if isinstance(s, dict)
+                                 else getattr(s, "name", "")),
+                           ok=(s.get("ok", False) if isinstance(s, dict)
+                               else getattr(s, "ok", False)),
+                           detail=(s.get("detail", "") if isinstance(s, dict)
+                                   else getattr(s, "detail", "")))
+                       for s in _sub_steps],
+                result_table=sub_rt,
+                table_stem=sub.get("table_stem", ""),
+                table_sheet=sub.get("table_sheet", ""),
+                skipped=bool(sub.get("skipped", False)),
+                needs_user_fill=sub.get("needs_user_fill", []) or [],
+                partial=sub.get("partial", False),
+            ))
+        return sub_tasks
 
     def _build_result_table(self, result: AgentResult) -> Optional[ResultTable]:
         """从 AgentResult 构建表体结构（列名+行值），供前端直观渲染。

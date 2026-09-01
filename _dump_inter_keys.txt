@@ -1,0 +1,12 @@
+﻿=== Interaction
+ROW0: ["'缂栧彿'", "'濉〃璇存槑(涓嶅鍑?'", "'鍙氦浜掕寖鍥碶\n(鍦嗘煴楂樺害)'", "'鍙氦浜掕寖鍥碶\n(鍦嗘煴鍗婂緞)'", "'浜や簰鏁堟灉缂栧彿'", "'3001: 鎴樻枟ID'", "'3002: reward ID'", "'3003: 鐩爣space ID'", "'3004: 鐩爣space ID'", "'3004: spawn ID'", "'3005: 鐩爣space ID'", "'3005: 鐩爣浣嶇疆'", "'3005: 鐩爣鏈濆悜'", "'3006: 瀵硅瘽ID'", "'4003: 娲炲簻ID'", "'4004: 鍒嗚韩Prefab ID'"]
+ROW1: ["'interaction_id:int'", 'None', "'trigger_height: float'", "'trigger_radius: float'", "'effect.key: int'", "'effect.data.3001.combat_id: int'", "'effect.data.3002.reward_id: int'", "'effect.data.3003.to_space_id: int'", "'effect.data.3004.to_space_id: int'", "'effect.data.3004.to_spawn_id: int'", "'effect.data.3005.to_space_id: int'", "'effect.data.3005.to_pos: tuple[float,float,float]'", "'effect.data.3005.to_dir: float'", "'effect.data.3006.conv_id:int'", "'effect.data.4003.residence_id: int'", "'effect.data.4004.prefab_id: int'"]
+ROW2: ['None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None']
+=== InteractionConv
+ROW0: ["'缂栧彿'", "'濉〃璇存槑(涓嶅鍑?'", "'瀵硅瘽鍐呭'", "'閫夐」1'", "'閫夐」2'", "'閫夐」3'", "'閫夐」4'", "'閫夐」5'", "'閫夐」6'"]
+ROW1: ["'conv_id:int'", 'None', "'prompt_text:string'", "'options[0]:int'", "'options[1]:int'", "'options[2]:int'", "'options[3]:int'", "'options[4]:int'", "'options[5]:int'"]
+ROW2: ['None', 'None', 'None', 'None', 'None', 'None', 'None', 'None', 'None']
+=== InteractionConvOption
+ROW0: ["'缂栧彿'", "'濉〃璇存槑(涓嶅鍑?'", "'閫夐」鍐呭'", "'閫夐」灞曠ず鏉′欢'", "'閫夐」鍔熻兘'", "'1:鏂板璇滻D'"]
+ROW1: ["'option_id:int'", 'None', "'option_text:string'", "'option_condition:int'", "'option_function.function_type:int'", "'option_function.data.1.conv_id: int'"]
+ROW2: ['None', 'None', 'None', 'None', 'None', 'None']

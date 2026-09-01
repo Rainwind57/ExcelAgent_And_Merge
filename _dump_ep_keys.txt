@@ -1,0 +1,6 @@
+﻿["'缂栧彿\\n锛堟寜搴忛€掑锛屼笉瑕佸垎娈碉級'", "'濉〃璇存槑(涓嶅鍑?'", "'瀹炰綋绫诲瀷'", "'model_prefab'", "'鍚嶅瓧'", "'鍦板浘UI鍥炬爣id'", "'绉诲姩閫熷害'", "'浜や簰id'"]
+["'prefab_id:int'", 'None', "'entity_class:string'", "'model_id:int'", "'entity_name:string'", "'map_icon_id:int'", "'move_speed:float'", "'interaction_id:int'"]
+['None', 'None', 'None', 'None', 'None', 'None', 'None', "'export_type: ONLY_SERVER'"]
+['None', 'None', 'None', 'None', 'None', 'None', 'None', 'None']
+['5023', 'None', "'WorldNonPlayer'", '1012', 'None', 'None', '6', 'None']
+['8003', "'鐗规晥EffectActor涓撶敤'", "'EffectActor'", '9999', 'None', 'None', 'None', 'None']

@@ -39,12 +39,19 @@ def _q(name: str) -> str:
     return rf"{_Q}(?P<{name}>[^'\"‘’“”]+){_Q}"
 
 
-def is_school_new_chain(text: str) -> bool:
+def is_school_new_chain(text: str, route: Optional[dict] = None) -> bool:
     """判定是否为"新建门派全链"意图。
 
     需同时满足：动作词+门派 + (门派编号|门派类型) + 至少提到神通。
     modify/delete 单点操作不命中（无门派编号/类型这类整体建表信号）。
+
+    §系统性重构 Tier A：route（LocatorAgent._llm_classify_route 产出，含
+    domain_chain 字段）route.ok=True 时采信 LLM 判断，替代三词共现正则主判
+    （同义词覆盖不全，如"开宗立派"外的其他口语表述）。route 缺失/非法时走
+    原正则兜底，不回归现有行为。
     """
+    if route and route.get("ok"):
+        return route.get("domain_chain") == "school_new_chain"
     if not text:
         return False
     t = text
@@ -216,9 +223,9 @@ def _parse_mail(text: str) -> Optional[dict]:
     }
 
 
-def build_school_new_chain_intents(text: str) -> list[SplitIntent]:
+def build_school_new_chain_intents(text: str, route: Optional[dict] = None) -> list[SplitIntent]:
     """新建门派全链 → SplitIntent[]。非命中或解析不足返回 []。"""
-    if not is_school_new_chain(text):
+    if not is_school_new_chain(text, route=route):
         return []
 
     school_name = _find(rf"门派\s*(?:叫|名[字称]?为?|叫做)?\s*{_q('v')}", text, "v")

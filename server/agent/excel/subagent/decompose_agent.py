@@ -120,7 +120,8 @@ class DecomposeAgent(LLMSubAgent):
     def __init__(self, parser=None, thinking_sink=None, cli=None):
         super().__init__("DecomposeAgent", parser=parser,
                          thinking_sink=thinking_sink,
-                         prompt_template="跨表链分解产 SplitIntent[]")
+                         prompt_template="跨表链分解产 SplitIntent[]",
+                         default_phase="解析")
         self._cli = cli
         # §schema 内存缓存：(stem, sheet) -> (headers, type_row)。
         # 同 session 内主路径+兜底+段级重跑重复读同表头，缓存省 60-70% I/O。
@@ -476,17 +477,35 @@ class DecomposeAgent(LLMSubAgent):
             self.add_thinking("细分",
                 f"DecomposeAgent 段级丢弃 {len(dropped)} stem，触发段级单表重拆：{dropped[:6]}")
             cand_by_stem = {c.stem: c for c in candidates}
-            for _rs in dropped:
-                if not _rs:
-                    continue
+            _valid_dropped = [_rs for _rs in dropped if _rs]
+            # §落地③：重拆是单表小 schema，不需要主 prompt 的整超时预算——命中
+            # 噪声表时顶满 per_to(120s) 才判空，白等。收窄到独立的短超时，命中
+            # 真表通常很快有响应，判空也快得多。
+            _bf_to = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+
+            def _retry_dropped(_rs: str):
                 _rc = cand_by_stem.get(_rs) or CandidateTable(
                     stem=_rs, sheet="", confidence=0.5,
                     level="retry_single", matched_term="")
                 try:
                     _rit, _ = self._decompose_single_prompt(
-                        seg, [_rc], fk_block, per_to, column_signal=column_signal)
+                        seg, [_rc], fk_block, _bf_to, column_signal=column_signal)
                 except Exception:  # noqa: BLE001
                     _rit = []
+                return _rs, _rit
+
+            # §落地①同款并发：dropped 多 stem 时逐个串行重拆同样是叠加墙钟，
+            # 改并发发出（各 stem 互不依赖，可安全并行）。
+            if len(_valid_dropped) <= 1:
+                _dropped_results = [_retry_dropped(_rs) for _rs in _valid_dropped]
+            else:
+                from concurrent.futures import ThreadPoolExecutor as _TPE2
+                _workers2 = min(len(_valid_dropped),
+                                int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "4")) or 1)
+                with _TPE2(max_workers=_workers2) as _ex2:
+                    _dropped_results = [f.result() for f in
+                        [_ex2.submit(_retry_dropped, _rs) for _rs in _valid_dropped]]
+            for _rs, _rit in _dropped_results:
                 if _rit:
                     self.add_thinking("细分",
                         f"段级单表重拆 {_rs} 产 {len(_rit)} 条意图")
@@ -507,16 +526,31 @@ class DecomposeAgent(LLMSubAgent):
         # 重拆（单表小 schema 不易超时），把每张真实动作主语表拆出来。仅产空时
         # 触发，不叠正常路径。限每表 1 次 + 候选 ≤6 防爆。
         if not intents and candidates:
-            _per_table = candidates[:6]
+            _max_single = max(0, int(_os.environ.get("CODEMAKER_DECOMPOSE_SEG_SINGLE_MAX", "2")))
+            _per_table = candidates[:6][:_max_single]
             self.add_thinking("细分",
                 f"DecomposeAgent 段级超时产空,逐表单表重拆 {len(_per_table)} 候选")
-            _max_single = max(0, int(_os.environ.get("CODEMAKER_DECOMPOSE_SEG_SINGLE_MAX", "2")))
-            for _cand in _per_table[:_max_single]:
+            _bf_to2 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+
+            def _retry_cand(_cand):
                 try:
                     _rit, _ = self._decompose_single_prompt(
-                        seg, [_cand], fk_block, per_to, column_signal=column_signal)
+                        seg, [_cand], fk_block, _bf_to2, column_signal=column_signal)
                 except Exception:  # noqa: BLE001
                     _rit = []
+                return _cand, _rit
+
+            # §落地①同款并发：同一模式，候选间互不依赖，改并发发出。
+            if len(_per_table) <= 1:
+                _cand_results = [_retry_cand(_c) for _c in _per_table]
+            else:
+                from concurrent.futures import ThreadPoolExecutor as _TPE3
+                _workers3 = min(len(_per_table),
+                                int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "4")) or 1)
+                with _TPE3(max_workers=_workers3) as _ex3:
+                    _cand_results = [f.result() for f in
+                        [_ex3.submit(_retry_cand, _c) for _c in _per_table]]
+            for _cand, _rit in _cand_results:
                 if _rit:
                     intents.extend(_rit)
                     self.add_thinking("细分",
@@ -644,7 +678,12 @@ class DecomposeAgent(LLMSubAgent):
                 return (_explicit + _sem + _fk1 + _sig + _txt + _lvl_w,
                         getattr(c, "confidence", 0.0) or 0.0)
             ranked = sorted(candidates, key=_strength, reverse=True)
-            _top_n = max(2, int(os.environ.get("CODEMAKER_DECOMPOSE_SEGMENT_TOPN", "3")))
+            # §落地②实测：topN=3 时真实需要的表(如 entity_prefab)常被挤出主 prompt，
+            # 靠事后逐表 backfill 补（每次顶满超时代价高）；topN=10 反而让主 prompt
+            # 本身 schema 过大直接超时空响应（更差）。topN=5 实测两段主 prompt 均
+            # 一次产出成功、无需再靠 backfill 补真实表，backfill 只剩确认噪声表
+            # （见下方 CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT 收窄超时）。
+            _top_n = max(2, int(os.environ.get("CODEMAKER_DECOMPOSE_SEGMENT_TOPN", "5")))
             pruned = ranked[:_top_n]
             # 至少保 2 表防误裁
             if len(pruned) < 2:
@@ -1000,9 +1039,16 @@ class DecomposeAgent(LLMSubAgent):
         self.add_thinking("细分",
             f"DecomposeAgent 缺表对账：expected {len(expected)} sheet，"
             f"produced {len(produced)} sheet，缺 {missing_stems}")
-        for _ms in missing_stems:
-            # 重拆统一 sheet="" 读该表全部业务 sheet（覆盖同 stem 多 sheet：
-            # interaction 的 InteractionConv/InteractionConvOption 需一起注入 schema）
+
+        # §落地①：补漏重试改并发。原为 for 循环逐 stem 串行重拆，每次最多等
+        # per_to（120s）超时，N 个缺表就是 N×120s 叠加墙钟（案例实测 3 个缺表
+        # 撑到 600s+）。改线程池并发发出，同样的 LLM 调用次数/成本，墙钟时间
+        # 收窄到"并发里最慢的一个"而非"逐个叠加"。
+        # §落地③：重拆超时单独收窄（单表小 schema 不需整句超时预算，命中噪声
+        # 表判空也不该等满 120s）。
+        _bf_to3 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+
+        def _retry_one(_ms: str):
             _base = cand_by_stem.get(_ms)
             _rc = CandidateTable(
                 stem=_ms, sheet="",
@@ -1012,14 +1058,26 @@ class DecomposeAgent(LLMSubAgent):
             )
             try:
                 _res = self._decompose_single_prompt(
-                    text, [_rc], fk_block, per_to, column_signal=column_signal)
-                _rit = _res[0] if isinstance(_res, tuple) else _res
+                    text, [_rc], fk_block, _bf_to3, column_signal=column_signal)
+                return _ms, (_res[0] if isinstance(_res, tuple) else _res)
             except Exception:  # noqa: BLE001
-                _rit = []
+                return _ms, []
+
+        if len(missing_stems) == 1:
+            _results = [_retry_one(missing_stems[0])]
+        else:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _workers = min(len(missing_stems),
+                           int(_os.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "4")) or 1)
+            with _TPE(max_workers=_workers) as _ex:
+                _results = [f.result() for f in
+                            [_ex.submit(_retry_one, _ms) for _ms in missing_stems]]
+
+        _existing = {((getattr(it, "table_hint", "") or "").lower(),
+                      (getattr(it, "sheet_hint", "") or "").strip())
+                     for it in intents}
+        for _ms, _rit in _results:
             if _rit:
-                _existing = {((getattr(it, "table_hint", "") or "").lower(),
-                              (getattr(it, "sheet_hint", "") or "").strip())
-                             for it in intents}
                 _added = 0
                 for _ni in _rit:
                     _nk = ((getattr(_ni, "table_hint", "") or "").lower(),

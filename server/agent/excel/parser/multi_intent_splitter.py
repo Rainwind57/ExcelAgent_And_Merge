@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Optional
 
 
 # 引号对（成对识别，内部内容不切分）
@@ -201,12 +202,35 @@ class SplitSegment:
     action: str
 
 
-def _detect_action(text: str) -> str:
-    """识别文本的动作类型。返回 get/set/add/delete/unknown。"""
+def _detect_action(text: str, route: Optional[dict] = None) -> str:
+    """识别文本的动作类型。返回 get/set/add/delete/unknown。
+
+    §系统性重构 Phase1：route.ok=True 且 action 合法时采信 LLM 判断，
+    跳过动作词白名单正则（同义词覆盖不全，如"放/摆/搁"等口语词漏判）。
+    route 缺失/非法时走原正则兜底。
+    """
+    if route and route.get("ok"):
+        act = route.get("action")
+        if act in ("get", "set", "add", "delete", "unknown"):
+            return act
     for pat, action in _ACTION_PATTERNS:
         if pat.search(text):
             return action
     return "unknown"
+
+
+def _route_applies(candidate: str, original: str) -> bool:
+    """route 是否适用于 candidate 文本（candidate 与整句 original 语义等同，
+    仅相差首尾空白/句末标点）。
+
+    route 由整句 LLM 分类产出，只能安全套用到"内容上就是整句"的 segment
+    （单段场景，或多段切分后仍是唯一段）；真正被切成多个独立子段时，
+    每段语义可能与整句分类结果不同，不应盲目套用同一个 route（保持规则判定，
+    避免多段场景下 LLM 误分类被错误放大到不相关的子段）。
+    """
+    def _norm(s: str) -> str:
+        return (s or "").strip().rstrip("。;；").strip()
+    return bool(candidate) and _norm(candidate) == _norm(original)
 
 
 def _split_by_action_boundary(seg: str) -> list[str]:
@@ -286,7 +310,7 @@ def _split_by_action_boundary(seg: str) -> list[str]:
     return pieces or [seg]
 
 
-def split_multi_intent(text: str) -> list[SplitSegment]:
+def split_multi_intent(text: str, route: Optional[dict] = None) -> list[SplitSegment]:
     """拆分多指令文本 → 独立指令段列表。
 
     单指令返回 [单段]；空输入返回 []。
@@ -296,8 +320,14 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
     不拆分，整句返回单段交 cross_table_splitter 处理任务链。
     "同时/然后"切分后的子段也各过跨表检测，命中则该子段不进一步按动作切。
 
+    §系统性重构 Phase1：route（LocatorAgent._llm_classify_route 产出的 LLM
+    分类结果）只在"候选 segment 语义等同整句"时套用（见 _route_applies），
+    真正被切成多个独立子段时仍用规则判定（LLM 分类是整句粒度，不能盲目下放
+    到每个子段）。route=None 时行为与重构前完全一致。
+
     Args:
         text: 用户自然语言输入（可能含多个操作指令）
+        route: 可选，整句 LLM 路由分类结果（cross_table_type/action 等）
 
     Returns:
         SplitSegment 列表。单指令或跨表模式时长度为 1。
@@ -321,7 +351,7 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
     # 非跨表子段正常走动作边界拆分。整句无分隔符（纯跨表单指令）时才折叠单段。
     try:
         from ..core.cross_table_splitter import detect_cross_table_action
-        has_cross = detect_cross_table_action(text)
+        has_cross = detect_cross_table_action(text, route=route)
     except Exception:
         has_cross = False
 
@@ -352,11 +382,11 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
                 raw_segs = pieces
             else:
                 # 单指令。跨表则标记 cross_table，否则按动作识别
-                action = "cross_table" if has_cross else _detect_action(text)
+                action = "cross_table" if has_cross else _detect_action(text, route=route)
                 return [SplitSegment(text=text, action=action)]
         else:
             # 无分隔符：单指令。跨表则标记 cross_table，否则按动作识别
-            action = "cross_table" if has_cross else _detect_action(text)
+            action = "cross_table" if has_cross else _detect_action(text, route=route)
             return [SplitSegment(text=text, action=action)]
 
     # D. 子段跨表检测：命中跨表模式的子段保持完整，不按动作边界再切
@@ -368,9 +398,10 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
         seg = re.sub(r'^(?:(?:\d+|[一二三四五六七八九十])[\.、)]\s*|(?:然后|接着|之后|并且|同时|另外|而后|随后|再配|再建|再加|再设|以及|还有|还要|顺带|一起配(?!上|着|来|去)|一起建)\s*)', '', seg).strip()
         if not seg:
             continue
+        _seg_route = route if _route_applies(seg, text) else None
         try:
             from ..core.cross_table_splitter import detect_cross_table_action as _d
-            if _d(seg):
+            if _d(seg, route=_seg_route):
                 segments.append(SplitSegment(text=seg, action="cross_table"))
                 continue
         except Exception:
@@ -380,10 +411,12 @@ def split_multi_intent(text: str) -> list[SplitSegment]:
         for piece in pieces:
             piece = piece.strip()
             if piece:
-                segments.append(SplitSegment(text=piece, action=_detect_action(piece)))
+                _piece_route = route if _route_applies(piece, text) else None
+                segments.append(SplitSegment(
+                    text=piece, action=_detect_action(piece, route=_piece_route)))
 
     segments = [s for s in segments if s.text]
-    return segments if segments else [SplitSegment(text=text, action=_detect_action(text))]
+    return segments if segments else [SplitSegment(text=text, action=_detect_action(text, route=route))]
 
 
 def is_multi_intent(text: str) -> bool:

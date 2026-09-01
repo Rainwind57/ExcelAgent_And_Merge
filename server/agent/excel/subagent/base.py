@@ -65,12 +65,20 @@ class SubAgent:
         thinking_sink: 注入的 thinking 回调,add_thinking 时同步推送
     """
 
-    def __init__(self, name: str, parser=None, thinking_sink: Optional[ThinkingSink] = None):
+    def __init__(self, name: str, parser=None, thinking_sink: Optional[ThinkingSink] = None,
+                 default_phase: str = "执行"):
         self.name = name
         self.parser = parser
         self._thinking_sink = thinking_sink
         # 独立 session id(不共享 parser 的 session,避免并行 SubAgent 同 sid 冲突)
         self._sid: str = ""
+        # R: run()/​_call_llm* 的通用日志（开始执行/LLM调用失败等）曾硬编码
+        # phase="执行"，导致 Step1(DecomposeAgent/LocatorAgent)、Step2(ValidatorAgent)
+        # 内部产生的通用日志被 agent_service._stage_for_thinking 错误归入
+        # step3_execute，使 Step2/Step3 气泡内容错位。子类按自己真实所属阶段
+        # 传入 default_phase（DecomposeAgent="解析"、LocatorAgent="定位"、
+        # ValidatorAgent="校验"），Step3 填表类 SubAgent 保持默认 "执行"。
+        self._default_phase = default_phase or "执行"
 
     def set_thinking_sink(self, sink: ThinkingSink) -> None:
         """dispatcher 注入:聚合到主流单一 sink。"""
@@ -99,7 +107,7 @@ class SubAgent:
         """
         AF = _AgentFragment()
         try:
-            self.add_thinking("执行", f"{self.name} 开始执行")
+            self.add_thinking(self._default_phase, f"{self.name} 开始执行")
             result = self._run_impl(prompt, skill_docs or [], context or {})
             frag = AF(agent_name=self.name)
             if result is None:
@@ -116,12 +124,12 @@ class SubAgent:
                 frag.target_table = result.get("target_table", "")
                 frag.target_sheet = result.get("target_sheet", "")
             frag.agent_name = self.name
-            self.add_thinking("执行", f"{self.name} 执行完成")
+            self.add_thinking(self._default_phase, f"{self.name} 执行完成")
         except Exception as e:
             logger.warning(f"SubAgent {self.name} 执行失败", exc_info=True)
             frag.ok = False
             frag.error = f"{type(e).__name__}: {e}"
-            self.add_thinking("执行", f"{self.name} 执行失败: {e}")
+            self.add_thinking(self._default_phase, f"{self.name} 执行失败: {e}")
         return frag
 
     def _run_impl(self, prompt: str, skill_docs: list[str],
@@ -200,7 +208,7 @@ class SubAgent:
                                               model=getattr(self.parser, "model", ""),
                                               cancel_event=getattr(self.parser, "_cancel_event", None))
         if not resp.ok:
-            self.add_thinking("执行", f"LLM 调用失败: {resp.error}")
+            self.add_thinking(self._default_phase, f"LLM 调用失败: {resp.error}")
             return None
         data = self.parser.client.extract_json_from_response(resp.response_text)
         if isinstance(data, list) and data:
@@ -227,9 +235,9 @@ class SubAgent:
                                                   model=getattr(self.parser, "model", ""),
                                                   cancel_event=getattr(self.parser, "_cancel_event", None))
         except Exception as e:
-            self.add_thinking("执行", f"LLM 调用异常: {e}")
+            self.add_thinking(self._default_phase, f"LLM 调用异常: {e}")
             return None
         if not resp.ok:
-            self.add_thinking("执行", f"LLM 调用失败: {resp.error}")
+            self.add_thinking(self._default_phase, f"LLM 调用失败: {resp.error}")
             return None
         return resp.response_text or ""

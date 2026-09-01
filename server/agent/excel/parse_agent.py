@@ -156,6 +156,27 @@ class ParseAgent:
         # 每次 parse 重置全段 locator_results 收集
         self._last_locator_results = []
         self._last_column_extraction = None
+        # §P1-2.1 Step1 全局 deadline：超时立即冻结当前产出 + 走 _splitter_baseline，
+        # 不再叠 LLM。默认 60s（env CODEMAKER_STEP1_DEADLINE_S 可调）。
+        import time as _time_p
+        import os as _os_p
+        _dl = int(_os_p.getenv("CODEMAKER_STEP1_DEADLINE_S", "60"))
+        self._step1_deadline = _time_p.monotonic() + _dl
+        # §系统性重构 Phase1/TierA：整句先跑一次 LLM 路由分类（cross_table_type/
+        # action/is_complex/spawn_hint/domain_chain），产出结果透传给
+        # _try_domain_chain/split_multi_intent/locate，替代下游多处硬编码正则主判
+        # （规则逻辑保留兜底，分类失败原样走原正则）。提到 _try_domain_chain 之前算，
+        # 让门派链等确定性展开器的判定门也能采信 LLM（原判定门=纯正则,同义词覆盖
+        # 不全时静默漏判/误判，整链路径跑偏不可逆）。
+        # 可用 CODEMAKER_INTENT_ROUTER_DISABLE=1 关闭（回退纯规则判定，供对照/降级）。
+        route = None
+        if _os_p.getenv("CODEMAKER_INTENT_ROUTER_DISABLE", "") != "1":
+            try:
+                route = self._locator_agent._llm_classify_route(text)
+            except Exception:  # noqa: BLE001
+                logger.warning("ParseAgent LLM 路由分类失败,回退规则判定",
+                               exc_info=True)
+                route = None
         # §领域链型确定性展开（deterministic domain expander）：对高复杂高频链型
         # （新建门派全链等）在分段/LLM 之前先命中——LLM 真实链路对这类多表长链常
         # 分段后丢上下文/超时/漏意图（case0 实测分段后仅 6/19）。命中强判据时直接
@@ -163,7 +184,7 @@ class ParseAgent:
         # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=1 关闭。
         if os.getenv("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "") != "1":
             try:
-                _dom = self._try_domain_chain(text)
+                _dom = self._try_domain_chain(text, route=route)
             except Exception:  # noqa: BLE001
                 logger.warning("ParseAgent 领域链型展开失败（回退分段/LLM）",
                                exc_info=True)
@@ -173,16 +194,10 @@ class ParseAgent:
                     f"ParseAgent 领域链型确定性展开命中，产 {len(_dom)} 条 NLIntent"
                     f"（跳过分段/LLM decompose，根治超时/漏意图）")
                 return _dom
-        # §P1-2.1 Step1 全局 deadline：超时立即冻结当前产出 + 走 _splitter_baseline，
-        # 不再叠 LLM。默认 60s（env CODEMAKER_STEP1_DEADLINE_S 可调）。
-        import time as _time_p
-        import os as _os_p
-        _dl = int(_os_p.getenv("CODEMAKER_STEP1_DEADLINE_S", "60"))
-        self._step1_deadline = _time_p.monotonic() + _dl
         # §优化①：入口先分段（0 LLM）。segments 存到实例属性供 Step1 复用（消除
         # Step1 重复调 split_multi_intent 的冗余——同函数同 text 结果一致）。
         try:
-            segs = split_multi_intent(text)
+            segs = split_multi_intent(text, route=route)
             self._last_segments = segs
         except Exception:
             logger.warning("ParseAgent 分段失败,走整段路径", exc_info=True)
@@ -190,20 +205,23 @@ class ParseAgent:
             self._last_segments = []
         if not segs or len(segs) <= 1:
             # 单指令走原整段 single-prompt 路径
-            return self._parse_whole(text)
+            return self._parse_whole(text, route=route)
         # 多段：每段独立 locate + decompose_segment
         return self._parse_segments(segs, text)
 
-    def _try_domain_chain(self, text: str) -> list[NLIntent]:
+    def _try_domain_chain(self, text: str, route: Optional[dict] = None) -> list[NLIntent]:
         """领域链型确定性展开 → NLIntent[]。非命中返回 []。
 
         目前覆盖：新建门派全链（school full-chain）。产出 SplitIntent 与
         LLM/cross_table_splitter 同形（produces + <label> 占位），经 _assemble
         做 schema grounding + 引用编译，但跳过 LLM 字段补全（fields 已完整）。
+
+        route：ParseAgent.parse 入口算好的 LLM 路由分类结果（含 domain_chain
+        字段），透传给 is_school_new_chain 判定门采信（§系统性重构 Tier A）。
         """
         try:
             from .core.school_chain_expander import build_school_new_chain_intents
-            split_intents = build_school_new_chain_intents(text)
+            split_intents = build_school_new_chain_intents(text, route=route)
         except Exception:  # noqa: BLE001
             logger.warning("_try_domain_chain 展开失败", exc_info=True)
             return []
@@ -213,21 +231,41 @@ class ParseAgent:
         # 确定性 intent 已自带 produces/consumes 占位，编排器可解析。
         locator_result: Optional[LocatorResult] = None
         try:
-            locator_result = self._locator_agent.locate(text)
+            locator_result = self._locate_with_route(text, route)
         except Exception:  # noqa: BLE001
             logger.warning("_try_domain_chain locate 失败（继续无 locator）",
                            exc_info=True)
         self._last_column_extraction = getattr(locator_result, "column_signal", None)
         self._last_locator_result = locator_result
         self._last_locator_results = [locator_result] if locator_result else []
-        return self._assemble(split_intents, text, locator_result,
-                              skip_llm_complete=True)
+        # §系统性重构 Tier B：原 skip_llm_complete=True 让门派链跳过 _llm_complete_fields
+        # 自检补漏，与 cross_table_splitter 13 模板（走 _splitter_baseline 时经
+        # _assemble 默认参数会过一次该自检）不一致——同是"命中即0LLM抠字段"的
+        # 确定性模板，门派链反而没有这道漏字段兜底。去掉该参数，统一都过一次
+        # 自检（只补漏不改已有值，风险与其余模板一致）。
+        return self._assemble(split_intents, text, locator_result)
 
-    def _parse_whole(self, text: str) -> list[NLIntent]:
-        """原整段路径（单指令或分段失败兜底）。"""
+    def _locate_with_route(self, text: str, route: Optional[dict]):
+        """调 locator_agent.locate，兼容不识别新 route 关键字参数的旧签名/测试替身。
+
+        §系统性重构 Phase1 给 LocatorAgent.locate 加了可选 route 形参，外部注入的
+        自定义 locator_agent（测试 fake / 第三方实现）可能仍是旧签名 locate(text)。
+        TypeError 时原样退化为不传 route 调用，不破坏既有注入点的兼容性。
+        """
+        try:
+            return self._locator_agent.locate(text, route=route)
+        except TypeError:
+            return self._locator_agent.locate(text)
+
+    def _parse_whole(self, text: str, route: Optional[dict] = None) -> list[NLIntent]:
+        """原整段路径（单指令或分段失败兜底）。
+
+        route：ParseAgent.parse 入口算好的 LLM 路由分类结果，透传给 locate()
+        供 is_complex_input/spawn 语义探测采信（§系统性重构 Phase1）。
+        """
         locator_result: Optional[LocatorResult] = None
         try:
-            locator_result = self._locator_agent.locate(text)
+            locator_result = self._locate_with_route(text, route)
         except Exception:
             logger.warning("ParseAgent 粗路由失败", exc_info=True)
             self._think("ParseAgent 粗路由异常,回退")

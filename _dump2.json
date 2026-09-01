@@ -1,0 +1,114 @@
+{
+ "entity_prefab.xlsx::Base": [
+  [
+   "编号\n（按序递增，不要分段）",
+   "填表说明(不导出)",
+   "实体类型",
+   "model_prefab",
+   "名字",
+   "地图UI图标id",
+   "移动速度",
+   "交互id"
+  ],
+  [
+   "prefab_id:int",
+   null,
+   "entity_class:string",
+   "model_id:int",
+   "entity_name:string",
+   "map_icon_id:int",
+   "move_speed:float",
+   "interaction_id:int"
+  ],
+  [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   "export_type: ONLY_SERVER"
+  ]
+ ],
+ "interaction.xlsx::Interaction": [
+  [
+   "编号",
+   "填表说明(不导出)",
+   "可交互范围\n(圆柱高度)",
+   "可交互范围\n(圆柱半径)",
+   "交互效果编号",
+   "3001: 战斗ID",
+   "3002: reward ID",
+   "3003: 目标space ID",
+   "3004: 目标space ID",
+   "3004: spawn ID",
+   "3005: 目标space ID",
+   "3005: 目标位置",
+   "3005: 目标朝向",
+   "3006: 对话ID",
+   "4003: 洞府ID",
+   "4004: 分身Prefab ID"
+  ],
+  [
+   "interaction_id:int",
+   null,
+   "trigger_height: float",
+   "trigger_radius: float",
+   "effect.key: int",
+   "effect.data.3001.combat_id: int",
+   "effect.data.3002.reward_id: int",
+   "effect.data.3003.to_space_id: int",
+   "effect.data.3004.to_space_id: int",
+   "effect.data.3004.to_spawn_id: int",
+   "effect.data.3005.to_space_id: int",
+   "effect.data.3005.to_pos: tuple[float,float,float]",
+   "effect.data.3005.to_dir: float",
+   "effect.data.3006.conv_id:int",
+   "effect.data.4003.residence_id: int",
+   "effect.data.4004.prefab_id: int"
+  ]
+ ],
+ "interaction.xlsx::InteractionConv": [
+  [
+   "编号",
+   "填表说明(不导出)",
+   "对话内容",
+   "选项1",
+   "选项2",
+   "选项3",
+   "选项4",
+   "选项5",
+   "选项6"
+  ],
+  [
+   "conv_id:int",
+   null,
+   "prompt_text:string",
+   "options[0]:int",
+   "options[1]:int",
+   "options[2]:int",
+   "options[3]:int",
+   "options[4]:int",
+   "options[5]:int"
+  ]
+ ],
+ "interaction.xlsx::InteractionConvOption": [
+  [
+   "编号",
+   "填表说明(不导出)",
+   "选项内容",
+   "选项展示条件",
+   "选项功能",
+   "1:新对话ID"
+  ],
+  [
+   "option_id:int",
+   null,
+   "option_text:string",
+   "option_condition:int",
+   "option_function.function_type:int",
+   "option_function.data.1.conv_id: int"
+  ]
+ ]
+}

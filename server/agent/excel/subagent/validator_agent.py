@@ -286,7 +286,8 @@ class ValidatorAgent(LLMSubAgent):
     def __init__(self, parser=None, thinking_sink=None, cli=None):
         super().__init__("ValidatorAgent", parser=parser,
                          thinking_sink=thinking_sink,
-                         prompt_template="引用闭环校验 + 修正")
+                         prompt_template="引用闭环校验 + 修正",
+                         default_phase="校验")
         self._cli = cli
         # §4.5 交互反问通道：agent_service 注入 agent._ask_callback 时同步注入 validator
         # （或 agent __init__ validator 时传入）。None 时 ask_user 降级 skip（非交互场景/CI）。

@@ -20,6 +20,7 @@ from .semantic_plan import (
     compile_semantic_plan_to_operation_items,
 )
 from .plan_completeness import audit_plan_completeness
+from .value_extractor import extract_fields_from_text
 from .step1_parse_subagent import Step1ParseSubAgent
 from .step2_validate_subagent import Step2ValidateSubAgent
 from .step3_execute_subagent import Step3ExecuteSubAgent
@@ -33,6 +34,7 @@ __all__ = [
     "compile_semantic_plan_to_intents",
     "compile_semantic_plan_to_operation_items",
     "audit_plan_completeness",
+    "extract_fields_from_text",
     "Step1ParseSubAgent", "Step2ValidateSubAgent",
     "Step3ExecuteSubAgent", "Step4ConcludeSubAgent",
 ]

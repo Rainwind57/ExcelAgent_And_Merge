@@ -312,3 +312,55 @@ def test_step1_audit_surfaces_completeness_findings_report_only():
     assert audit["plan_completeness"]["ok"] is False
     assert audit["metrics"]["completeness_missing_producer_count"] >= 1
 
+
+def _incomplete_step1_audit():
+    return {
+        "plan_completeness": {
+            "ok": False,
+            "findings": [{
+                "type": "missing_producer_entity",
+                "entity_id": 1,
+                "table": "spawn_quest_entity",
+                "field": "quest_id",
+                "missing_table": "quest",
+                "label": "new_quest_id",
+                "severity": "hard",
+            }],
+            "suggestions": [{
+                "type": "add_shell_entity", "table": "quest",
+                "for_entity": 1, "for_field": "quest_id",
+            }],
+            "hard_count": 1, "finding_count": 1,
+        }
+    }
+
+
+def test_step2_completeness_soft_by_default(monkeypatch):
+    monkeypatch.delenv("CODEMAKER_PLAN_COMPLETENESS_GATE", raising=False)
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    errs = Step2ValidateSubAgent._plan_completeness_errors(_incomplete_step1_audit())
+    assert len(errs) == 1
+    assert errs[0].error_type == "completeness_missing_producer_entity"
+    assert errs[0].is_hard is False           # 默认不阻断
+    assert errs[0].suggestion                 # 附确定性修复建议
+    assert "quest" in errs[0].message
+
+
+def test_step2_completeness_hard_when_gated(monkeypatch):
+    monkeypatch.setenv("CODEMAKER_PLAN_COMPLETENESS_GATE", "1")
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    errs = Step2ValidateSubAgent._plan_completeness_errors(_incomplete_step1_audit())
+    assert len(errs) == 1
+    assert errs[0].is_hard is True            # 开关打开后阻断
+
+
+def test_step2_completeness_noop_without_findings():
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    assert Step2ValidateSubAgent._plan_completeness_errors(None) == []
+    assert Step2ValidateSubAgent._plan_completeness_errors(
+        {"plan_completeness": {"findings": []}}) == []
+
+

@@ -30,8 +30,9 @@ class LLMSubAgent(SubAgent):
     """
 
     def __init__(self, name: str, parser=None, thinking_sink=None,
-                 prompt_template: str = ""):
-        super().__init__(name, parser=parser, thinking_sink=thinking_sink)
+                 prompt_template: str = "", default_phase: str = "执行"):
+        super().__init__(name, parser=parser, thinking_sink=thinking_sink,
+                          default_phase=default_phase)
         self.prompt_template = prompt_template
 
     def _build_prompt(self, task_prompt: str, context: dict) -> str:
