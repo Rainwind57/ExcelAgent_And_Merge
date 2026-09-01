@@ -41,13 +41,13 @@ class Step2ValidateSubAgent:
             action = (getattr(it, "action", "") or "").strip().lower()
             table = getattr(it, "table_hint", None)
             sheet = getattr(it, "sheet_hint", None)
-            if action not in {"add", "set", "delete", "get", "col"}:
+            if action not in {"add", "modify", "set", "delete", "get", "col"}:
                 errors.append(StepError(
                     step_id=STEP2_VALIDATE,
                     error_type="invalid_action",
                     message=f"Intent {idx + 1} has unsupported action: {action or '<empty>'}",
                     table=table, sheet=sheet, is_hard=True))
-            if action in {"add", "set", "delete", "get", "col"} and not table:
+            if action in {"add", "modify", "set", "delete", "get", "col"} and not table:
                 errors.append(StepError(
                     step_id=STEP2_VALIDATE,
                     error_type="table_missing",
@@ -139,7 +139,6 @@ class Step2ValidateSubAgent:
             "unique_violation",
             "type_mismatch",
             "col_not_found",
-            "enum_invalid",
         }
 
         def _is_hard_validation_issue(error_type: str = "",
@@ -153,7 +152,9 @@ class Step2ValidateSubAgent:
             return bool(vals & _HARD_TYPES) or any(
                 root_l == t or root_l.startswith(f"{t}:")
                 for t in _HARD_TYPES
-            )
+            ) or (("missing_required" in vals or root_l.startswith("missing_required:"))
+                  and ("业务必填列" in str(root or "")
+                       or "指令明确" in str(root or "")))
 
         if not intents:
             # Step1 已 hard 报错，Step2 无需校验
@@ -184,8 +185,10 @@ class Step2ValidateSubAgent:
                 # locator_result 从 s1.artifacts 读（替代探 _last_locator_result 私态）。
                 # Step1 已显式产出到 artifacts["locator_results"]（全段 list），取首段
                 # 与原单值 _last_locator_result 语义一致。消除 contracts.py:16 步间隔离违反。
-                _locator_results = (s1.artifacts.get("locator_results") if s1 else None) or []
-                _lr = _locator_results[0] if _locator_results else None
+                _lr = s1.artifacts.get("locator_result") if s1 else None
+                if _lr is None:
+                    _locator_results = (s1.artifacts.get("locator_results") if s1 else None) or []
+                    _lr = _locator_results[0] if _locator_results else None
                 validated = self._services.validate_intents(
                     validated, _tmp_res, ctx.session_id, locator_result=_lr)
                 # 收集校验产出的 failures，据 issue_type 映射硬/软类别上报。
@@ -207,8 +210,15 @@ class Step2ValidateSubAgent:
                     IssueType.UNIQUE_VIOLATION.value,
                     IssueType.TYPE_MISMATCH.value,
                     IssueType.COL_NOT_FOUND.value,
-                    IssueType.ENUM_INVALID.value,
                 }
+                _skipped_ids = {
+                    id(it) for it in validated
+                    if getattr(it, "validation", None)
+                    and getattr(it.validation, "skipped", False)
+                }
+                if _skipped_ids:
+                    _tmp_res.add_thinking(
+                        "校验", f"{len(_skipped_ids)} 条子任务 Step2 未解决，保留到 Step3 显式跳过并上报")
                 for f in (getattr(_tmp_res, "failures", None) or []):
                     if isinstance(f, dict):
                         _itype = f.get("issue_type") or f.get("type", "")

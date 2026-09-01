@@ -196,6 +196,25 @@ class DecomposeAgent(LLMSubAgent):
             return []
 
         import os as _os
+
+        # §领域链型确定性展开（deterministic domain expander）：对高复杂高频链型
+        # （新建门派全链等），LLM 真实链路常超时/漏意图（case0 实测 12/19）。命中
+        # 强判据时直接产完整、正确的跨表链，跳过 LLM decompose（同时根治超时）。
+        # 仅对强判据命中（新建门派+编号/类型+神通）触发，不误伤 LLM 能做好的简单意图。
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=1 关闭。
+        if _os.environ.get("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "") != "1":
+            try:
+                _dom = self._try_domain_expander(text)
+            except Exception:  # noqa: BLE001
+                logger.warning("DecomposeAgent 领域展开器失败（回退 LLM 路径）",
+                               exc_info=True)
+                _dom = []
+            if _dom:
+                self.add_thinking("细分",
+                    f"DecomposeAgent 领域链型确定性展开命中，产 {len(_dom)} 条意图"
+                    f"（跳过 LLM decompose，根治超时/漏意图）")
+                return _dom
+
         # §P1-2.2 超时下调 90→40：P0-0 分段后候选 ≤3/段，单段小 schema 不需 90s
         # 思考；长超时让 LLM 卡住拖垮整链。40s 够单段拆分。
         per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
@@ -221,7 +240,7 @@ class DecomposeAgent(LLMSubAgent):
         # 标签由全文本上下文保证一致，跨组引用不受影响（LLM 两组都看到全文）。
         # 阈值 CODEMAKER_DECOMPOSE_CHAIN_GROUP 默认 4（实测 4-5 表单 prompt 稳定产出，
         # 6 表超时）。
-        _chain_group = int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP", "4"))
+        _chain_group = int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP", "3"))
         force_grouped = (force_single and len(candidates) > _chain_group)
         # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
         self._last_column_signal = column_signal
@@ -254,7 +273,14 @@ class DecomposeAgent(LLMSubAgent):
             # 不能按 (table,sheet) 去重（会把对话树多句坍缩成一句）。
             # 注意 _decompose_single_prompt 返回类型不一致：失败返回 []（空列表），
             # 成功返回 (filtered, dropped) 二元组——需按类型分派（与 _merge 同口径）。
+            _max_groups = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP_MAX", "2")))
+            _groups_run = 0
             for _gi in range(0, len(candidates), _chain_group):
+                if _groups_run >= _max_groups:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 链式分组达到上限 {_max_groups}，剩余候选交缺表对账/规则兜底")
+                    break
+                _groups_run += 1
                 _chunk = candidates[_gi:_gi + _chain_group]
                 _out = self._decompose_single_prompt(
                     text, _chunk, fk_block, per_to, column_signal=column_signal)
@@ -385,6 +411,22 @@ class DecomposeAgent(LLMSubAgent):
                 "total": len(all_intents)})
         return all_intents
 
+    def _try_domain_expander(self, text: str) -> list:
+        """领域链型确定性展开器分发。命中返回 SplitIntent[]，否则 []。
+
+        目前覆盖：新建门派全链（school full-chain）。后续可扩展 quest chain 等。
+        产出 SplitIntent 与 LLM/cross_table_splitter 同形（produces + <label> 占位），
+        下游 Step1→Step4 无需特判。
+        """
+        try:
+            from ..core.school_chain_expander import build_school_new_chain_intents
+            its = build_school_new_chain_intents(text)
+            if its:
+                return its
+        except Exception:  # noqa: BLE001
+            logger.warning("school_chain_expander 失败", exc_info=True)
+        return []
+
     def decompose_segment(self, seg: str, locator_result: LocatorResult) -> list:
         """按段分解：单段文本 + 该段候选表 → SplitIntent[]。
 
@@ -468,7 +510,8 @@ class DecomposeAgent(LLMSubAgent):
             _per_table = candidates[:6]
             self.add_thinking("细分",
                 f"DecomposeAgent 段级超时产空,逐表单表重拆 {len(_per_table)} 候选")
-            for _cand in _per_table:
+            _max_single = max(0, int(_os.environ.get("CODEMAKER_DECOMPOSE_SEG_SINGLE_MAX", "2")))
+            for _cand in _per_table[:_max_single]:
                 try:
                     _rit, _ = self._decompose_single_prompt(
                         seg, [_cand], fk_block, per_to, column_signal=column_signal)
@@ -601,10 +644,11 @@ class DecomposeAgent(LLMSubAgent):
                 return (_explicit + _sem + _fk1 + _sig + _txt + _lvl_w,
                         getattr(c, "confidence", 0.0) or 0.0)
             ranked = sorted(candidates, key=_strength, reverse=True)
-            pruned = ranked[:5]
+            _top_n = max(2, int(os.environ.get("CODEMAKER_DECOMPOSE_SEGMENT_TOPN", "3")))
+            pruned = ranked[:_top_n]
             # 至少保 2 表防误裁
             if len(pruned) < 2:
-                pruned = candidates[:3]
+                pruned = candidates[:_top_n]
             return pruned
         pruned = [c for c in candidates
                   if (getattr(c, "stem", "") or "").lower() in hit_stems]
@@ -1442,21 +1486,38 @@ class DecomposeAgent(LLMSubAgent):
                 _sheet = _biz[0] if _biz else ""
             except Exception:  # noqa: BLE001
                 _sheet = ""
+        def _schema_name(x) -> str:
+            return re.split(r'[:\uff1a\n\r]', str(x or ""))[0].strip().lower()
+
+        def _schema_type(x) -> str:
+            s = str(x or "")
+            if ":" in s:
+                return s.rsplit(":", 1)[-1].strip().lower()
+            return ""
+
         _hdr_clean: set = set()
+        _type_by_col: dict[str, str] = {}
         if _p is not None and _sheet:
             try:
-                _hdrs, _ = self._read_schema_cached(_p, stem, _sheet)
-                for _h in (_hdrs or []):
-                    if _h:
-                        _hdr_clean.add(str(_h).split(":")[0].strip().lower())
+                _hdrs, _trow = self._read_schema_cached(_p, stem, _sheet)
+                for _h, _t in zip(_hdrs or [], _trow or []):
+                    for _name in (_schema_name(_h), _schema_name(_t)):
+                        if _name:
+                            _hdr_clean.add(_name)
+                            _type_by_col[_name] = _schema_type(_t)
             except Exception:  # noqa: BLE001
                 pass
         for _k in list(fields.keys()):
             _v = fields[_k]
             if isinstance(_v, dict):
+                _kn = _schema_name(_k)
+                _kt = _type_by_col.get(_kn, "")
+                if _kn in _hdr_clean and any(x in _kt for x in ("dict", "map", "json", "object")):
+                    notes.append(f"{_k}→保留dict列")
+                    continue
                 _kept = 0
                 for _sk, _sv in _v.items():
-                    _skn = str(_sk).split(":")[0].strip().lower()
+                    _skn = _schema_name(_sk)
                     if _skn and (_skn in _hdr_clean) and str(_sk) not in fields:
                         fields[str(_sk)] = _sv
                         _kept += 1
@@ -1505,8 +1566,15 @@ class DecomposeAgent(LLMSubAgent):
             for _col in list(_fields.keys()):
                 _v = _fields[_col]
                 # 1) dict/list-dict 残留 → 置空（绝不落盘 serial 化失败）
-                if isinstance(_v, dict) or (
-                        isinstance(_v, list) and _v and isinstance(_v[0], dict)):
+                _is_nested = isinstance(_v, dict) or (
+                        isinstance(_v, list) and _v and isinstance(_v[0], dict))
+                if _is_nested:
+                    try:
+                        _ct = self._col_type_for(_tbl, _sht, str(_col)).lower()
+                    except Exception:
+                        _ct = ""
+                    if any(x in _ct for x in ("dict", "map", "json", "object")):
+                        continue
                     _fields[_col] = ""
                     self.add_thinking("细分",
                         f"lint: {_tbl}/{_sht} 列[{_col}] 残留 dict/list → 置空（防落盘崩）")
@@ -1643,10 +1711,13 @@ class DecomposeAgent(LLMSubAgent):
         """构 FK 块:每条边 from.column → to.column。"""
         if not fk_edges:
             return "（无显式 FK）"
+        max_edges = max(1, int(os.environ.get("CODEMAKER_DECOMPOSE_FK_LIMIT", "20")))
         lines = []
-        for e in fk_edges:
+        for e in fk_edges[:max_edges]:
             lines.append(f"  {e.from_stem}.{e.from_sheet}.{e.from_column} → "
                          f"{e.to_stem}.{e.to_sheet}.{e.to_column}")
+        if len(fk_edges) > max_edges:
+            lines.append(f"  ...({len(fk_edges) - max_edges} more omitted)")
         return "\n".join(lines)
 
     def _build_full_schema_block(self, stems: list[str]) -> tuple[str, dict]:
@@ -1867,6 +1938,36 @@ class DecomposeAgent(LLMSubAgent):
                 "\"<label>\" and mirror them in references. Do not invent "
                 "resolved_from placeholders.\n\n"
             )
+        if os.environ.get("CODEMAKER_DECOMPOSE_COMPACT_PROMPT", "1") != "0":
+            compact_rules = (
+                "你是 Excel 配表拆解器。只输出 JSON 数组，不要解释、不要 markdown。\n"
+                "每个数组元素格式："
+                "{\"table\":\"<stem>\",\"sheet\":\"<sheet>\",\"action\":\"add|set|delete|get\"," 
+                "\"fields\":{真实列名:值},\"produces\":\"new_xxx_id或唯一语义标签或空\"," 
+                "\"consumes\":{列名:\"produces_label\"},\"locator_field\":\"\",\"locator_value\":\"\"," 
+                "\"locator_fields\":[],\"locator_values\":[]}。\n"
+                "硬规则：1) fields 键必须来自 schema 的 row1 或 row2 冒号前列名；"
+                "2) 每个明确新增/修改/删除/查询动作都要产一条；枚举项、选项、等级、奖励日等要逐行展开；"
+                "3) 新增主键未给具体值时，主键列填 <produces_label>，并设置 produces；"
+                "4) 引用本批新行时字段值填 <同名produces_label>，consumes 必须同名；"
+                "5) 同一 sheet 多行互引用必须使用唯一标签，如 conv_root_id/opt_go_id；"
+                "6) set/delete 必须给 locator_field/locator_value；modify 等同 set；"
+                "7) 除 row2 类型为 dict/map/json 的真实列外，禁止把对象塞进字段值；"
+                "Quest.target.data:dict 可填对象；list 类型可填数组。\n"
+            )
+            if fill_rules:
+                fill_rules_section = fill_rules[:1200] + "\n\n"
+            else:
+                fill_rules_section = ""
+            return (
+                fill_rules_section
+                + semantic_output_section
+                + compact_rules
+                + f"## schema\n{schema_block}\n\n"
+                + (signal_section if signal_section else "")
+                + f"## FK\n{fk_block}\n\n"
+                + f"## 指令\n{text}\n"
+            )
         return (
             few_shot_section +
             fill_rules_section +
@@ -1951,9 +2052,11 @@ class DecomposeAgent(LLMSubAgent):
             "但若指令对同一表同一 sheet 有多个不同业务子任务"
             "(如 BuildingInteract 的 idle+collect 多状态行,或不同行不同 locator_value),"
             "必须按真实业务子任务产多条,每条 fields 各自不同,不可合并丢弃\n"
-            "- ⚠【标量值硬约束】fields 的每个值必须是标量（数字/字符串/布尔）或占位符 \"<label>\"，"
-            "**禁止嵌套对象 `{...}` 或对象数组**。若指令里某项含若干子属性（如 cost=0、require_level=1），"
-            "应拆成各自对应表头列分别填，不要合并成一个对象塞进单列——对象落盘会序列化失败整行报错。\n"
+            "- ⚠【标量值硬约束】除 schema row2 类型明确为 dict/map/json 的真实列外，"
+            "fields 的每个值必须是标量（数字/字符串/布尔）或占位符 \"<label>\"，"
+            "禁止嵌套对象 `{...}` 或对象数组。若指令里某项含若干子属性（如 cost=0、require_level=1），"
+            "应拆成各自对应表头列分别填，不要合并成一个对象塞进单列。"
+            "例外：Quest.target.data:dict 这类真实 dict 列可直接填对象。\n"
             "- ⚠【枚举列中文标签硬约束】指令给某列的值是中文标签且该列在 schema 里是 int/数字枚举列"
             "（如「类型节日」「品质上品」「部位武器」）时，fields 值**必须填中文标签原词**"
             "（如 \"节日\"），**绝不能留空 \"\"**。系统会在下游把中文标签转成数字码，"

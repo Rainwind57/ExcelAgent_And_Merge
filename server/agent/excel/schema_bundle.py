@@ -19,6 +19,7 @@ R21 HTTP API 已落地（`routers/tables.py:68`），但 excel-agent 同进程,c
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,6 +41,13 @@ def _is_business_sheet_name(name) -> bool:
 
 def _business_sheets(sheets) -> list:
     return [s for s in (sheets or []) if _is_business_sheet_name(s)]
+
+
+def _norm_col_name(s) -> str:
+    """Normalize row headers the same way as ValidateAgent."""
+    if not s:
+        return ""
+    return re.split(r'[:\uff1a\n\r]', str(s))[0].strip()
 
 
 def _resolver_of(agent):
@@ -193,7 +201,7 @@ def _existing_values_from_rows(headers, rows) -> dict:
     col_idx = {}
     for i, h in enumerate(headers):
         if h is not None and i < (len(rows[0]) if rows else 0):
-            col_idx.setdefault((str(h) or "").split(":")[0].strip().lower(), i)
+            col_idx.setdefault(_norm_col_name(h).lower(), i)
     existing = {}
     for col_lower, idx in col_idx.items():
         vals = set()
@@ -221,7 +229,7 @@ def _composite_existing_from_rows(headers, rows, pk_norm_cols: list) -> set:
     for i, h in enumerate(headers):
         if h is None:
             continue
-        nl = (str(h) or "").split(":")[0].strip().lower()
+        nl = _norm_col_name(h).lower()
         if nl and nl not in idx_of:
             idx_of[nl] = i
     pick_idx = []
@@ -276,7 +284,7 @@ def _rows_to_dicts(headers, rows) -> list:
         d = {}
         for i, h in enumerate(headers):
             if h is not None and i < len(row):
-                d[(str(h) or "").split(":")[0].strip()] = row[i]
+                d[_norm_col_name(h)] = row[i]
         out.append(d)
     return out
 

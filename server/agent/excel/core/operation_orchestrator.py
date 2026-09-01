@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # 通用命名占位符：`<new_id>` / `<new_prefab_id>` / `<new_conv_id>` /
 # `<option_1_id>` / `<上一个id>` 等，捕获尖括号内的名字。
-_PLACEHOLDER_RE = re.compile(r"<\s*([\w\u4e00-\u9fff]+)\s*>")
+_PLACEHOLDER_RE = re.compile(r"<\s*([^>]+?)\s*>")
 
 # 通用"最近一个新 ID"别名：这些占位符名统一解析到 produced['new_id']
 _GENERIC_NAMES = {
@@ -237,7 +237,8 @@ class OperationOrchestrator:
         for i, it in enumerate(intents):
             if it is None:
                 continue
-            label = (it.extras or {}).get("produces")
+            label = (getattr(it, "produces_label", None)
+                     or (it.extras or {}).get("produces"))
             if isinstance(label, str) and label.strip():
                 ln = cls._norm_name(label)
                 producer_of.setdefault(ln, i)
@@ -256,6 +257,8 @@ class OperationOrchestrator:
                     continue
                 for m in _PLACEHOLDER_RE.finditer(v):
                     nm = cls._norm_name(m.group(1))
+                    if nm.startswith("consume:"):
+                        nm = nm.split(":", 1)[1].strip()
                     j = producer_of.get(nm)
                     if j is None and nm.startswith("new_"):
                         j = producer_of.get(nm[4:])
@@ -355,14 +358,25 @@ class OperationOrchestrator:
 
     @staticmethod
     def _iter_values(intent: NLIntent):
-        yield intent.locator_value
-        yield intent.value
+        def _walk(v):
+            yield v
+            if isinstance(v, dict):
+                for vv in v.values():
+                    yield from _walk(vv)
+            elif isinstance(v, (list, tuple)):
+                for vv in v:
+                    yield from _walk(vv)
+
+        yield from _walk(intent.locator_value)
+        yield from _walk(intent.value)
         # §P0 复合主键列表值（locator_values 含占位符待替换）
         if getattr(intent, "locator_values", None):
-            yield from intent.locator_values
+            for v in intent.locator_values:
+                yield from _walk(v)
         fields = (intent.extras or {}).get("fields") or {}
         if isinstance(fields, dict):
-            yield from fields.values()
+            for v in fields.values():
+                yield from _walk(v)
 
     @staticmethod
     def _norm_name(name: str) -> str:
@@ -460,10 +474,18 @@ class OperationOrchestrator:
         占位符永远悬空（case5 ResidenceEntry 双键等场景）。同步补列表遍历。
         """
         def _sub(v):
+            if isinstance(v, dict):
+                return {k: _sub(vv) for k, vv in v.items()}
+            if isinstance(v, list):
+                return [_sub(vv) for vv in v]
+            if isinstance(v, tuple):
+                return tuple(_sub(vv) for vv in v)
             if not isinstance(v, str) or "<" not in v:
                 return v
             def _repl(m):
                 val = cls._lookup(m.group(1), produced)
+                if val is None and str(m.group(1)).strip().lower().startswith("consume:"):
+                    val = cls._lookup(str(m.group(1)).split(":", 1)[1], produced)
                 return str(val) if val is not None else m.group(0)
             return _PLACEHOLDER_RE.sub(_repl, v)
 
@@ -528,7 +550,8 @@ class OperationOrchestrator:
         # 向后兼容：最近一个新 ID
         produced["new_id"] = val
         # 显式 produces 标签（解析器可提供的最强信号）
-        label = (intent.extras or {}).get("produces") if intent is not None else None
+        label = (getattr(intent, "produces_label", None)
+                 or ((intent.extras or {}).get("produces") if intent is not None else None))
         if isinstance(label, str) and label.strip():
             ln = cls._norm_name(label)
             produced[ln] = val

@@ -18,6 +18,7 @@
 | Merge apply | ~19.6s → ~4.3s（**3.8×**），提交量 46.4MB→0.1MB（**-99.8%**） |
 | Merge 假冲突率 | 0.5 → 0 |
 | 可靠性 | 回归 180 项全过、单测 323+ 零回归 |
+| 本轮优化（对话树占位符闭环等） | 嵌套占位符漏检 7/8→0、命名漂移假阳性 5/6→2/6、聊天噪音 66.7%→0% |
 
 ---
 
@@ -275,7 +276,32 @@ conflicts: 18 = 18     ← 当前快照无 "100"vs"100.0" 型假冲突
 
 ---
 
-## 五、数据源路径速查
+## 五、本轮优化模拟压测（2026-09-01，未提交代码改动）
+
+> 背景：本轮有一批未提交的真实代码优化（decompose_agent/validator_agent/step3_execute_subagent/operation_orchestrator/step4_conclude_subagent/agent_service 等），围绕"对话树循环依赖占位符闭环""命名风格漂移误报""聊天区降噪""LLM调用成本控制""Step4口径修复"。以下 5 项均为**真实调用仓库函数 + 构造固定 fixture** 的模拟压测（个别子项因依赖过重上下文退化为简化状态机，已在对应 md 里逐条标注），不与真实端到端准确率混用。
+
+| # | 模块 | 指标 | before | after | 脚本/证据 |
+|---|---|---|---:|---:|---|
+| 1 | `validator_agent._norm_name` | FORWARD_REF_BROKEN 假阳性（12组样例） | 5/6 | **2/6** | `tools/simulate_validator_forwardref_norm.py` |
+| 2 | `step3_execute_subagent` 占位符扫描 | 8条混合样例漏检嵌套占位符 | 7 | **0** | `tools/simulate_placeholder_nested_backfill.py` |
+| 2b | 循环依赖回填（简化状态机模拟） | 5节点链式依赖可执行节点数 | 1/5 | **5/5** | 同上 |
+| 3 | `agent_service` 聊天降噪 | 25条混合会话展示行数/噪音占比 | 24行/66.7% | **8行/0%** | `tools/simulate_agent_service_noise_filter.py` |
+| 4a | `decompose_agent` 分组硬上限 | 12候选实际跑的分组数/LLM子调用 | 3 | **2** | `tools/simulate_decompose_chain_cost.py` |
+| 4b | `decompose_agent` dict列lint | 3个合法dict列场景误清空率 | 100% | **0%** | 同上 |
+| 5 | `step4_conclude_subagent.all_ok` | 8种(s1,s2,s3)组合中误报场景数 | 3/8 | **0/8** | `tools/simulate_step4_allok_drift.py` |
+
+证据（对应报告）：`bench/ppt_validator_forwardref_norm.md`、`bench/ppt_placeholder_nested_backfill.md`、`bench/ppt_agent_service_noise_filter.md`、`bench/ppt_decompose_chain_and_dict_lint.md`、`bench/ppt_step4_allok_drift.md`
+
+### Skill 系统机制补充（非新增效果数据，是对 §1.6/1.7 的机制说明）
+
+- 四层结构：`L0`人工根目录 / `L1_derived`自动派生 / `L2_runtime`运行时学习 / `L3_anti_patterns`反模式，物理路径 `server/agent/excel/skills/`。
+- 转正安全阀（`skill_updater.py` `promote_with_guard`）：候选 → 快照 → 写盘 → mini 回归(30样本, lift≥0.05) → 通过转 active / 不通过回滚+隔离区(30天)。
+- AI 归纳的反模式需额外命中 3 次才可能转正（比确定性规则更严，因无 ground-truth）。
+- 诚实边界：`L2_runtime/column_aliases.runtime.yaml` 当前样例库为空骨架，机制已建成但未跑出规模化数据。
+
+---
+
+## 六、数据源路径速查
 
 | 数据 | 路径 |
 |---|---|
@@ -288,6 +314,7 @@ conflicts: 18 = 18     ← 当前快照无 "100"vs"100.0" 型假冲突
 | merge 路由 A/B | `server/tests/reports/merge_router_bench_latest.json` |
 | 大表操作压测 | `server/tests/reports/bench_perf_tables_latest.{md,json}` |
 | merge #33/#24 A/B 新鲜跑 | `server/tests/reports/bench_merge_before_after_latest.json` |
+| 本轮优化模拟压测（5项） | `bench/ppt_validator_forwardref_norm.md` / `ppt_placeholder_nested_backfill.md` / `ppt_agent_service_noise_filter.md` / `ppt_decompose_chain_and_dict_lint.md` / `ppt_step4_allok_drift.md` |
 | 公式快扫 | `server/agent/excel/formula/formula_cache_validator.py:229` |
 | 答辩 PPT 内容 | `docs/答辩PPT内容文档-45min.md` |
 | 单一事实源（桌面版） | 桌面 `性能优化指标整合文档.md`（本文件为其仓库内镜像+扩展） |

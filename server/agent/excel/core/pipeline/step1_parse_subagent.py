@@ -1110,6 +1110,7 @@ class Step1ParseSubAgent:
                 "audit_empty_add_count": (audit.get("metrics") or {}).get("empty_add_count", 0),
             },
             artifacts={"intents": intents, "segments": segments,
+                       "locator_result": getattr(self._parse_agent, "_last_locator_result", None),
                        "locator_results": locator_results,
                        "step1_quality": quality,
                        "plan_graph": plan_graph,

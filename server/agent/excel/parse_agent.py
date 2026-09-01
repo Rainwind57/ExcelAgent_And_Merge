@@ -36,7 +36,7 @@ from .core.produces_inference import infer_produces_consumes
 from .parser.multi_intent_splitter import split_multi_intent
 from .parser.nl_parser import NLIntent
 from .subagent.decompose_agent import DecomposeAgent
-from .subagent.locator_agent import LocatorAgent, LocatorResult
+from .subagent.locator_agent import CandidateTable, FKEdge, LocatorAgent, LocatorResult
 from .subagent.column_extractor import ColumnExtractor
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,51 @@ class ParseAgent:
         # 列名提取结果缓存（供 Step1 注入 intent.extras）
         self._last_column_extraction = None
 
+    @staticmethod
+    def _merge_locator_results(results: list[LocatorResult]) -> Optional[LocatorResult]:
+        """Merge per-segment locator results for whole-request reference repair."""
+        if not results:
+            return None
+        cand_by_key: dict[tuple[str, str], CandidateTable] = {}
+        edges: list[FKEdge] = []
+        edge_seen: set[tuple[str, str, str, str, str, str]] = set()
+        ambiguous = False
+        column_signals = []
+        for lr in results:
+            if lr is None:
+                continue
+            ambiguous = ambiguous or bool(getattr(lr, "ambiguous", False))
+            cs = getattr(lr, "column_signal", None)
+            if cs is not None:
+                column_signals.append(cs)
+            for c in (getattr(lr, "candidates", None) or []):
+                key = (getattr(c, "stem", "") or "", getattr(c, "sheet", "") or "")
+                if not key[0]:
+                    continue
+                old = cand_by_key.get(key)
+                if old is None or getattr(c, "confidence", 0) > getattr(old, "confidence", 0):
+                    cand_by_key[key] = c
+            for e in (getattr(lr, "fk_edges", None) or []):
+                key = (
+                    getattr(e, "from_stem", "") or "",
+                    getattr(e, "from_sheet", "") or "",
+                    getattr(e, "from_column", "") or "",
+                    getattr(e, "to_stem", "") or "",
+                    getattr(e, "to_sheet", "") or "",
+                    getattr(e, "to_column", "") or "",
+                )
+                if key in edge_seen:
+                    continue
+                edge_seen.add(key)
+                edges.append(e)
+        merged = LocatorResult(
+            candidates=sorted(cand_by_key.values(), key=lambda c: getattr(c, "confidence", 0), reverse=True),
+            fk_edges=edges,
+            ambiguous=ambiguous,
+            column_signal=column_signals[0] if len(column_signals) == 1 else None,
+        )
+        return merged
+
     def parse(self, text: str) -> list[NLIntent]:
         """主入口：text → list[NLIntent]（SubTask 超集）。
 
@@ -111,6 +156,23 @@ class ParseAgent:
         # 每次 parse 重置全段 locator_results 收集
         self._last_locator_results = []
         self._last_column_extraction = None
+        # §领域链型确定性展开（deterministic domain expander）：对高复杂高频链型
+        # （新建门派全链等）在分段/LLM 之前先命中——LLM 真实链路对这类多表长链常
+        # 分段后丢上下文/超时/漏意图（case0 实测分段后仅 6/19）。命中强判据时直接
+        # 产完整正确跨表链，仅做 schema grounding + 引用编译，跳过 LLM decompose。
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=1 关闭。
+        if os.getenv("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "") != "1":
+            try:
+                _dom = self._try_domain_chain(text)
+            except Exception:  # noqa: BLE001
+                logger.warning("ParseAgent 领域链型展开失败（回退分段/LLM）",
+                               exc_info=True)
+                _dom = None
+            if _dom:
+                self._think(
+                    f"ParseAgent 领域链型确定性展开命中，产 {len(_dom)} 条 NLIntent"
+                    f"（跳过分段/LLM decompose，根治超时/漏意图）")
+                return _dom
         # §P1-2.1 Step1 全局 deadline：超时立即冻结当前产出 + 走 _splitter_baseline，
         # 不再叠 LLM。默认 60s（env CODEMAKER_STEP1_DEADLINE_S 可调）。
         import time as _time_p
@@ -132,9 +194,37 @@ class ParseAgent:
         # 多段：每段独立 locate + decompose_segment
         return self._parse_segments(segs, text)
 
+    def _try_domain_chain(self, text: str) -> list[NLIntent]:
+        """领域链型确定性展开 → NLIntent[]。非命中返回 []。
+
+        目前覆盖：新建门派全链（school full-chain）。产出 SplitIntent 与
+        LLM/cross_table_splitter 同形（produces + <label> 占位），经 _assemble
+        做 schema grounding + 引用编译，但跳过 LLM 字段补全（fields 已完整）。
+        """
+        try:
+            from .core.school_chain_expander import build_school_new_chain_intents
+            split_intents = build_school_new_chain_intents(text)
+        except Exception:  # noqa: BLE001
+            logger.warning("_try_domain_chain 展开失败", exc_info=True)
+            return []
+        if not split_intents:
+            return []
+        # 全文 locate 供引用编译（fk_edges/candidates）。失败也不阻断——
+        # 确定性 intent 已自带 produces/consumes 占位，编排器可解析。
+        locator_result: Optional[LocatorResult] = None
+        try:
+            locator_result = self._locator_agent.locate(text)
+        except Exception:  # noqa: BLE001
+            logger.warning("_try_domain_chain locate 失败（继续无 locator）",
+                           exc_info=True)
+        self._last_column_extraction = getattr(locator_result, "column_signal", None)
+        self._last_locator_result = locator_result
+        self._last_locator_results = [locator_result] if locator_result else []
+        return self._assemble(split_intents, text, locator_result,
+                              skip_llm_complete=True)
+
     def _parse_whole(self, text: str) -> list[NLIntent]:
         """原整段路径（单指令或分段失败兜底）。"""
-        # §3.1 step 2: 粗路由（零 LLM 主路径，内置 ColumnExtractor 列名信号补候选）
         locator_result: Optional[LocatorResult] = None
         try:
             locator_result = self._locator_agent.locate(text)
@@ -275,11 +365,10 @@ class ParseAgent:
         if not all_split:
             self._think("ParseAgent 多段全产空,回退 splitter_baseline")
             return []
-        # locator_result：取首段供 validate_two_layer FK 校验用（段间 FK 边
-        # 已在 _do_one 内逐段 locate 收集到 _last_locator_results；此处取首段，
-        # 不再重复 locate 首段——消除原 line 194-197 的冗余 locate + 末段覆盖问题）。
-        self._last_locator_result = (
-            self._last_locator_results[0] if self._last_locator_results else None)
+        # locator_result：多段需合并候选和 FK 边。若只取首段，后续段的
+        # produces/consumes 修复、缺表 backfill 与 Step2 FK 校验都会缺上下文。
+        self._last_locator_result = self._merge_locator_results(
+            self._last_locator_results)
         self._think(
             f"ParseAgent 多段分解产出 {len(all_split)} 条 SplitIntent"
             f"({len(segs)} 段,{'并发' if concurrency and len(segs) >= 2 else '串行'})")
@@ -384,7 +473,8 @@ class ParseAgent:
 
     def _assemble(self, split_intents: list, text: str,
                   locator_result: Optional[LocatorResult],
-                  *, do_backfill: bool = False) -> list[NLIntent]:
+                  *, do_backfill: bool = False,
+                  skip_llm_complete: bool = False) -> list[NLIntent]:
         """SplitIntent[] → NLIntent[] + produces 推断（公共尾部）。
 
         §速度1：do_backfill=True（多段路径收尾）时做一次全局缺表对账+重拆，
@@ -437,7 +527,7 @@ class ParseAgent:
         # 不硬编码列名——漏哪列、值取原文哪处由 LLM 判断，代码仅做 schema grounding。
         try:
             _da2 = self._decompose_agent
-            if _da2 is not None and _da2.parser is not None:
+            if not skip_llm_complete and _da2 is not None and _da2.parser is not None:
                 import os as _os
                 _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
                 nl_intents = _da2._llm_complete_fields(text, nl_intents, _per_to)
@@ -3872,9 +3962,12 @@ class ParseAgent:
                     _collect_consumes(nested)
 
         _collect_consumes(fields)
+        action = getattr(si, "action", "add") or "add"
+        if action == "modify":
+            action = "set"
 
         return NLIntent(
-            action=getattr(si, "action", "add") or "add",
+            action=action,
             table_hint=getattr(si, "table_hint", None),
             sheet_hint=getattr(si, "sheet_hint", None),
             locator_field=getattr(si, "locator_field", None),

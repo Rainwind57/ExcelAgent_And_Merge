@@ -54,6 +54,23 @@ class TestCollectFieldCorrections:
         })
         assert _collect_field_corrections([it]) == []
 
+    def test_direct_rename_metadata(self):
+        """批量列名修正直接记录 old_col/new_col 时可沉淀别名。"""
+        it = _intent(table="pet_evolve", sheet="PetEvolveData", book={
+            "None": {
+                "old": "焚天朱雀·涅槃",
+                "new": "焚天朱雀·涅槃",
+                "source": "user",
+                "old_col": "None",
+                "new_col": "进化后的灵兽名称",
+            },
+        })
+        out = _collect_field_corrections([it])
+        assert out == [{
+            "table_stem": "pet_evolve", "sheet": "PetEvolveData",
+            "query": "None", "resolved": "进化后的灵兽名称",
+        }]
+
     def test_no_book_returns_empty(self):
         assert _collect_field_corrections([_intent()]) == []
         assert _collect_field_corrections([]) == []

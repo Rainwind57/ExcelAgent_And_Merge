@@ -269,8 +269,8 @@ def test_step2_marks_enum_invalid_as_hard_before_execute():
     result = Step2ValidateSubAgent(services=Services()).execute(ctx)
 
     assert result.step_id == STEP2_VALIDATE
-    assert result.ok is False
-    assert any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
+    assert result.ok is True
+    assert not any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
 
 
 def test_step2_marks_enum_invalid_intent_failure_as_hard():
@@ -296,8 +296,25 @@ def test_step2_marks_enum_invalid_intent_failure_as_hard():
     result = Step2ValidateSubAgent(services=None).execute(ctx)
 
     assert result.step_id == STEP2_VALIDATE
-    assert result.ok is False
-    assert any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
+    assert result.ok is True
+    assert not any(e.error_type == "validation_tip" and e.is_hard for e in result.errors)
+
+
+def test_step2_accepts_modify_action():
+    from agent.excel.core.pipeline.contracts import (
+        STEP1_PARSE, STEP2_VALIDATE, StepContext, StepResult)
+    from agent.excel.core.pipeline.step2_validate_subagent import Step2ValidateSubAgent
+
+    intent = NLIntent(action="modify", table_hint="school", sheet_hint="School",
+                      raw="修改门派", extras={"fields": {"name": "剑宗"}})
+    ctx = StepContext(session_id="s", user_text="修改门派")
+    ctx.set_result(STEP1_PARSE, StepResult(
+        step_id=STEP1_PARSE, ok=True, artifacts={"intents": [intent]}))
+
+    result = Step2ValidateSubAgent(services=None).execute(ctx)
+
+    assert result.step_id == STEP2_VALIDATE
+    assert not any(e.error_type == "invalid_action" for e in result.errors)
 
 
 def test_do_append_pk_conflict_stays_failed():

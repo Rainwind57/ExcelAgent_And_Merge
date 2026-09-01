@@ -66,8 +66,95 @@ def _load_cases_file(path: Path) -> list[dict]:
             "name": meta.get("name") or item.get("name") or f"case_{i}",
             "text": text,
             "expected_count": len(item.get("expected_answer") or []),
+            "expected_answer": item.get("expected_answer") or [],
         })
     return cases
+
+
+def _norm_stem(table: str) -> str:
+    """school\\school.xlsx -> school ; mail.xlsx -> mail"""
+    if not table:
+        return ""
+    t = str(table).replace("/", "\\")
+    t = t.split("\\")[-1]
+    for ext in (".xlsx", ".xls", ".csv"):
+        if t.lower().endswith(ext):
+            t = t[: -len(ext)]
+            break
+    return t.strip().lower()
+
+
+def _norm_sheet(sheet: str) -> str:
+    return str(sheet or "").strip().lower()
+
+
+def match_expected(expected: list[dict], intents: list[dict]) -> dict:
+    """Match expected_answer rows against produced Step1 intents.
+
+    Matching key: (table_stem, sheet, action). Each expected row consumes at
+    most one produced intent (greedy). Returns matched/effective_expected plus
+    per-row detail and a list of missing expected keys.
+    """
+    # Build multiset of produced (stem, sheet, action)
+    produced: list[dict] = []
+    for it in intents:
+        produced.append({
+            "stem": _norm_stem(it.get("table") or ""),
+            "sheet": _norm_sheet(it.get("sheet") or ""),
+            "action": (it.get("action") or "").strip().lower(),
+            "used": False,
+            "_raw": it,
+        })
+
+    def _op(row: dict) -> str:
+        return (row.get("operation") or row.get("action") or "add").strip().lower()
+
+    matched = 0
+    detail = []
+    missing = []
+    for exp in expected:
+        exp_stem = _norm_stem(exp.get("table") or "")
+        exp_sheet = _norm_sheet(exp.get("sheet") or "")
+        exp_op = _op(exp)
+        hit = None
+        # 1) exact stem+sheet+action
+        for p in produced:
+            if p["used"]:
+                continue
+            if p["stem"] == exp_stem and p["sheet"] == exp_sheet and p["action"] == exp_op:
+                hit = p
+                break
+        # 2) relax action
+        if hit is None:
+            for p in produced:
+                if p["used"]:
+                    continue
+                if p["stem"] == exp_stem and p["sheet"] == exp_sheet:
+                    hit = p
+                    break
+        # 3) relax sheet (stem+action)
+        if hit is None:
+            for p in produced:
+                if p["used"]:
+                    continue
+                if p["stem"] == exp_stem and p["action"] == exp_op:
+                    hit = p
+                    break
+        if hit is not None:
+            hit["used"] = True
+            matched += 1
+            detail.append({"exp": f"{exp_stem}/{exp_sheet}/{exp_op}", "ok": True})
+        else:
+            missing.append(f"{exp_stem}/{exp_sheet}/{exp_op}")
+            detail.append({"exp": f"{exp_stem}/{exp_sheet}/{exp_op}", "ok": False})
+    extra = [f"{p['stem']}/{p['sheet']}/{p['action']}" for p in produced if not p["used"]]
+    return {
+        "matched": matched,
+        "effective_expected": len(expected),
+        "missing": missing,
+        "extra": extra,
+        "detail": detail,
+    }
 
 
 def _build_parser(mode: str, sandbox: Path):
@@ -156,6 +243,13 @@ def audit(case: dict, sandbox: Path, mode: str = "codemaker") -> dict:
 
     out["step4_ok"] = s4.ok if s4 else None
     out["step4_summary"] = (s4.artifacts.get("summary") if s4 else "") or ""
+
+    # Expected matcher (Step1 intents vs expected_answer)
+    expected = case.get("expected_answer") or []
+    if expected:
+        out["match"] = match_expected(expected, out["step1_intents"])
+    else:
+        out["match"] = None
     return out
 
 
@@ -210,6 +304,19 @@ def main():
             print("\n--- Step4 ---")
             print("  step4_ok:", r["step4_ok"])
             print("  summary:", (r["step4_summary"] or "")[:300])
+
+            m = r.get("match")
+            if m:
+                print("\n--- Expected 匹配 ---")
+                print(f"  matched/effective_expected: {m['matched']}/{m['effective_expected']}")
+                if m["missing"]:
+                    print("  MISSING:")
+                    for k in m["missing"]:
+                        print(f"      - {k}")
+                if m["extra"]:
+                    print("  EXTRA (produced but no expected):")
+                    for k in m["extra"]:
+                        print(f"      + {k}")
         except Exception:
             import traceback
             traceback.print_exc()

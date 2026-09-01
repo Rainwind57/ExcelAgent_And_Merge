@@ -54,6 +54,14 @@ def _collect_field_corrections(validated: list) -> list[dict]:
                 continue
             if rec.get("source") != "user":
                 continue
+            old_col = str(rec.get("old_col", "") or "").strip()
+            new_col = str(rec.get("new_col", "") or "").strip()
+            if old_col and new_col and old_col != new_col:
+                out.append({
+                    "table_stem": table, "sheet": sheet,
+                    "query": old_col, "resolved": new_col,
+                })
+                continue
             old = str(rec.get("old", "") or "").strip()
             new = str(rec.get("new", "") or "").strip()
             if old and not new:
@@ -128,20 +136,14 @@ class Step4ConcludeSubAgent:
                 failures.append(f)
                 seen.add(key)
 
-        # §低危修复：Step4 ok 镜像 Step3（Step4 只汇总，不改 ok 语义）。
-        # 原独立判 all_ok = n_fail==0，与 s3.ok（not any hard）口径不一致：
-        # 如 s3 hard error 但 subtask 都 ok → s3.ok=False 但 Step4 all_ok=True 漂移；
-        # 或 s3 ok 但 subtask 有 soft fail → Step4 all_ok=False。镜像 s3.ok 保一致。
-        s3_ok = (s3.ok if s3 else None)
-        if s3 is not None:
-            all_ok = bool(s3_ok)
-        else:
-            prior = [r for sid, r in ctx.results.items() if sid != STEP4_CONCLUDE]
-            all_ok = bool(prior) and all(r.ok for r in prior)
+        # Step4 只汇总，但最终 ok 必须反映全部前序 step，而非只镜像 Step3。
+        prior = [r for sid, r in ctx.results.items() if sid != STEP4_CONCLUDE]
+        all_ok = bool(prior) and all(r.ok for r in prior)
         # §低危修复：ok=None（needs_confirm 待确认）不计失败，与 Step3 口径一致。
         # 原 `not s.get("ok")` 把 None 当失败 → n_fail 误计。
         n_ok = sum(1 for s in subtasks if s.get("ok") is True)
         n_fail = sum(1 for s in subtasks if s.get("ok") is False)
+        n_skipped = sum(1 for s in subtasks if s.get("skipped"))
         n_pending = sum(1 for s in subtasks if s.get("needs_confirm")
                         and s.get("ok") is None)
 
@@ -152,6 +154,8 @@ class Step4ConcludeSubAgent:
                 summary += f"，{n_pending} 个待确认"
         elif subtasks:
             summary = f"完成 {n_ok}/{len(subtasks)} 个子任务，{n_fail} 个失败"
+            if n_skipped:
+                summary += f"（其中 {n_skipped} 个因 Step2 未解决被跳过写入）"
             if n_pending:
                 summary += f"，{n_pending} 个待确认"
             for f in failures[:5]:
@@ -218,13 +222,13 @@ class Step4ConcludeSubAgent:
                 "dur_ms": int((time.time() - t0) * 1000),
                 "subtasks_ok": n_ok, "subtasks_fail": n_fail,
                 "subtasks_pending": n_pending,
+                "subtasks_skipped": n_skipped,
                 "failures": len(failures),
                 "alias_ingested": alias_ingested,
             },
             artifacts={
-                # 不再复制 s3 的 failures/subtasks（run_v2 顶层直接从 s3 取，避免口径漂移）。
-                # Step4 只产 summary + 反模式归纳标记（induced_count）。
-                "summary": summary, "induced_count": induced_count,
+                "summary": summary, "failures": failures,
+                "induced_count": induced_count,
             })
 
 

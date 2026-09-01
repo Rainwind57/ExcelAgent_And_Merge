@@ -230,9 +230,24 @@ def _label_from_consumes(value) -> Optional[str]:
     """从 consumes 占位符值提取标签名:<new_pet_id> → "new_pet_id"。"""
     if value is None:
         return None
+    if isinstance(value, dict):
+        for nested in value.values():
+            label = _label_from_consumes(nested)
+            if label:
+                return label
+        return None
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            label = _label_from_consumes(nested)
+            if label:
+                return label
+        return None
     s = str(value).strip()
     if s.startswith("<") and s.endswith(">") and len(s) >= 2:
-        return s[1:-1].strip()
+        label = s[1:-1].strip()
+        if label.lower().startswith("consume:"):
+            label = label.split(":", 1)[1].strip()
+        return label
     return None
 
 
@@ -248,6 +263,18 @@ _HARD_ISSUE_TYPES = {
 def _is_issue_hard(issue_type: str) -> bool:
     """issue_type 是否属硬 issue（不涉及主键列缺失，后者需 pk_cols 判定）。"""
     return str(issue_type or "") in _HARD_ISSUE_TYPES
+
+
+def _is_interactive_missing_required(issue_type: str, expected: str = "") -> bool:
+    """业务显式必填缺失也进入 Step2 编辑闭环。
+
+    普通 derived required 仍可降级；但带「业务必填列/指令明确」的缺失说明来自
+    _check_business_required_pre_add，继续放到 Step4 才提示会造成半成品或误显示成功。
+    """
+    if str(issue_type or "") != IssueType.MISSING_REQUIRED.value:
+        return False
+    exp = str(expected or "")
+    return "业务必填列" in exp or "指令明确" in exp
 
 
 class ValidatorAgent(LLMSubAgent):
@@ -546,14 +573,11 @@ class ValidatorAgent(LLMSubAgent):
                                          type_row=None) -> list:
         """Pack 3：写前 business heuristic 必填列校验（agent.py:4561 同启发式前移）。
 
-        策略：user_text 含引号(说明用户显式给了名字/描述值) 且列名含「名称/描述/名」
-        字样的 string 列未在 LLM fields 提供值 → 报 MISSING_REQUIRED issue +
-        mark intent.validation.skipped=True 让 Step3 跳写盘避免半成品落盘 + 隐瞒失败。
+        字样的 string 列未在 LLM fields 提供值 → 报 MISSING_REQUIRED issue。
 
-        与 P26 用户原则一致：非主键 MISSING_REQUIRED 仅 warning 上报，配合 skipped
-        让 step4 induce_anti_patterns 标失败种；不强制走 _ask hard ask 循环（用户
-        原则 "除主键缺失外不校验" 不变）。PK 自动分配列豁免（首列必非空时由
-        _dedup_inter_pk_dup 等处理）。
+        validate_two_layer 会把「业务必填列/指令明确」类缺失纳入 Step2 全字段编辑
+        闭环，用户补齐后才放行；不再预先 mark skipped，避免修好后 Step3 仍显示
+        「用户跳过此项」。PK 自动分配列豁免（首列必非空时由 _dedup_inter_pk_dup 等处理）。
 
         三条误报豁免（均「数据/指令」驱动，不绑业务词）：
           1. 全空列豁免：该列在既有所有数据行里从没填过 → 非业务必填列，不报。
@@ -666,7 +690,7 @@ class ValidatorAgent(LLMSubAgent):
         # ① 真实 PK 列（复合键缓存，按 stem+sheet 精确查；兼容旧 {stem:set}）
         pk_cache = self._pk_cols_cache or self._load_pk_cols_cache()
         if stem and isinstance(pk_cache, dict):
-            sheets_map = pk_cache.get(stem)
+            sheets_map = pk_cache.get(str(stem).lower()) or pk_cache.get(stem)
             if isinstance(sheets_map, dict):
                 decl_cols: list = []
                 if sheet and sheet in sheets_map:
@@ -928,14 +952,33 @@ class ValidatorAgent(LLMSubAgent):
                     # 交下方 _renames 统一改名，消除 COL_NOT_FOUND + MISSING_REQUIRED。
                     _guess = self._closest_header(col_clean, headers, type_row)
                     if not _guess:
+                        _guess = self._suggest_header_by_value(
+                            col, val, headers, type_row, fields,
+                            raw=getattr(it, "raw", "") or "")
+                    if not _guess:
                         _guess = self._resolve_col_with_llm(
                             col_clean, val, headers, type_row,
                             raw=getattr(it, "raw", "") or "")
                     if _guess:
                         # 命中真实列 → 记改名，落入下方统一 _renames 应用（不在此
                         # 迭代中 mutate fields，避免 dict 迭代期改尺寸 RuntimeError）
-                        _resolved = _guess
-                        _renames[col] = _guess
+                        # 只有 LLM 消歧开启时才自动改；纯启发式建议留给用户确认。
+                        if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") == "1":
+                            _resolved = _guess
+                            _renames[col] = _guess
+                        else:
+                            _avail = "、".join(
+                                _norm_col_name(h)
+                                for h in headers if h)[:200]
+                            issues.append(Issue(
+                                col=col, issue_type=IssueType.COL_NOT_FOUND.value,
+                                expected=f"列存在于 {stem}/{sheet} 表头",
+                                suggestion=(
+                                    f"建议把「{col}」改为「{_guess}」。"
+                                    f"该表真实列名有：{_avail}。"),
+                                value=val,
+                            ))
+                            continue
                     else:
                         _avail = "、".join(
                             _norm_col_name(h)
@@ -1456,6 +1499,121 @@ class ValidatorAgent(LLMSubAgent):
         except Exception:
             return ""
 
+    def _suggest_header_by_value(self, col: str, value, headers: list,
+                                 type_row: list = None, fields: dict = None,
+                                 raw: str = "") -> str:
+        """根据字段值 + 真实列名集合推断列名，供 COL_NOT_FOUND 人工卡片推荐。
+
+        典型场景：LLM 漏了列名，产出 `None=焚天朱雀·涅槃`。这时按列名相似度
+        无法命中，但值明显是名称；结合同一行已存在 `evolved_pet_id` 与真实表头
+        `进化后的灵兽名称`，可以给用户一个可选建议，而不是只提示删除。
+        """
+        if not headers:
+            return ""
+        clean_headers = [_norm_col_name(h) for h in headers if _norm_col_name(h)]
+        if not clean_headers:
+            return ""
+        value_s = "" if value is None else str(value).strip()
+        col_s = "" if col is None else str(col).strip()
+        fields = fields if isinstance(fields, dict) else {}
+
+        def _header_with(words: tuple[str, ...], exclude_words: tuple[str, ...] = ()) -> str:
+            hits = []
+            for h in clean_headers:
+                if any(w not in h for w in words):
+                    continue
+                if any(w in h for w in exclude_words):
+                    continue
+                hits.append(h)
+            if not hits:
+                return ""
+            return sorted(hits, key=lambda x: (len(x), x))[0]
+
+        try:
+            # `None`/空列名且值是中文实体名：优先补名称类列。
+            if (not col_s or col_s.lower() == "none") and value_s:
+                has_cn = any("\u4e00" <= ch <= "\u9fff" for ch in value_s)
+                if has_cn:
+                    # 进化目标名：同一 intent 已有 evolved_pet_id / 进化后的灵兽ID。
+                    field_keys = " ".join(str(k).lower() for k in fields.keys())
+                    if ("evolved" in field_keys or "进化后的" in field_keys
+                            or "进化为" in (raw or "")):
+                        hit = _header_with(("进化后的", "名称"))
+                        if hit:
+                            return hit
+                    hit = _header_with(("名称",), exclude_words=("类型", "组"))
+                    if hit:
+                        return hit
+                    hit = _header_with(("名字",)) or _header_with(("名",))
+                    if hit:
+                        return hit
+            if value_s and any("\u4e00" <= ch <= "\u9fff" for ch in value_s):
+                col_l = col_s.lower()
+                if "evolved" in col_l or "进化后的" in col_s:
+                    hit = _header_with(("进化后的", "名称"))
+                    if hit:
+                        return hit
+                if any(k in col_l for k in ("name", "title")) or any(k in col_s for k in ("名称", "名字")):
+                    hit = _header_with(("名称",), exclude_words=("类型", "组"))
+                    if hit:
+                        return hit
+            # 数字值按列义兜底：ID/编号、数量/数目/个数。
+            if value_s and re.fullmatch(r"-?\d+(?:\.\d+)?", value_s):
+                col_l = col_s.lower()
+                if any(k in col_l for k in ("num", "count", "数量", "数目", "个数")):
+                    hit = _header_with(("数量",)) or _header_with(("数目",)) or _header_with(("个数",))
+                    if hit:
+                        return hit
+                if "id" in col_l or "编号" in col_s:
+                    hit = _header_with(("ID",)) or _header_with(("id",)) or _header_with(("编号",))
+                    if hit:
+                        return hit
+        except Exception:
+            return ""
+        return ""
+
+    def _suggest_value_for_missing_required(self, intent, col: str,
+                                            fields: dict = None,
+                                            raw: str = "") -> str:
+        """给缺失的业务必填列生成可点击建议值。"""
+        fields = fields if isinstance(fields, dict) else {}
+        raw = raw or getattr(intent, "raw", "") or ""
+        col_s = str(col or "")
+
+        def _quoted_after(pattern: str) -> str:
+            m = re.search(pattern, raw)
+            return (m.group(1).strip() if m else "")
+
+        try:
+            if "进化后的" in col_s and ("名称" in col_s or col_s.endswith("名")):
+                v = _quoted_after(r"进化为\s*(?:\d+)?\s*[「\"“]([^」\"”]+)[」\"”]")
+                if v:
+                    return v
+                for k, v0 in fields.items():
+                    ks = str(k).lower()
+                    vs = str(v0 or "").strip()
+                    if (not ks or ks == "none") and vs and any("\u4e00" <= ch <= "\u9fff" for ch in vs):
+                        return vs
+            if ("灵兽名称" in col_s or "宠物名称" in col_s or col_s == "名称") \
+                    and "进化后的" not in col_s:
+                for k in ("名称", "name", "灵兽名称", "宠物名称"):
+                    if k in fields and str(fields.get(k) or "").strip():
+                        return str(fields.get(k)).strip()
+                v = _quoted_after(r"新增[^，。；;]*?(?:灵兽|宠物)[「\"“]([^」\"”]+)[」\"”]")
+                if v:
+                    return v
+            if "描述" in col_s:
+                # 法术 900015「朱雀流火」：attack、fire、对 3 个目标各 160% 伤害；
+                m = re.search(r"[：:]\s*([^；;。]+(?:伤害|buff[^；;。]*)?)", raw)
+                if m:
+                    return m.group(1).strip()
+                for k in ("描述", "desc", "技能描述", "神通描述"):
+                    if k in fields and str(fields.get(k) or "").strip():
+                        return str(fields.get(k)).strip()
+        except Exception:
+            return ""
+        return ""
+
     def _resolve_col_with_llm(self, col, value, headers, type_row=None,
                               raw=""):
         """LLM 列名消歧：真实列名清单植入 prompt，让 LLM 从里面选最接近列。
@@ -1591,9 +1749,10 @@ class ValidatorAgent(LLMSubAgent):
                 # （Step3 _do_append 自增 + _capture_produced 捕获真实 id），非前向引用。
                 # 原实现先校验后写 produced → 单表 add 的 <new_activity_id> 被误判
                 # "前序产出未定义" → FORWARD_REF_BROKEN → 整条 intent 被 skip 不落盘。
-                if prod_label_this and label == prod_label_this:
+                if prod_label_this and _norm_name(label) == _norm_name(prod_label_this):
                     continue
-                if label not in produced:
+                if (_norm_name(label) not in {_norm_name(x) for x in produced}
+                        and label not in produced):
                     issues.append(Issue(
                         col=col, issue_type=IssueType.FORWARD_REF_BROKEN.value,
                         expected=f"前序产出 produces label「{label}」",
@@ -1605,6 +1764,7 @@ class ValidatorAgent(LLMSubAgent):
                 stem = getattr(it, "table_hint", "") or ""
                 sheet = getattr(it, "sheet_hint", "") or ""
                 produced[prod_label_this] = (stem, sheet, None)
+                produced[_norm_name(prod_label_this)] = (stem, sheet, None)
             issues_map[sid] = issues
         return issues_map
 
@@ -1670,7 +1830,9 @@ class ValidatorAgent(LLMSubAgent):
             _pl = (getattr(_it, "produces_label", None)
                    or (getattr(_it, "extras", None) or {}).get("produces"))
             if _pl:
-                produced.add(str(_pl).strip())
+                _s = str(_pl).strip()
+                produced.add(_s)
+                produced.add(_norm_name(_s))
         return produced
 
     @staticmethod
@@ -1692,7 +1854,7 @@ class ValidatorAgent(LLMSubAgent):
             if re.fullmatch(r"<\s*auto\s*>", value.strip()):
                 continue  # <auto> 可选留空
             label = _label_from_consumes(value)
-            if label and label in produced:
+            if label and (label in produced or _norm_name(label) in produced):
                 continue  # 本批 produces 内 → 可解析
             issues.append(Issue(
                 col=col,
@@ -1738,6 +1900,20 @@ class ValidatorAgent(LLMSubAgent):
             ok = not _has_hard（无硬 issue 才 True）；tips 为收集到的展示项。
             已 ask 改写/标 skipped 的 intent 反映在 intents[i].validation 上。
         """
+        if os.getenv("CODEMAKER_VALIDATOR_SUPPRESS_OVER_PRODUCE_V2", "0") == "1":
+            _n_over = self._suppress_over_produce(intents)
+            if _n_over:
+                try:
+                    self.add_thinking("校验",
+                        f"抑制过产：合并/丢弃 {_n_over} 条冗余 producer")
+                except Exception:
+                    pass
+        if os.getenv("CODEMAKER_VALIDATOR_ALIGN_PRODUCES", "1") != "0":
+            try:
+                self._align_produces_labels(intents)
+            except Exception:
+                logger.debug("validate_two_layer align produces 失败", exc_info=True)
+
         # O20b：4-step 路径同表同 sheet 同字段去重（S1 Quest 18-23 6 条重复）。
         # _suppress_over_produce 只去 produces 过产；本方法去完全重复（fields 一致）。
         _n_dedup = self._dedup_intents(intents)
@@ -2112,11 +2288,7 @@ class ValidatorAgent(LLMSubAgent):
         #     失败产污染）。第1问归属判定：列名错归 Step2 非 Step1（Step1 只产不校验）。
         #   SCHEMA_MISSING → 降级 warning（表/sheet 不存在时 Step3 写盘失败由 Step4 报）
         #   RANGE_OUTLIER → 降级 warning（modify 场景离群，add 不影响）
-        _hard_issue_types = {
-            IssueType.UNIQUE_VIOLATION.value,
-            IssueType.TYPE_MISMATCH.value,
-            IssueType.COL_NOT_FOUND.value,
-        }
+        _hard_issue_types = set(_HARD_ISSUE_TYPES)
         _pk_cols = self._pk_cols_cache or self._load_pk_cols_cache() or {}
         def _is_pk_missing(tip) -> bool:
             """MISSING_REQUIRED 仅在主键列缺失时才算硬 issue。"""
@@ -2127,15 +2299,31 @@ class ValidatorAgent(LLMSubAgent):
                 else (getattr(tip, "table", "") or getattr(tip, "stem", ""))
             col = (tip.get("col") or "") if isinstance(tip, dict) \
                 else getattr(tip, "col", "")
-            pk_set = _pk_cols.get(stem, set()) if isinstance(_pk_cols, dict) else set()
-            if pk_set and col in pk_set:
+            pk_set = set()
+            if isinstance(_pk_cols, dict):
+                sheets_map = (_pk_cols.get(str(stem or "").lower())
+                              or _pk_cols.get(stem) or {})
+                if isinstance(sheets_map, dict):
+                    for cols in sheets_map.values():
+                        if isinstance(cols, (list, tuple, set)):
+                            pk_set.update(_norm_col(c) for c in cols if c)
+                elif isinstance(sheets_map, (list, tuple, set)):
+                    pk_set.update(_norm_col(c) for c in sheets_map if c)
+            if pk_set and _norm_col(col) in pk_set:
                 return True
             # 无 pk 缓存时回退到列名启发式（含 id/编号 且为首列）
             return bool(col) and ("id" in str(col).lower() or "编号" in str(col))
+
+        def _is_business_required(tip) -> bool:
+            _it = (tip.get("issue_type") if isinstance(tip, dict)
+                   else getattr(tip, "issue_type", ""))
+            _exp = (tip.get("expected") if isinstance(tip, dict)
+                    else getattr(tip, "expected", ""))
+            return _is_interactive_missing_required(_it, _exp)
         _has_hard = any(
             ((tip.get("issue_type") if isinstance(tip, dict)
               else getattr(tip, "issue_type", "")) in _hard_issue_types
-             or _is_pk_missing(tip))
+             or _is_pk_missing(tip) or _is_business_required(tip))
             for tip in (tips or [])
         )
         # §P1-7 防 PK accept 后重复 ask：核心4 accept 改写的 intent 已并入 _pk_resolved，
@@ -2154,13 +2342,15 @@ class ValidatorAgent(LLMSubAgent):
             _it = (t.get("issue_type") if isinstance(t, dict)
                    else getattr(t, "issue_type", ""))
             return (_it in _hard_issue_types or _is_pk_missing(t)
+                    or _is_business_required(t)
                     or _it == IssueType.ENUM_INVALID.value)
 
         def _is_blocking_tip(t) -> bool:
             """是否硬阻断（ask 被跳过时须标 skipped）：枚举不阻断。"""
             _it = (t.get("issue_type") if isinstance(t, dict)
                    else getattr(t, "issue_type", ""))
-            return _it in _hard_issue_types or _is_pk_missing(t)
+            return (_it in _hard_issue_types or _is_pk_missing(t)
+                    or _is_business_required(t))
         # 核心4：PK 冲突已 accept 改写的 intent 标 ok=True（_pk_resolved 已改写
         # fields，不应再阻断）；未解决（skip / 无 cb）的 intent 标 skipped。
         self._mark_validation_ok(intents)
@@ -2183,6 +2373,7 @@ class ValidatorAgent(LLMSubAgent):
             # "全部删除"/"全部接受推荐" 一键。Replay 见 _ask_col_not_found_batch。
             from collections import defaultdict as _dd
             _col_nf_by_sid = _dd(list)
+            _user_skipped_sids: set = set()
             for _tip in (tips or []):
                 _itype_t = (_tip.get("issue_type") if isinstance(_tip, dict)
                             else getattr(_tip, "issue_type", ""))
@@ -2200,9 +2391,10 @@ class ValidatorAgent(LLMSubAgent):
                 _reply_b = self._ask_col_not_found_batch(
                     _it, _nf_tips, schema_getter=schema_getter)
                 _mode_b = _reply_b.get("mode") or ""
-                if _mode_b in ("batch_field", "skip"):
+                if _mode_b == "batch_field":
                     _batch_processed_sids.add(_sid)
-                    _resolved_sids.add(_sid)
+                elif _mode_b == "skip":
+                    _user_skipped_sids.add(_sid)
             if _batch_processed_sids:
                 tips = [t for t in (tips or [])
                         if not (
@@ -2213,9 +2405,19 @@ class ValidatorAgent(LLMSubAgent):
                                    else getattr(t, "issue_type", ""))
                                   == IssueType.COL_NOT_FOUND.value)))]
                 _has_hard = any(
-                    (tip.get("issue_type") if isinstance(tip, dict)
-                     else getattr(tip, "issue_type", "")) in _hard_issue_types
-                    for tip in (tips or []))
+                    _is_blocking_tip(tip) for tip in (tips or []))
+                for _sid_b in _batch_processed_sids:
+                    _it_b = _sid_to_intent.get(_sid_b)
+                    if _it_b is None:
+                        continue
+                    _residual_b = self._revalidate_intents(
+                        [_it_b], schema_getter, data_getter)
+                    if not _residual_b:
+                        _resolved_sids.add(_sid_b)
+                    else:
+                        tips.extend(_residual_b)
+                        _has_hard = _has_hard or any(
+                            _is_blocking_tip(t) for t in _residual_b)
             # §同类 issue 合并：同一列的 TYPE_MISMATCH 与 ENUM_INVALID 本质是同一
             # 个问题（值「节日」既不是合法 int、也不在枚举白名单内）。二者各自独立
             # ask 会让用户对同一字段被连续追问两次，且 TYPE_MISMATCH 侧拿不到枚举
@@ -2258,7 +2460,7 @@ class ValidatorAgent(LLMSubAgent):
                 _sid_e = (_tip.get("subtask_id") if isinstance(_tip, dict)
                           else getattr(_tip, "subtask_id", ""))
                 if not _sid_e or _sid_e in _resolved_sids or _sid_e in _pk_resolved \
-                        or _sid_e in _pk_skipped:
+                        or _sid_e in _pk_skipped or _sid_e in _user_skipped_sids:
                     continue
                 if _sid_e not in _edit_groups:
                     _edit_groups[_sid_e] = []
@@ -2275,8 +2477,10 @@ class ValidatorAgent(LLMSubAgent):
                 _reply_e = self._ask_full_field_edit(
                     _it_e, _edit_groups[_sid_e],
                     schema_getter=schema_getter, data_getter=data_getter)
-                # 无论 resolved 还是 skip，本 sid 已决策完成，per-tip 循环跳过
-                _resolved_sids.add(_sid_e)
+                if (_reply_e or {}).get("mode") == "skip":
+                    _user_skipped_sids.add(_sid_e)
+                else:
+                    _resolved_sids.add(_sid_e)
             for tip in (tips or []):
                 _itype = (tip.get("issue_type") if isinstance(tip, dict)
                           else getattr(tip, "issue_type", ""))
@@ -2296,6 +2500,10 @@ class ValidatorAgent(LLMSubAgent):
                     continue
                 if sid in _resolved_sids:
                     continue  # 本 intent 已被前一个 issue ask 改过
+                if sid in _user_skipped_sids:
+                    if _is_blocking_tip(tip):
+                        _has_hard = False
+                    continue  # 用户已明确跳过，保留 tip 进失败清单，不重复追问
                 # 非交互（无 _ask_callback）直接标 skipped 走原逻辑
                 # （枚举例外：非硬阻断，无 cb 时保留 warning 继续写盘，不 skip）
                 if getattr(self, "_ask_callback", None) is None:
@@ -2395,6 +2603,14 @@ class ValidatorAgent(LLMSubAgent):
                 _has_hard = any(_is_blocking_tip(tip) for tip in (tips or []))
             return {"ok": not _has_hard, "issues": tips, "fixes": [],
                     "intents": intents, "tips": tips, "user_reply": None}
+        for tip in (tips or []):
+            if _is_business_required(tip):
+                sid = (tip.get("subtask_id") if isinstance(tip, dict)
+                       else getattr(tip, "subtask_id", ""))
+                it = _sid_to_intent.get(sid) if sid else None
+                if it is not None and getattr(it, "validation", None) \
+                        and not it.validation.skipped:
+                    self._mark_intent_skipped(it)
         return {"ok": True, "issues": tips, "fixes": [], "intents": intents,
                 "tips": tips, "user_reply": None}
 
@@ -3017,19 +3233,29 @@ class ValidatorAgent(LLMSubAgent):
         _hdrs, _type_row = self._get_schema(intent, schema_getter)
         if _hdrs is None:
             _hdrs = []
+        _available_columns = [_norm_col_name(h) for h in _hdrs if _norm_col_name(h)]
+        _fields = (getattr(intent, "extras", None) or {}).get("fields")
+        _fields_for_hint = _fields if isinstance(_fields, dict) else {}
         _batch_rows: list = []
         for _tip in col_nf_tips:
             if isinstance(_tip, dict):
                 _col = _tip.get("col", "") or ""
                 _sug = _tip.get("suggestion", "") or ""
+                _val = _tip.get("value", None)
             else:
                 _col = getattr(_tip, "col", "") or ""
                 _sug = getattr(_tip, "suggestion", "") or ""
+                _val = getattr(_tip, "value", None)
             _guess = self._closest_header(_col, _hdrs, _type_row)
+            if not _guess:
+                _guess = self._suggest_header_by_value(
+                    _col, _val, _hdrs, _type_row, _fields_for_hint,
+                    raw=getattr(intent, "raw", "") or "")
             _batch_rows.append({
-                "col": _col, "suggested": _guess, "suggestion": _sug,
+                "col": _col, "value": "" if _val is None else _val,
+                "suggested": _guess, "suggestion": _sug,
+                "available_columns": _available_columns,
             })
-        _fields = (getattr(intent, "extras", None) or {}).get("fields")
         _editable_fields = []
         if isinstance(_fields, dict):
             _bad_cols = {str(x.get("col", "")) for x in _batch_rows if x.get("col")}
@@ -3045,6 +3271,13 @@ class ValidatorAgent(LLMSubAgent):
                     "value": _val,
                     "suggested": _suggested,
                     "invalid": _col_s in _bad_cols,
+                    "issue_type": (IssueType.COL_NOT_FOUND.value
+                                   if _col_s in _bad_cols else ""),
+                    "expected_type": "",
+                    "hint": (f"「{_col_s}」不是该表真实列名，建议改为「{_suggested}」"
+                             if (_col_s in _bad_cols and _suggested)
+                             else ("「%s」不是该表真实列名，请从真实列名中选择" % _col_s
+                                   if _col_s in _bad_cols else "")),
                 })
 
         def _auto_columns() -> list:
@@ -3061,7 +3294,8 @@ class ValidatorAgent(LLMSubAgent):
         cb = getattr(self, "_ask_callback", None)
         if cb is None:
             _auto = _auto_columns()
-            self._apply_batch_to_intent(intent, _auto, delete_all=False)
+            self._apply_batch_to_intent(intent, _auto, delete_all=False,
+                                        source="auto")
             try:
                 self.add_thinking("校验",
                     f"COL_NOT_FOUND 自动处理（无 cb）：{len(_auto)} 列"
@@ -3078,15 +3312,16 @@ class ValidatorAgent(LLMSubAgent):
             "error_type": "col_not_found_batch",
             "table": _tbl, "sheet": _sht,
             "attempted_strategies": "Step2 validate_field_layer 多级中文表头/英文规范名/去下标/点分末段匹配未中",
-            "suggestion": "可按行单独填真实列名、勾选删除、或一键全部删除/全部接受推荐。",
+            "suggestion": "可从该表真实列名中选择；推荐项已高亮。不确定时不要直接删除，先对照字段值含义。",
             "snip": (getattr(intent, "raw", "") or "")[:120],
             "mode_hint": "col_not_found_batch",
             "batch_columns": _batch_rows,
             "editable_fields": _editable_fields,
+            "available_columns": _available_columns,
             "user_friendly": {
                 "reason": (f"指令里提出的 {len(_batch_rows)} 个列名落不了地，"
-                           f"可以从「该表真实列名」里挑一个填进去、或勾选删掉这列。"),
-                "action": "按行填真实列名、勾选删除，或者一键「全部删除」/「全部接受推荐」。",
+                           f"系统会根据字段值和真实列名给推荐，也会展示全部真实列名供选择。"),
+                "action": "优先选择标记为推荐的真实列名；只有确认该字段多余时再勾选删除。",
             },
         }
         try:
@@ -3099,6 +3334,7 @@ class ValidatorAgent(LLMSubAgent):
             self._apply_batch_to_intent(
                 intent, _reply["columns"],
                 delete_all=bool(_reply.get("delete_all", False)),
+                source="user",
                 fields_reply=_reply.get("fields"))
         elif _mode == "skip":
             self._mark_intent_skipped(intent)
@@ -3106,7 +3342,8 @@ class ValidatorAgent(LLMSubAgent):
             # dry_run 自动接受建议（CODEMAKER_DRY_RUN_ACCEPT_SUGGEST=1）：
             # 通用 _dry_ask_cb 回 accept_suggest=True + value=suggestion 无 columns，
             # 这里按每行 suggested 改名 / 无 suggested 删列，等价自动解决。
-            self._apply_batch_to_intent(intent, _auto_columns(), delete_all=False)
+            self._apply_batch_to_intent(intent, _auto_columns(), delete_all=False,
+                                        source="auto")
         return _reply
 
     # ── §9.1 全字段可编辑回写（Step2）─────────────────────────
@@ -3212,6 +3449,7 @@ class ValidatorAgent(LLMSubAgent):
                 "issue_type": t.get("issue_type", ""),
                 "suggestion": t.get("suggestion", ""),
                 "expected": t.get("expected", ""),
+                "value": t.get("value", ""),
                 "suggested_id": t.get("_suggested_id"),
             }
         rows: list[dict] = []
@@ -3235,6 +3473,9 @@ class ValidatorAgent(LLMSubAgent):
                 suggested = self._field_enum_suggestion(
                     intent, col_s, value, itype, col_type or "",
                     data_getter=data_getter)
+            if not suggested and itype == IssueType.MISSING_REQUIRED.value:
+                suggested = self._suggest_value_for_missing_required(
+                    intent, col_s, _fields, raw=getattr(intent, "raw", "") or "")
             rows.append({
                 "col": col_s,
                 "value": "" if value is None else value,
@@ -3244,6 +3485,37 @@ class ValidatorAgent(LLMSubAgent):
                 "expected_type": col_type or "",
                 "hint": self._field_hint(
                     col_s, value, itype, col_type or "", suggested or ""),
+            })
+        existing_norm = {_norm_col(str(r.get("col", ""))) for r in rows}
+        if len(rows) > len(_fields):
+            fields_lower_now = {(str(k) or "").split(":")[0].strip().lower()
+                                for k in _fields.keys()}
+            rows = [r for r in rows if not (
+                str(r.get("issue_type", "")) == IssueType.MISSING_REQUIRED.value
+                and str(r.get("col", "")).split(":")[0].strip().lower()
+                    in fields_lower_now
+            )]
+            existing_norm = {_norm_col(str(r.get("col", ""))) for r in rows}
+        for col, info in bad.items():
+            if _norm_col(col) in existing_norm:
+                continue
+            itype = info.get("issue_type", "")
+            value = info.get("value", "")
+            suggested = ""
+            if itype == IssueType.MISSING_REQUIRED.value:
+                suggested = self._suggest_value_for_missing_required(
+                    intent, col, _fields, raw=getattr(intent, "raw", "") or "")
+                if suggested:
+                    value = suggested
+            rows.append({
+                "col": col,
+                "value": "" if value is None else value,
+                "suggested": suggested or "",
+                "invalid": True,
+                "issue_type": itype,
+                "expected_type": info.get("expected", ""),
+                "hint": self._field_hint(
+                    col, value, itype, info.get("expected", ""), suggested or ""),
             })
         return {"fields": rows, "available_columns": available}
 
@@ -3295,7 +3567,9 @@ class ValidatorAgent(LLMSubAgent):
             sid = id(it)
             for iss in (field_map.get(sid) or []):
                 d = iss.to_dict() if isinstance(iss, Issue) else dict(iss)
-                if _is_issue_hard(d.get("issue_type", "")):
+                if (_is_issue_hard(d.get("issue_type", ""))
+                        or _is_interactive_missing_required(
+                            d.get("issue_type", ""), d.get("expected", ""))):
                     d["subtask_id"] = sid
                     out.append(d)
             for iss in self._collect_unresolved_placeholder_issues(it, produced):
@@ -3402,7 +3676,8 @@ class ValidatorAgent(LLMSubAgent):
 
     def _apply_batch_to_intent(self, intent, columns_reply: list,
                                 delete_all: bool = False,
-                                fields_reply: list | None = None) -> None:
+                                fields_reply: list | None = None,
+                                source: str = "user") -> None:
         """按 batch reply 改写 intent fields：删除 col / 改名 col→fill_value。
 
         - delete_all=True → 全部 COL_NOT_FOUND 列从 fields.pop
@@ -3415,19 +3690,32 @@ class ValidatorAgent(LLMSubAgent):
             _fields = (getattr(intent, "extras", None) or {}).get("fields")
             if not isinstance(_fields, dict):
                 return
+            _rename_map: dict[str, str] = {}
+            _deleted_cols: set[str] = set()
+            _old_snapshot = dict(_fields)
             for _entry in (columns_reply or []):
                 _bc = (_entry or {}).get("col", "") or ""
                 if not _bc:
                     continue
                 if delete_all or bool(_entry.get("delete")):
+                    _old_v = _fields.get(_bc, "")
                     _fields.pop(_bc, None)
+                    _deleted_cols.add(_bc)
+                    self._record_resolved_field(
+                        intent, _bc, _old_v, "", source,
+                        old_col=_bc, new_col="")
                     continue
                 _fv = (_entry or {}).get("fill_value", "") or ""
                 if _fv and _fv != _bc:
+                    _old_v = _fields.get(_bc, "")
+                    _rename_map[_bc] = _fv
                     if _fv not in _fields:
                         _fields[_fv] = _fields.pop(_bc, None)
                     else:
                         _fields.pop(_bc, None)
+                    self._record_resolved_field(
+                        intent, _bc, _old_v, _old_v, source,
+                        old_col=_bc, new_col=_fv)
             if fields_reply is not None:
                 _next: dict = {}
                 for _entry in (fields_reply or []):
@@ -3438,9 +3726,20 @@ class ValidatorAgent(LLMSubAgent):
                     _col = str(_entry.get("col", "") or "").strip()
                     if not _col:
                         continue
+                    if _col in _deleted_cols and _col not in _rename_map.values():
+                        continue
+                    _col = _rename_map.get(_col, _col)
                     _next[_col] = _entry.get("value", "")
                 _fields.clear()
                 _fields.update(_next)
+            if fields_reply is not None:
+                for _old_col, _new_col in _rename_map.items():
+                    _old_v = _old_snapshot.get(_old_col, "")
+                    if _old_v != "" and _new_col in _fields \
+                            and str(_fields.get(_new_col)) == str(_old_v):
+                        self._record_resolved_field(
+                            intent, _old_col, _old_v, _old_v, source,
+                            old_col=_old_col, new_col=_new_col)
         except Exception:
             logger.warning("_apply_batch_to_intent 失败", exc_info=True)
 
@@ -3516,7 +3815,8 @@ class ValidatorAgent(LLMSubAgent):
             return False
 
     @staticmethod
-    def _record_resolved_field(intent, col: str, old, new, source: str) -> None:
+    def _record_resolved_field(intent, col: str, old, new, source: str,
+                               old_col: str = "", new_col: str = "") -> None:
         """登记「本轮已被修正的字段」台账：{col: {old, new, source}}。
 
         Step3 据此剔除修正后仍残留在 fields 里的旧值（同列以另一形态键残留时，
@@ -3534,7 +3834,12 @@ class ValidatorAgent(LLMSubAgent):
                 extras["user_resolved_fields"] = book
             if str(old).strip() == "" and str(new).strip() == "":
                 return
-            book[str(col)] = {"old": old, "new": new, "source": source}
+            rec = {"old": old, "new": new, "source": source}
+            if old_col:
+                rec["old_col"] = old_col
+            if new_col:
+                rec["new_col"] = new_col
+            book[str(col)] = rec
         except Exception:
             logger.debug("登记已修正字段台账失败", exc_info=True)
 

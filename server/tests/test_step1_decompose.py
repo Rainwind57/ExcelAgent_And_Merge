@@ -172,6 +172,26 @@ def test_lint_dict_residue_cleared():
     print("PASS lint_dict_residue_cleared: dict/list-dict 残留置空")
 
 
+def test_lint_dict_schema_dict_col_preserved():
+    """dict 类型真实列（如 quest.target.data）应保留，不能被 Step1 置空。"""
+    out, sink = _make_sink()
+    da = make_da(sink)
+    arr = [
+        {"table": "quest", "sheet": "Quest", "action": "add",
+         "fields": {
+             "quest_id": 260710,
+             "target.key": "Combat",
+             "target.data": {"combat_id": ["<new_combat_id>"], "is_win": 1, "count": 1},
+         }, "produces": "new_quest_id", "consumes": {}},
+    ]
+    intents, _ = da._to_split_intents(arr, "新增任务")
+    n = da._lint_split_intents(intents, [])
+    assert isinstance(intents[0].fields["target.data"], dict)
+    assert intents[0].fields["target.data"]["is_win"] == 1
+    assert n == 0
+    print("PASS lint_dict_schema_dict_col_preserved: target.data dict 保留")
+
+
 # ── _flatten_dict_fields: dict 嵌套值不落盘 ──────────────────────────
 
 def test_flatten_dict_fields_no_schema_drop():

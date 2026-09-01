@@ -114,6 +114,7 @@ class ExcelAgentPipeline:
         """
         if self._step4 is not None and STEP4_CONCLUDE not in ctx.results:
             t0 = time.time()
+            yield SSE.stage_start(STEP4_CONCLUDE, total=len(STEP_ORDER))
             try:
                 r4 = self._step4.execute(ctx)
             except Exception as e:  # noqa: BLE001

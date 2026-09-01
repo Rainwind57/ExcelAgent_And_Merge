@@ -368,6 +368,14 @@ def _serialize_list_value(v):
     return v
 
 
+def _serialize_complex_cell_value(v):
+    """Serialize non-scalar values so Excel writers never receive raw dict/list."""
+    if isinstance(v, dict):
+        import json as _json
+        return _json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+    return _serialize_list_value(v)
+
+
 def _serialize_list_item(x):
     """序列化数组单个元素：嵌套 list/tuple 用 () 包裹，标量 str()。"""
     if isinstance(x, (list, tuple)):
@@ -582,6 +590,8 @@ def _dispatch_action(agent: "TableAgent", intent: NLIntent, path: "Path",
     col_add/col_delete/col_rename/col_list 映射为 col_op 后走 _run_col。
     默认按 set（修改）处理。
     """
+    if intent.action == "modify":
+        intent.action = "set"
     if intent.action == "add":
         return agent._run_add(intent, path, sheet, res)
     if intent.action == "delete":
@@ -2489,8 +2499,10 @@ class TableAgent:
           error 非 None：硬错误，必须阻止写入该字段
         """
         import sys
-        # 数组值序列化：list/tuple → 逗号分隔字符串（Excel 单元格不可存数组）
-        # 必须在类型分派前拦截，确保 add/set 任何路径都不会把 list 直传 openpyxl。
+        # 复合值序列化：Excel 单元格不可存 list/tuple/dict。
+        # 必须在类型分派前拦截，确保 add/set 任何路径都不会把非标量直传 openpyxl。
+        if isinstance(value, dict):
+            value = _serialize_complex_cell_value(value)
         if isinstance(value, (list, tuple)):
             value = _serialize_list_value(value)
         # G12+ 统一占位符软处理：所有类型（含 string/未知）列遇 <auto>/<xxx> → 软跳过。
@@ -4681,6 +4693,8 @@ class TableAgent:
                         res: AgentResult) -> AgentResult:
         """实际调 cli.append_row + 写后验证（单列/复合主键共用）。从 _do_append 拆出。"""
         PK_COL = 1
+        if values:
+            values = {ci: _serialize_complex_cell_value(v) for ci, v in values.items()}
         r = self.cli.append_row(path, sheet, values)
         res.final = r
         # A2/AD1/AD2：消费 cli_result.hold_events → 软失败 + SSE（CLI 构造事件，agent 上报）。
@@ -4726,7 +4740,7 @@ class TableAgent:
                     "col": ci,
                     "col_name": col_name,
                     "old_value": None,
-                    "new_value": values[ci],
+                    "new_value": _serialize_complex_cell_value(values[ci]),
                 })
             # P2 编排器依赖：若主键（第一列）未被显式写入，自动分配 max+1 并回读，
             # 供 OperationOrchestrator._capture_produced 提取新 ID 传递给后续意图。
@@ -5224,10 +5238,7 @@ class TableAgent:
                             f"{getattr(it,'table_hint','') or ''}/"
                             f"{getattr(it,'sheet_hint','') or ''}" for it in _skipped)
                         _stream_res.add_thinking("校验",
-                            f"{len(_skipped)} 条子任务用户选择跳过,已过滤不进 Step3: {_skip_desc}")
-                        intents[:] = [it for it in intents
-                                      if not (getattr(it, "validation", None)
-                                              and it.validation.skipped)]
+                            f"{len(_skipped)} 条子任务 Step2 未解决,交 Step3 显式标记为跳过: {_skip_desc}")
                     else:
                         _skip_desc = ", ".join(
                             f"{getattr(it,'table_hint','') or ''}/"
@@ -5516,6 +5527,15 @@ class TableAgent:
         _stream_res = self._wire_sinks(
             AgentResult(ok=True, intent=NLIntent(raw=text)))
         _stream_res.add_thinking("V2", "▶ run_v2 入口（4-Step 硬隔离）")
+        orig_text = text
+        text = _clean_quotes(text)
+        if text != orig_text:
+            _stream_res.add_thinking("解析", f"清洗引号后：「{text}」")
+        if self._ai_enhancer is not None:
+            try:
+                self._ai_enhancer.reset_circuit()
+            except Exception:
+                pass
         # §确认令牌短路（V2）：复用 legacy _run_confirmed 的	delete/col_delete/
         # search: token 直接执行已确认操作（跳过 4-Step 重解析，避免重定位漂移）。
         # _run_confirmed 不识别的 token（ap:/cascade_set_pk:）返回 None → 继续走 V2
@@ -5599,9 +5619,6 @@ class TableAgent:
                 _stream_res.ok = ev.get("ok", False)
                 _stream_res.message = ev.get("message", "")
 
-        # 聚合 Step3 执行产出 + Step4 汇总到 AgentResult
-        # 失败聚合口径：直接从 s3.artifacts["failures"] 取（不再经 s4 复制间接聚合，
-        # 避免 Step4 过滤/裁剪导致口径漂移）。Step4 只产出 summary + 反模式归纳结果。
         s3 = ctx.get_result(STEP3_EXECUTE)
         s4 = ctx.get_result(STEP4_CONCLUDE)
         sub_tasks = (s3.artifacts.get("subtasks") if s3 else []) or []
@@ -5609,7 +5626,9 @@ class TableAgent:
         steps = (s3.artifacts.get("steps") if s3 else []) or []
         if s3:
             all_steps.extend(steps)
-            # Step3 的 failures 直接聚合到顶层（原经 s4 复制，口径漂移风险）
+        if s4 and isinstance(s4.artifacts.get("failures"), list):
+            all_failures.extend(s4.artifacts.get("failures") or [])
+        elif s3:
             all_failures.extend(s3.artifacts.get("failures", []) or [])
         # §确认信号回流：Step3 把行未找到/级联删除/反模式等 needs_confirm 信号落入
         # s3.failures（每条带 confirm_token/confirm_kind/pending_search）。run_v2 需

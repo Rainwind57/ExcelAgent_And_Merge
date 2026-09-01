@@ -2283,8 +2283,67 @@ class AgentService:
                 return "s5_apply"
             return None
 
+        def _is_user_visible_progress(phase: str, detail: str) -> bool:
+            ph = str(phase or "")
+            d = str(detail or "")
+            if not d:
+                return False
+            if ph.startswith("__json:"):
+                return True
+            if ph in ("心跳", "细分"):
+                return False
+            if ph.startswith("意图"):
+                return False
+            if d.startswith("规则短路优先"):
+                return False
+            if _re.search(
+                r"(DecomposeAgent|LocatorAgent|ParseAgent|ColumnExtractor|splitter|"
+                r"单 prompt|非 JSON|过滤幻觉|缺表重拆|缺表对账|schema field cleanup|"
+                r"FK placeholder targets repaired|预分配 PK|核心4 PK|P23|tips 转软失败|"
+                r"候选池|歧义候选|timeout=|serve hang|LLM 调用计数|stems=|\.py:)",
+                d,
+                _re.I,
+            ):
+                return False
+            return True
+
+        def _intent_list_summary(detail: str) -> str:
+            try:
+                data = json.loads(detail or "{}")
+            except Exception:
+                return ""
+            rows = data.get("rows") or []
+            if not rows:
+                return ""
+            locs = []
+            for r in rows:
+                loc = str(r.get("loc") or "").strip()
+                if loc and loc != "-" and loc not in locs:
+                    locs.append(loc)
+            actions = OrderedDict()
+            for r in rows:
+                act = str(r.get("action") or "操作").strip()
+                actions[act] = actions.get(act, 0) + 1
+            action_text = "、".join(f"{k}{v}条" for k, v in actions.items())
+            lines = [f"✅ 已解析 {len(rows)} 个子任务" + (f"（{action_text}）" if action_text else "")]
+            if locs:
+                shown = "、".join(locs[:5])
+                if len(locs) > 5:
+                    shown += f" 等 {len(locs)} 个表/Sheet"
+                lines.append(f"- 命中表/Sheet：{shown}")
+            lines.append("- 详细字段已整理在下方任务表，可展开查看")
+            return "\n".join(lines)
+
         def _compose_stage_content(sid, buf):
             lines = []
+            json_summaries = []
+            for ph, d in buf["thinking"]:
+                if str(ph or "").startswith("__json:intent_list"):
+                    summary = _intent_list_summary(d)
+                    if summary:
+                        json_summaries.append(summary)
+            if json_summaries:
+                lines.extend(json_summaries[-1].split("\n"))
             if buf["steps"] or buf["tools"]:
                 for s in buf["steps"]:
                     # s 可能是 dict（step 事件 payload）或 AgentStep 对象（旧路径），
@@ -2293,17 +2352,23 @@ class AgentService:
                     _name = s.get("name", "") if isinstance(s, dict) else getattr(s, "name", "")
                     _detail = s.get("detail", "") if isinstance(s, dict) else getattr(s, "detail", "")
                     icon = "✅" if _ok else "❌"
-                    lines.append(f"- {icon} **{_name}**：{_detail}")
+                    if _detail:
+                        lines.append(f"- {icon} **{_name}**：{_detail}")
                 for tl in buf["tools"]:
-                    icon = "✅" if tl.get("ok") else "❌"
-                    lines.append(f"- {icon} `{tl.get('name', '')}` {tl.get('desc', '')}")
-            else:
-                for _ph, d in buf["thinking"]:
-                    # 开发者 meta 行不进回复体（Thinking 折叠里仍可见）
-                    if d.startswith("规则短路优先"):
-                        continue
-                    lines.append(f"- {d}")
-            return "\n".join(lines)
+                    if not tl.get("ok"):
+                        lines.append(f"- ❌ `{tl.get('name', '')}` {tl.get('desc', '')}")
+            for _ph, d in buf["thinking"]:
+                if str(_ph or "").startswith("__json:"):
+                    continue
+                if not _is_user_visible_progress(_ph, d):
+                    continue
+                text = str(d).strip()
+                if text and text not in lines:
+                    lines.append(f"- {text}")
+            if not lines:
+                title = _STAGE_TITLES.get(sid, sid)
+                return f"{title} 已完成，内部调试细节已折叠。"
+            return "\n".join(lines[:8])
 
         state = {"cur": None, "buf": None}
 
@@ -2649,6 +2714,7 @@ class AgentService:
                 result_table=sub_rt,
                 table_stem=sub.get("table_stem", ""),
                 table_sheet=sub.get("table_sheet", ""),
+                skipped=bool(sub.get("skipped", False)),
                 needs_user_fill=sub.get("needs_user_fill", []) or [],
                 partial=sub.get("partial", False),
             ))

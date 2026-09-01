@@ -94,7 +94,7 @@ async function sendMessage(text, confirmToken = null, confirmCascade = true) {
       stage_total: stageTotal || 6,
       thinking_steps: [], tool_calls: [], steps: [],
       reply: '', live_text: '', live_kind: 'text',
-      ok: null, sending: true, thinking_live: true, show_thinking: true,
+      ok: null, sending: true, thinking_live: true, show_thinking: false,
     }
     messages.value.push(cur)
     return cur
@@ -667,6 +667,39 @@ function addAskFullFieldRow(agentMsg) {
   })
 }
 
+function availableColumnsForAsk(msg) {
+  return Array.isArray(msg.ask?.available_columns) ? msg.ask.available_columns : []
+}
+
+function batchColumnsForRow(msg, bc) {
+  if (Array.isArray(bc?.available_columns) && bc.available_columns.length) return bc.available_columns
+  return availableColumnsForAsk(msg)
+}
+
+function fillBatchSuggestion(agentMsg, bc) {
+  if (!bc || !bc.suggested) return
+  if (!agentMsg.askBatchFill) agentMsg.askBatchFill = {}
+  if (!agentMsg.askBatchDelete) agentMsg.askBatchDelete = {}
+  agentMsg.askBatchFill[bc.col] = bc.suggested
+  agentMsg.askBatchDelete[bc.col] = false
+}
+
+function applyAllBatchSuggestions(agentMsg) {
+  for (const bc of (agentMsg.ask?.batch_columns || [])) {
+    if (bc.suggested) fillBatchSuggestion(agentMsg, bc)
+  }
+}
+
+function chooseBatchColumn(agentMsg, colName) {
+  const cols = agentMsg.ask?.batch_columns || []
+  if (!cols.length) return
+  const target = cols.find(bc => !agentMsg.askBatchDelete?.[bc.col]) || cols[0]
+  if (!agentMsg.askBatchFill) agentMsg.askBatchFill = {}
+  if (!agentMsg.askBatchDelete) agentMsg.askBatchDelete = {}
+  agentMsg.askBatchFill[target.col] = colName
+  agentMsg.askBatchDelete[target.col] = false
+}
+
 function applyAskFieldSuggestion(row) {
   if (!row || !row.suggested) return
   if (row.issue_type === 'col_not_found') {
@@ -849,6 +882,9 @@ onMounted(() => {
     ok: true,
     message: '你好！我是 AI 配表助手 \n\n你可以用自然语言告诉我需要对 Excel 配表做什么操作，比如：',
     steps: [],
+    thinking_steps: [],
+    tool_calls: [],
+    show_thinking: false,
     isWelcome: true,
   })
 })
@@ -922,21 +958,22 @@ onMounted(() => {
           </div>
 
           <!-- Thinking 折叠：思考实时流式 + step/tool 进度，完成后自动折叠 -->
-          <div v-if="msg.thinking_steps.length || msg.steps.length || msg.tool_calls.length || msg.live_text" class="think-block">
+          <div v-if="hasProgress(msg)" class="think-block" :class="{ 'think-block-live': msg.thinking_live }">
             <div class="think-toggle" @click="msg.show_thinking = !msg.show_thinking">
               <span class="think-arrow">{{ msg.show_thinking ? '▼' : '▶' }}</span>
-              <span class="think-label">执行过程</span>
-              <span v-if="msg.thinking_live" class="think-live">进行中…</span>
-              <span v-else class="think-count">共 {{ msg.thinking_steps.length + msg.steps.length }} 步</span>
+              <span class="think-label">{{ msg.thinking_live ? '正在执行' : '执行摘要' }}</span>
+              <span v-if="msg.thinking_live" class="think-live">{{ runningStatus(msg) }}</span>
+              <span v-else class="think-count">{{ progressCount(msg) }}</span>
             </div>
-            <!-- 当前正在做什么：不展开也能看懂进度 -->
-            <div v-if="msg.thinking_live && thinkSummary(msg)" class="think-now">⏳ {{ thinkSummary(msg) }}</div>
+            <div v-if="thinkSummary(msg)" class="think-now">
+              <span class="dot-pulse" v-if="msg.thinking_live"></span>
+              <span>{{ thinkSummary(msg) }}</span>
+            </div>
             <div v-if="msg.show_thinking" class="think-list">
-              <div v-for="(ts, i) in msg.thinking_steps" :key="'t' + i">
-                <!-- 结构化意图清单表格（Step1 解析结果，人工校验是否漏意图/错路由） -->
+              <div v-for="(ts, i) in visibleThinkingSteps(msg)" :key="'t' + i">
                 <div v-if="ts.jsonKind === 'intent_list' && ts.jsonData" class="think-intent-card">
-                  <div class="think-intent-title">📋 Step1 解析意图清单（{{ ts.jsonData.total }} 条）</div>
-                    <table class="think-intent-table">
+                  <div class="think-intent-title">已解析 {{ ts.jsonData.total }} 个任务</div>
+                  <table class="think-intent-table">
                     <thead>
                       <tr><th>#</th><th>操作</th><th>表/Sheet</th><th>定位</th><th>关键信息</th></tr>
                     </thead>
@@ -950,37 +987,17 @@ onMounted(() => {
                       </tr>
                     </tbody>
                   </table>
-                  <!-- 字段=值 展开表格：每行一个字段键值对，定位匹配/类型问题到具体列 -->
-                  <div v-if="hasFields(ts.jsonData)" class="think-fields-wrap">
-                    <div class="think-fields-title">字段明细（每行 = 一个字段，值不截断）</div>
-                    <div v-for="(r, ri) in ts.jsonData.rows" :key="'f' + ri" class="think-fields-group">
-                      <div v-if="r.fields && r.fields.length" class="think-fields-head">
-                        <span class="ti-idx">{{ r.idx }}</span>
-                        <span class="ti-loc">{{ r.loc }}</span>
-                        <span v-if="r.produces" class="ti-produces">产出&lt;{{ r.produces }}&gt;</span>
-                        <span v-if="r.consumes && r.consumes.length" class="ti-consumes">消费 {{ r.consumes.map(c => '&lt;' + c + '&gt;').join(' ') }}</span>
-                      </div>
-                      <table v-if="r.fields && r.fields.length" class="think-fields-table">
-                        <tbody>
-                          <tr v-for="(f, fi) in r.fields" :key="fi">
-                            <td class="tf-col">{{ f.col }}</td>
-                            <td class="tf-val">{{ f.value === '' ? '（空）' : f.value }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
                 </div>
-                <div v-else class="think-line" :class="{ 'think-noise': isNoiseStep(ts) }">
+                <div v-else class="think-line">
                   <span class="think-phase">{{ stepLabel(ts.phase) }}</span>
                   <span class="think-desc">{{ sanitizeDetail(ts.detail) }}</span>
                 </div>
               </div>
-              <div v-for="(s, i) in msg.steps" :key="'s' + i" class="think-line" :class="{ 'step-skipped': isSkipStep(s) }">
+              <div v-for="(s, i) in visibleSteps(msg)" :key="'s' + i" class="think-line" :class="{ 'step-skipped': isSkipStep(s) }">
                 <span class="think-phase">{{ stepIcon(s) }}</span>
                 <span class="think-desc"><b>{{ stepLabel(s.name) }}</b> {{ sanitizeDetail(s.detail) }}</span>
               </div>
-              <div v-for="(t, i) in msg.tool_calls" :key="'c' + i" class="tool-card" :class="{ 'tool-ok': t.ok, 'tool-fail': !t.ok }" @click="t.show = !t.show">
+              <div v-for="(t, i) in visibleToolCalls(msg)" :key="'c' + i" class="tool-card" :class="{ 'tool-ok': t.ok, 'tool-fail': !t.ok }" @click="t.show = !t.show">
                 <div class="tool-card-head">
                   <span class="tool-badge">{{ toolBadge(t.name) }}</span>
                   <span class="tool-text">{{ t.desc || t.name }}</span>
@@ -991,10 +1008,10 @@ onMounted(() => {
                   <pre v-if="t.result">{{ t.result }}</pre>
                 </div>
               </div>
+              <div v-if="hiddenProgressCount(msg)" class="think-more">已隐藏 {{ hiddenProgressCount(msg) }} 条内部细节</div>
+              <div v-if="msg.live_text" class="think-more">模型正在分析中，详细推理已折叠。</div>
               <div v-if="msg.thinking_live" class="think-pulse"><span class="dot-pulse"></span></div>
             </div>
-            <!-- LLM token 流：思考实时打出 -->
-            <pre v-if="msg.live_text" class="think-stream" :class="{ 'ts-reasoning': msg.live_kind === 'reasoning' }">{{ msg.live_text }}▍</pre>
           </div>
 
           <!-- 阶段统一回复（markdown 渲染） -->
@@ -1246,22 +1263,46 @@ onMounted(() => {
                 <div class="ask-batch-rows">
                   <div v-for="(bc, i) in msg.ask.batch_columns" :key="'cnf'+i" class="ask-batch-row">
                     <div class="ask-batch-col">列[{{ bc.col }}]</div>
+                    <div v-if="bc.value !== undefined && bc.value !== ''" class="ask-batch-value">字段值：{{ bc.value }}</div>
                     <div v-if="bc.suggested" class="ask-batch-suggest">💡 推荐: {{ bc.suggested }}</div>
-                    <div v-else class="ask-batch-no-suggest">⚠️ 无相似真实列，建议勾选删除</div>
+                    <div v-else class="ask-batch-no-suggest">⚠️ 暂无高置信推荐，请从真实列名中选择</div>
                     <div class="ask-batch-controls">
                       <input
                         v-model="msg.askBatchFill[bc.col]"
                         type="text"
                         class="ask-input ask-input--batch"
+                        :list="'batchCols_' + msg.id + '_' + i"
                         :placeholder="bc.suggested ? `填 ${bc.suggested}` : '可填真实列名'"
                         :disabled="msg.askBatchDelete[bc.col] || false"
                       >
+                      <datalist :id="'batchCols_' + msg.id + '_' + i">
+                        <option v-for="c in batchColumnsForRow(msg, bc)" :key="c" :value="c"></option>
+                      </datalist>
+                      <button
+                        v-if="bc.suggested"
+                        type="button"
+                        class="mini-btn mini-btn--ghost"
+                        @click="fillBatchSuggestion(msg, bc)"
+                      >用推荐</button>
                       <label class="ask-batch-delete-label">
                         <input type="checkbox" v-model="msg.askBatchDelete[bc.col]" class="ask-batch-delete-cb"> 删此列
                       </label>
                     </div>
                   </div>
                 </div>
+                <details v-if="availableColumnsForAsk(msg).length" class="ask-real-cols">
+                  <summary>该表真实列名（{{ availableColumnsForAsk(msg).length }}）</summary>
+                  <div class="ask-real-cols-list">
+                    <button
+                      v-for="c in availableColumnsForAsk(msg)"
+                      :key="c"
+                      type="button"
+                      class="ask-real-col-chip"
+                      :class="{ 'ask-real-col-chip--suggested': (msg.ask.batch_columns || []).some(bc => bc.suggested === c) }"
+                      @click="chooseBatchColumn(msg, c)"
+                    >{{ c }}</button>
+                  </div>
+                </details>
                 <div v-if="msg.askFullFields && msg.askFullFields.length" class="ask-full-fields">
                   <div class="ask-full-fields-head">
                     <span>字段明细</span>
@@ -1300,6 +1341,7 @@ onMounted(() => {
                 </div>
                 <div class="ask-actions">
                   <button class="confirm-btn confirm-yes" @click="replyAskColNotFoundBatch(msg, {})">提交修正</button>
+                  <button class="confirm-btn confirm-yes" @click="applyAllBatchSuggestions(msg)">全部接受推荐</button>
                   <button class="confirm-btn confirm-warn" @click="replyAskColNotFoundBatch(msg, { delete_all: true })">全部删除</button>
                   <button class="confirm-btn confirm-no" @click="replyAsk(msg, 'skip')">跳过此项</button>
                 </div>
@@ -1568,6 +1610,39 @@ export default {
       })
       return out
     },
+    hasProgress(msg) {
+      return this.visibleThinkingSteps(msg).length || this.visibleSteps(msg).length || this.visibleToolCalls(msg).length || msg.live_text
+    },
+    visibleThinkingSteps(msg) {
+      const arr = (msg && msg.thinking_steps) || []
+      const important = arr.filter(t => t && (t.jsonKind === 'intent_list' || !this.isNoiseStep(t)))
+      return important.slice(-4)
+    },
+    visibleSteps(msg) {
+      const arr = (msg && msg.steps) || []
+      const important = arr.filter(s => s && (s.ok === false || this.isSkipStep(s) || !this.isNoiseStep({ phase: s.name, detail: s.detail })))
+      return important.slice(-4)
+    },
+    visibleToolCalls(msg) {
+      const arr = (msg && msg.tool_calls) || []
+      return arr.filter(t => t && t.ok === false).slice(-2)
+    },
+    hiddenProgressCount(msg) {
+      const total = ((msg && msg.thinking_steps) || []).length + ((msg && msg.steps) || []).length + ((msg && msg.tool_calls) || []).length
+      const shown = this.visibleThinkingSteps(msg).length + this.visibleSteps(msg).length + this.visibleToolCalls(msg).length
+      return Math.max(0, total - shown)
+    },
+    progressCount(msg) {
+      const shown = this.visibleThinkingSteps(msg).length + this.visibleSteps(msg).length + this.visibleToolCalls(msg).length
+      const hidden = this.hiddenProgressCount(msg)
+      if (!shown && hidden) return `已完成，${hidden} 条细节已隐藏`
+      if (hidden) return `${shown} 条摘要 · ${hidden} 条细节已隐藏`
+      return `${shown} 条摘要`
+    },
+    runningStatus(msg) {
+      const hidden = this.hiddenProgressCount(msg)
+      return hidden ? `进行中 · 已隐藏 ${hidden} 条细节` : '进行中…'
+    },
     // 折叠头实时摘要：不展开也能看懂"现在在做什么"。只取关键结论，过滤技术噪音。
     thinkSummary(msg) {
       if (!msg) return ''
@@ -1577,15 +1652,23 @@ export default {
         return `已拆出 ${card.jsonData.total} 个子任务`
       }
       const all = []
+      const subs = this.subTaskList(msg)
+      if (subs && subs.length) {
+        const loading = subs.find(s => s.loading)
+        if (loading) return `正在${this.subtaskTitle(loading)}`
+        return this.subtaskProgress(subs)
+      }
+      ;(msg.steps || []).forEach(s => {
+        const d = this.sanitizeDetail(s.detail || '')
+        if (d && (s.ok === false || this.isSkipStep(s) || !this.isNoiseStep({ phase: s.name, detail: s.detail }))) {
+          all.push(this.stepLabel(s.name) + (d ? '：' + d : ''))
+        }
+      })
       ;(msg.thinking_steps || []).forEach(t => {
         if (t.jsonKind) return  // 结构化卡片不进摘要
         if (this.isNoiseStep(t)) return  // 技术噪音不进摘要
         const d = this.sanitizeDetail(t.detail || '')
         if (d) all.push(String(d))
-      })
-      ;(msg.steps || []).forEach(s => {
-        const d = this.sanitizeDetail(s.detail || '')
-        all.push(this.stepLabel(s.name) + (d ? '：' + d : ''))
       })
       if (!all.length) return ''
       const last = all[all.length - 1]
@@ -1597,13 +1680,10 @@ export default {
       if (!ts) return true
       const ph = String(ts.phase || '')
       const d = String(ts.detail || '')
-      // 心跳、细分（DecomposeAgent 内部日志）整体视为噪音
       if (ph === '心跳' || ph === '细分') return true
-      // 技术参数/内部动作关键词：看到即弱化
-      if (/(timeout|超时.*s|候选表|探测|重跑|重拆|兜底|清洗引号|灌值|守卫|漏产回填|退避|retry|stems=|\.py:)/i.test(d)) return true
-      // 组件内部日志（DecomposeAgent/LocatorAgent/ParseAgent 开头 + 技术细节）
-      if (/^(DecomposeAgent|LocatorAgent|ParseAgent|ColumnExtractor|splitter)/.test(d)
-          && /(产|丢弃|分解|路径|阈值|并发|串行|单 prompt|重试|响应)/.test(d)) return true
+      if (ph && ph.startsWith('意图')) return true
+      if (ph && ph.startsWith('__json:')) return false
+      if (/(DecomposeAgent|LocatorAgent|ParseAgent|ColumnExtractor|splitter|单 prompt|非 JSON|过滤幻觉|缺表重拆|缺表对账|schema field cleanup|FK placeholder targets repaired|预分配 PK|核心4 PK|P23|tips 转软失败|候选池|歧义候选|timeout=|serve hang|LLM 调用计数|stems=|\.py:)/i.test(d)) return true
       return false
     },
     subtaskTitle(st) {
@@ -1864,6 +1944,7 @@ export default {
 .ask-batch-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .ask-batch-row { padding: 6px 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg-input, rgba(255,255,255,0.04)); }
 .ask-batch-col { color: var(--accent); font-weight: 500; font-size: 0.9rem; }
+.ask-batch-value { color: var(--text-secondary); font-size: 0.82rem; margin-top: 2px; }
 .ask-batch-suggest { color: var(--primary, #2563eb); font-size: 0.85rem; margin: 2px 0 4px; }
 .ask-batch-no-suggest { color: var(--text-muted); font-size: 0.82rem; margin: 2px 0 4px; }
 .ask-batch-controls { display: flex; align-items: center; gap: 8px; }
@@ -1871,6 +1952,11 @@ export default {
 .ask-input--batch:disabled { opacity: 0.4; }
 .ask-batch-delete-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
 .ask-batch-delete-cb { margin: 0; }
+.ask-real-cols { margin-top: 8px; font-size: 0.84rem; color: var(--text-secondary); }
+.ask-real-cols summary { cursor: pointer; color: var(--text-primary); }
+.ask-real-cols-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ask-real-col-chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; background: var(--bg-input, rgba(255,255,255,0.04)); color: var(--text-secondary); font-size: 0.78rem; }
+.ask-real-col-chip--suggested { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); background: rgba(37, 99, 235, 0.08); }
 .ask-full-fields { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
 .ask-full-fields-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; color: var(--text-primary); font-size: 0.88rem; font-weight: 600; }
 .ask-full-field-table { display: flex; flex-direction: column; gap: 6px; }
@@ -2180,12 +2266,19 @@ export default {
 
 
 /* Thinking 折叠 */
-.think-block { margin-bottom: 8px; }
-.think-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; padding: 2px 0; }
+.think-block {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+.think-block-live { border-color: var(--info); }
+.think-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 .think-arrow { font-size: 0.68rem; color: var(--text-muted); }
-.think-label { font-style: italic; color: var(--text-muted); font-size: 0.82rem; }
-.think-live { color: var(--accent); font-size: 0.74rem; }
-.think-count { color: var(--text-muted); font-size: 0.72rem; }
+.think-label { color: var(--text-secondary); font-size: 0.82rem; font-weight: 600; }
+.think-live { color: var(--accent); font-size: 0.74rem; margin-left: auto; }
+.think-count { color: var(--text-muted); font-size: 0.72rem; margin-left: auto; }
 /* 多行同名删除勾选卡片：行号 + 定位值 + 整行摘要，勾选后确认删除 */
 .ask-row-multi { margin: 6px 0; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; overflow: hidden; }
 .arm-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-secondary, #f3f4f6); font-size: 0.78rem; color: var(--text-secondary); }
@@ -2201,7 +2294,8 @@ export default {
 .arm-key { color: var(--text-muted); }
 .arm-val2 { color: var(--text-secondary); }
 /* 折叠头下方的"当前在做什么"摘要：不展开也能看懂进度 */
-.think-now { margin: 2px 0 4px; font-size: 0.76rem; color: var(--text-secondary, #555); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.think-now { margin: 6px 0 0; font-size: 0.8rem; color: var(--text-secondary, #555); display: flex; align-items: center; gap: 8px; min-width: 0; }
+.think-now span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 跳过态（成功但有字段未写入）：与真成功区分，避免误以为全部写入 */
 .think-line.step-skipped .think-desc { color: var(--warning, #b45309); }
 .step-row.step-skipped .step-detail { color: var(--warning, #b45309); }
@@ -2251,6 +2345,7 @@ export default {
 .tool-expand { border-top: 1px solid var(--border); padding: 6px 8px; }
 .tool-expand pre { margin: 0 0 4px; padding: 6px 8px; background: var(--bg-hover); border-radius: 4px; font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; }
 .think-pulse { padding: 2px 0; }
+.think-more { font-size: 0.74rem; color: var(--text-muted); padding: 2px 0; }
 .think-stream {
   margin: 6px 0 0; padding: 8px 10px; background: var(--bg-input); border-radius: 8px;
   font-size: 0.78rem; line-height: 1.6; color: var(--text-secondary);

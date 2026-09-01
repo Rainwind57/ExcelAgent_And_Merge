@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -15,12 +16,14 @@ from ..formula.formula_ref_shifter import permute_formula_rows, shift_workbook_f
 
 
 def _serialize_cell_value(v):
-    """数组值序列化兜底：list/tuple → 逗号串，防 openpyxl 直接写数组报错。
+    """复合值序列化兜底，防 openpyxl 直接写非标量报错。
 
-    与 agent._serialize_list_value 同规则：list 逗号分隔不写 []，tuple 用 ()，
-    嵌套子项用 () 包裹。非数组原样返回。CLI 层兜底覆盖所有调用方
+    与 agent 侧规则一致：list 逗号分隔不写 []，tuple 用 ()，dict 用
+    JSON 文本。嵌套子项用 () 包裹。非复合值原样返回。CLI 层兜底覆盖所有调用方
     （含未走 agent._coerce_value 的直调路径）。
     """
+    if isinstance(v, dict):
+        return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
     if isinstance(v, list):
         return ",".join(_serialize_cell_item(x) for x in v)
     if isinstance(v, tuple):

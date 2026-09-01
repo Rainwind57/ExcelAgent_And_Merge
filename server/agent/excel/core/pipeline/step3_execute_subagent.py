@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # 与 operation_orchestrator._PLACEHOLDER_RE 同构（本地复制，避免依赖其内部私有符号
 # 跨模块耦合）：匹配 <label> 形式占位符，label 允许中英文/下划线。
-_PLACEHOLDER_RE = re.compile(r"<\s*([\w\u4e00-\u9fff]+)\s*>")
+_PLACEHOLDER_RE = re.compile(r"<\s*([^>]+?)\s*>")
 
 
 def _find_unresolved_placeholders(it: Any) -> list[str]:
@@ -58,9 +58,19 @@ def _find_unresolved_placeholders(it: Any) -> list[str]:
             _own_labels.add(_src.strip().strip("<>").strip())
 
     def _scan(v: Any) -> None:
+        if isinstance(v, dict):
+            for vv in v.values():
+                _scan(vv)
+            return
+        if isinstance(v, (list, tuple)):
+            for vv in v:
+                _scan(vv)
+            return
         if isinstance(v, str) and "<" in v:
             for m in _PLACEHOLDER_RE.finditer(v):
                 label = m.group(1)
+                if label.lower().startswith("consume:"):
+                    label = label.split(":", 1)[1].strip()
                 if label.lower() == "auto":
                     continue
                 if label in _own_labels:
@@ -192,8 +202,8 @@ class Step3ExecuteSubAgent:
         # 占位符替换。原 V2 逐条 run_single 无 produced dict，跨表 add 链（quest→spawn_quest_entity
         # consumes <new_quest_id>）占位符全悬空 → 弹 ask/失败。现按拓扑序执行，producer 先于
         # consumer，每条执行前替换 consumes 占位符，执行后捕获 produces 新 ID 写入 produced。
+        from ..operation_orchestrator import OperationOrchestrator as _OO
         try:
-            from ..operation_orchestrator import OperationOrchestrator as _OO
             _ordered_idx = _OO._topo_order(intents)
             ordered = [intents[i] for i in _ordered_idx] if _ordered_idx else list(intents)
         except Exception:
@@ -202,6 +212,18 @@ class Step3ExecuteSubAgent:
         # produced: {label: new_pk_value}，跨条 intent 累积，供后续 consumes 替换
         produced: dict[str, str] = {}
         _seq_counter: dict[str, int] = {}
+        partitions: list[dict] = []
+        _known_producer_labels: set[str] = set()
+        for _it in intents:
+            _lbl = (getattr(_it, "produces_label", None)
+                    or (getattr(_it, "extras", None) or {}).get("produces"))
+            if isinstance(_lbl, str) and _lbl.strip():
+                _n = _OO._norm_name(_lbl)
+                _known_producer_labels.add(_n)
+                if _n.startswith("new_"):
+                    _known_producer_labels.add(_n[4:])
+                else:
+                    _known_producer_labels.add("new_" + _n)
 
         # D4 硬约束：执行阶段零 LLM。通过 no_llm=True 透传到 services.run_single
         # → _run_single，_run_single 内部设 agent.execute_no_llm（thread-local）
@@ -210,6 +232,58 @@ class Step3ExecuteSubAgent:
 
         try:
             for i, it in enumerate(ordered):
+                _val = getattr(it, "validation", None)
+                if _val is not None and getattr(_val, "skipped", False):
+                    _failures = []
+                    _base_table = getattr(it, "table_hint", "") or ""
+                    _base_sheet = getattr(it, "sheet_hint", "") or ""
+                    for f in (getattr(it, "failures", None) or []):
+                        if isinstance(f, dict):
+                            f.setdefault("table", _base_table)
+                            f.setdefault("sheet", _base_sheet)
+                            f.setdefault("status", "skipped")
+                            _failures.append(f)
+                            _record_failure(
+                                f, default_type="validation_skipped",
+                                default_message="Subtask skipped in Step2")
+                    if not _failures:
+                        _fail = {
+                            "type": "validation_skipped",
+                            "table": getattr(it, "table_hint", "") or "",
+                            "sheet": getattr(it, "sheet_hint", "") or "",
+                            "col": "",
+                            "root_cause": "用户在 Step2 跳过或未完成字段修正，已阻止写盘",
+                            "attempted_strategies": "Step2 ask_user",
+                            "suggestion": "回到 Step2 补齐/改正字段后重新提交",
+                            "status": "skipped",
+                            "user_reply": "skip",
+                        }
+                        _record_failure(
+                            _fail, default_type="validation_skipped",
+                            default_message="Subtask skipped in Step2")
+                    _msg = "Step2 校验未解决，已跳过写入"
+                    if _failures:
+                        _first = _failures[0]
+                        _col = _first.get("col") or ""
+                        _why = _first.get("root_cause") or _first.get("message") or ""
+                        _msg = ("Step2 校验未解决，已跳过写入"
+                                + (f"：列[{_col}]" if _col else "")
+                                + (f" {_why}" if _why else ""))
+                    sub_tasks.append({
+                        "index": i + 1,
+                        "intent_action": getattr(it, "action", ""),
+                        "ok": False,
+                        "skipped": True,
+                        "needs_confirm": False,
+                        "message": _msg,
+                        "steps": [],
+                        "result_rows": [],
+                        "table_stem": getattr(it, "table_hint", "") or "",
+                        "table_sheet": getattr(it, "sheet_hint", "") or "",
+                        "needs_user_fill": [],
+                        "partial": False,
+                    })
+                    continue
                 # §P0-2 占位符替换：执行前把 consumes 的 <label> 占位符替换成 produced 真实 ID
                 try:
                     _OO._resolve_placeholders(it, produced)
@@ -223,7 +297,12 @@ class Step3ExecuteSubAgent:
                 # 超出本次改动范围），但至少不该在明知依赖悬空时继续新写残缺行。
                 _unresolved = _find_unresolved_placeholders(it)
                 if _unresolved:
-                    _rc = (f"上游依赖 {', '.join(sorted(set(_unresolved)))} 未产出"
+                    _unknown = [u for u in _unresolved
+                                if _OO._norm_name(u) not in _known_producer_labels]
+                else:
+                    _unknown = []
+                if _unknown:
+                    _rc = (f"上游依赖 {', '.join(sorted(set(_unknown)))} 未产出"
                            f"（producer 未执行到或已失败），已跳过本条写入，"
                            f"避免生成缺失外键的残缺行")
                     _fail = {
@@ -235,8 +314,6 @@ class Step3ExecuteSubAgent:
                         "status": "failed", "user_reply": None,
                     }
                     all_failures.append(_fail)
-                    _is_partial = bool(getattr(sub_res, "partial", False))
-                    _subtask_ok = False if _is_partial else sub_res.ok
                     sub_tasks.append({
                         "index": i + 1, "intent_action": it.action, "ok": False,
                         "needs_confirm": False, "message": _rc,
@@ -249,6 +326,20 @@ class Step3ExecuteSubAgent:
                         step_id=STEP3_EXECUTE, error_type="upstream_placeholder_unresolved",
                         message=_rc, table=getattr(it, "table_hint", None),
                         sheet=getattr(it, "sheet_hint", None), is_hard=False))
+                    _path = None
+                    try:
+                        _agent = getattr(self._services, "_agent", None)
+                        _rt = _agent._resolve_table(it) if _agent is not None else None
+                        _path = _rt[0] if _rt else None
+                    except Exception:
+                        _path = None
+                    partitions.append({
+                        "intent": it,
+                        "path": _path,
+                        "sheet": getattr(it, "sheet_hint", None),
+                        "res": None,
+                        "executed": False,
+                    })
                     continue
                 try:
                     sub_res = self._services.run_single(
@@ -294,6 +385,13 @@ class Step3ExecuteSubAgent:
                             sheet=_fail["sheet"] or None,
                             suggestion=_fail["suggestion"],
                             is_hard=False))
+                        partitions.append({
+                            "intent": it,
+                            "path": None,
+                            "sheet": getattr(it, "sheet_hint", None),
+                            "res": None,
+                            "executed": False,
+                        })
                         continue
                     # §中危 8 修复：把 Step2 校验遗留的 intent.failures（soft tips）
                     # transfer 到 sub_res.failures，让 all_failures 聚合 + Step4 汇总
@@ -428,6 +526,19 @@ class Step3ExecuteSubAgent:
                                     sheet=f.get("sheet"), column=f.get("col"),
                                     suggestion=f.get("suggestion"),
                                     is_hard=False))
+                    _path = None
+                    try:
+                        _rt = self._services._agent._resolve_table(it) if getattr(self._services, "_agent", None) is not None else None
+                        _path = _rt[0] if _rt else None
+                    except Exception:
+                        _path = None
+                    partitions.append({
+                        "intent": it,
+                        "path": _path,
+                        "sheet": getattr(sub_res, "table_sheet", "") or getattr(it, "sheet_hint", None),
+                        "res": sub_res,
+                        "executed": True,
+                    })
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Step3 子任务执行异常", exc_info=True)
                     _rc = f"{type(e).__name__}: {e}"
@@ -466,8 +577,36 @@ class Step3ExecuteSubAgent:
                         step_id=STEP3_EXECUTE, error_type="execute_internal",
                         message=f"子任务执行异常：{it.action}",
                         root_cause=_rc, is_hard=False))
+                    partitions.append({
+                        "intent": it,
+                        "path": None,
+                        "sheet": getattr(it, "sheet_hint", None),
+                        "res": None,
+                        "executed": False,
+                    })
         finally:
             pass  # no_llm 作用域在 _run_single 内部 finally 还原，无需外层清理
+
+        try:
+            agent = getattr(self._services, "_agent", None)
+            if agent is not None and hasattr(agent, "_backfill_forward_refs"):
+                for _p in partitions:
+                    if _p.get("path") is None:
+                        try:
+                            _rt = agent._resolve_table(_p.get("intent"))
+                            _p["path"] = _rt[0] if _rt else None
+                        except Exception:
+                            pass
+                def _log(_msg: str) -> None:
+                    try:
+                        if ctx.thinking_sink:
+                            ctx.thinking_sink("执行", _msg)
+                    except Exception:
+                        pass
+                agent._backfill_forward_refs(
+                    partitions, produced, _log, getattr(ctx, "confirm_token", None))
+        except Exception:
+            logger.debug("Step3 forward-ref backfill 失败", exc_info=True)
 
         # §中危 7 修复：所有子任务执行失败（无成功 + 无 needs_confirm 待定）→ hard error。
         # 原 Step3 全 soft，hard 语义形同空设（仅 Step1 parse_empty hard）。

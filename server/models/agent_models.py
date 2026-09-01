@@ -85,6 +85,7 @@ class SubTaskInfo(BaseModel):
     result_table: Optional[ResultTable] = None
     table_stem: str = ""
     table_sheet: str = ""
+    skipped: bool = False
     # C 方案：部分成功时缺值列清单，前端据此渲染"需补值"提示
     needs_user_fill: List[Dict[str, Any]] = []
     partial: bool = False
