@@ -769,6 +769,83 @@ class TestDedupeSameSheetShadows:
         assert pa._dedupe_same_sheet_shadows([]) == []
 
 
+class TestDialogueTreeDedupGuards:
+    """焚天试炼类对话树：终端选项 producer 不得被同表去重吞掉/重映射成环。
+
+    复现 quest+对话树输入下 Step1 的两条硬失败：
+    - producer_dependency_cycle：conv_intro 的终端选项被并进另一条跳转选项后
+      remap 成环（conv↔option）。
+    - unresolved_placeholder：conv_root 消费的终端选项 producer 被当稀疏影子删掉。
+    """
+
+    def test_natural_dedup_skips_merge_that_would_create_cycle(self):
+        pa = ParseAgent()
+        pa._primary_field_names = lambda stem, sheet: {"option_id"}
+        opt_how = _it(
+            {"option_id": "<opt_how_id>", "text": "怎么走", "func": "1",
+             "conv_id": "<conv_intro_id>"},
+            stem="opt", sheet="Option")
+        opt_how.produces_label = "opt_how_id"
+        opt_how.extras["produces"] = "opt_how_id"
+        opt_done = _it(
+            {"option_id": "<opt_done_id>", "text": "怎么走", "func": "1"},
+            stem="opt", sheet="Option")
+        opt_done.produces_label = "opt_done_id"
+        opt_done.extras["produces"] = "opt_done_id"
+        conv_intro = _it(
+            {"conv_id": "<conv_intro_id>", "options[0]": "<opt_done_id>"},
+            stem="conv", sheet="Conv")
+        conv_intro.produces_label = "conv_intro_id"
+        conv_intro.extras["produces"] = "conv_intro_id"
+
+        out = pa._dedupe_same_sheet_natural_duplicates(
+            [opt_how, opt_done, conv_intro])
+
+        assert len(out) == 3
+        # 未合并 → conv_intro 仍指向 opt_done_id，不会 remap 成 opt_how_id 闭环
+        assert conv_intro.extras["fields"]["options[0]"] == "<opt_done_id>"
+
+    def test_shadow_dedup_keeps_sole_producer_referenced_terminal_option(self):
+        pa = ParseAgent()
+        opt_go = _it({"option_id": "<opt_go_id>"}, stem="opt", sheet="Option")
+        opt_go.produces_label = "opt_go_id"
+        opt_go.extras["produces"] = "opt_go_id"
+        opt_how = _it(
+            {"option_id": "<opt_how_id>", "text": "怎么走", "func": "1",
+             "conv_id": "<conv_intro_id>"},
+            stem="opt", sheet="Option")
+        opt_how.produces_label = "opt_how_id"
+        opt_how.extras["produces"] = "opt_how_id"
+        conv_root = _it(
+            {"conv_id": "<conv_root_id>", "options[0]": "<opt_go_id>",
+             "options[1]": "<opt_how_id>"},
+            stem="conv", sheet="Conv")
+        conv_root.produces_label = "conv_root_id"
+        conv_root.extras["produces"] = "conv_root_id"
+
+        out = pa._dedupe_same_sheet_shadows([opt_go, opt_how, conv_root])
+
+        assert len(out) == 3
+        labels = {pa._row_produces_label(it) for it in out}
+        assert "opt_go_id" in labels
+
+    def test_shadow_dedup_still_drops_unreferenced_sparse_shadow(self):
+        pa = ParseAgent()
+        sparse = _it({"option_id": "<opt_x_id>"}, stem="opt", sheet="Option")
+        sparse.produces_label = "opt_x_id"
+        sparse.extras["produces"] = "opt_x_id"
+        rich = _it(
+            {"option_id": "<opt_y_id>", "text": "怎么走", "func": "1"},
+            stem="opt", sheet="Option")
+        rich.produces_label = "opt_y_id"
+        rich.extras["produces"] = "opt_y_id"
+
+        out = pa._dedupe_same_sheet_shadows([sparse, rich])
+
+        # 无人消费 opt_x_id → 守卫不触发，稀疏影子照常去掉
+        assert len(out) == 1
+
+
 class TestFieldCanonMap:
     def test_cn_en_bridge(self):
         pa = ParseAgent(cli=_MailCli())

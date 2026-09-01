@@ -1546,6 +1546,54 @@ class ParseAgent:
             self._think(f"Step1 ordinal placeholders resolved: {n}")
         return n
 
+    @staticmethod
+    def _row_produces_label(it) -> str:
+        label = getattr(it, "produces_label", None)
+        if not label and getattr(it, "extras", None):
+            label = (it.extras or {}).get("produces")
+        return str(label or "").strip().strip("<>").strip()
+
+    def _build_label_consume_adjacency(
+            self, intents: list[NLIntent]) -> dict[str, set[str]]:
+        """producer label → 该 producer 行（间接）消费的 label 集合。
+
+        供同表去重的成环守卫用：判断把 loser_label 重映射到 winner_label 是否
+        会闭环（winner 已直接/间接消费 loser）。
+        """
+        adj: dict[str, set[str]] = {}
+        for it in intents or []:
+            own = self._row_produces_label(it)
+            if not own:
+                continue
+            consumed: set[str] = set()
+            fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+            if isinstance(fields, dict):
+                consumed |= self._field_placeholder_labels(fields)
+            for x in getattr(it, "consumes_labels", None) or []:
+                s = str(x).strip().strip("<>").strip()
+                if s:
+                    consumed.add(s)
+            consumed.discard(own)
+            adj.setdefault(own, set()).update(consumed)
+        return adj
+
+    @staticmethod
+    def _label_reaches(adj: dict[str, set[str]], src: str, dst: str) -> bool:
+        """consume 图中 src 是否经 ≥1 条边可达 dst（src 间接消费 dst）。"""
+        if not src or not dst:
+            return False
+        seen: set[str] = set()
+        stack: list[str] = list(adj.get(src, ()) or ())
+        while stack:
+            cur = stack.pop()
+            if cur == dst:
+                return True
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(adj.get(cur, ()) or ())
+        return False
+
     def _dedupe_same_sheet_shadows(self, intents: list[NLIntent]) -> list[NLIntent]:
         """同一 (action,stem,sheet) 组内去稀疏影子 intent（Step1 确定性修复）。
 
@@ -1594,6 +1642,33 @@ class ParseAgent:
                 )
                 groups.setdefault(key, []).append(i)
             drop: set[int] = set()
+            # resolver 守卫：produces_label 正被别的行消费、且本行是该 label 唯一
+            # producer 的行不许被 drop——否则悬空补拆刚补回的终端选项 producer 会被
+            # 当成稀疏影子吞掉 → consumer 侧 <label> 悬空报 unresolved_placeholder。
+            ref_by_others: dict[str, set[int]] = {}
+            producer_idxs: dict[str, list[int]] = {}
+            for j, it in enumerate(kept):
+                lab = self._row_produces_label(it)
+                if lab:
+                    producer_idxs.setdefault(lab, []).append(j)
+                f = (getattr(it, "extras", None) or {}).get("fields") or {}
+                refs = (set(self._field_placeholder_labels(f))
+                        if isinstance(f, dict) else set())
+                for x in getattr(it, "consumes_labels", None) or []:
+                    s = str(x).strip().strip("<>").strip()
+                    if s:
+                        refs.add(s)
+                for r in refs:
+                    ref_by_others.setdefault(r, set()).add(j)
+
+            def _protected(idx: int) -> bool:
+                lab = self._row_produces_label(kept[idx])
+                if not lab:
+                    return False
+                if not (ref_by_others.get(lab, set()) - {idx}):
+                    return False
+                return not [p for p in producer_idxs.get(lab, []) if p != idx]
+
             for key, idxs in groups.items():
                 if len(idxs) < 2:
                     continue
@@ -1649,6 +1724,8 @@ class ParseAgent:
                         a_info = {k: v for k, v in fa.items() if not _defaultish(v)}
                         b_info = {k: v for k, v in fb.items() if not _defaultish(v)}
                         if not a_keys and b_keys:
+                            if _protected(ia):
+                                continue
                             drop.add(ia)
                             changed = True
                             continue
@@ -1706,6 +1783,8 @@ class ParseAgent:
                                 shadow = False
                                 break
                         if shadow:
+                            if _protected(ia):
+                                continue
                             if same_produces_richer or default_shell_shadow:
                                 src = (getattr(kept[ia], "extras", None) or {}).get("fields") or {}
                                 dst = (getattr(kept[ib], "extras", None) or {}).get("fields") or {}
@@ -2040,6 +2119,8 @@ class ParseAgent:
 
         drop: set[int] = set()
         remap: dict[str, str] = {}
+        # 成环守卫用的 consume 邻接（producer label → 其消费的 label 集合）。
+        adj = self._build_label_consume_adjacency(intents)
         for key, idxs in groups.items():
             if len(idxs) < 2 or (key and key[0] not in ("add", None)):
                 continue
@@ -2085,6 +2166,12 @@ class ParseAgent:
                     loser_label = _label(intents[loser])
                     winner_label = _label(intents[winner])
                     if loser_label and label_ref_count.get(loser_label, 0) and not winner_label:
+                        continue
+                    # 成环守卫：winner 已（间接）消费 loser 时，remap loser→winner
+                    # 会把 loser 的消费者接到 winner 上闭环（对话树里 conv_intro 的
+                    # 终端选项被并进另一个跳转选项 → conv↔option 假环）。跳过合并。
+                    if (loser_label and winner_label
+                            and self._label_reaches(adj, winner_label, loser_label)):
                         continue
                     if loser_label and winner_label:
                         remap[loser_label] = winner_label
