@@ -546,7 +546,12 @@ class LocatorAgent(LLMSubAgent):
         缺口4：隐式 FK 发现。case2 school_spirit.spirit_id→pet 未在 table_relations
         声明，关系图无此边。补：扫候选表 header 找 _id/xxxid 后缀列（如 spirit_id），
         用反向列名索引反查含该 id 列的表（pet 含 灵根id），补进 adj 邻接表走 BFS。
+
+        §ablation 开关：CODEMAKER_LOCATOR_FK_OFF=1 时直接跳过 L3 关系扩展，
+        用于分通道贡献度压测对照（不改变默认行为，仅供离线评测使用）。
         """
+        if os.environ.get("CODEMAKER_LOCATOR_FK_OFF") == "1":
+            return []
         rg = self._get_relation_graph()
         if not candidates:
             return []

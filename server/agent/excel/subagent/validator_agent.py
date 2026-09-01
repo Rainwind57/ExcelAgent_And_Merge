@@ -384,26 +384,57 @@ class ValidatorAgent(LLMSubAgent):
                 _legacy = [c for c in sheets_map if c]
                 if _legacy:
                     return _legacy
-        # 回退：读表头取所有 id/编号 列作复合候选
+        # §6 修复（通用启发式，不绑业务）：无显式声明时，从表头推断**单列**主键。
+        # 旧实现取「所有含 id/编号 的 row1 列」当**复合**主键——两处系统性误判：
+        #   1. 真实主键列 row1 表头不含 "id"（如 school.School 的「门派」、quest 的
+        #      「任务」），被漏掉 → 反把 model_id/combat_model_id 等外键列凑成复合键。
+        #   2. 多个外键 id 列（model_id + combat_model_id）被误当联合唯一键 → 多行
+        #      共享同一 model_id 时假报 unique_violation。
+        # 通用修法：主键几乎恒为**单列**；复合主键只应来自显式声明（rules/relations，
+        # 上面 cache 已覆盖）。表头推断优先用 row2 规范名对齐（更稳，不依赖中文 id 字样）：
+        #   a) row2 规范名 == stem（如 school 表 → school 列）；
+        #   b) row2 规范名 == stem+id / stem_id（如 pet 表 → pet_id / 灵兽id 的规范名）；
+        #   c) 首列（策划配置表惯例：PK 在第 0 列），若其 row1/row2 像 id/编号/序号；
+        #   d) 首个含 id/编号/序号/主键 的列；
+        #   e) 首列兜底。
+        # 全程只返回单列，杜绝"多 id 列凑复合键"的假唯一冲突。
         try:
-            _hdrs, _ = self._get_schema(intent, schema_getter)
+            _hdrs, _type_row = self._get_schema(intent, schema_getter)
             if _hdrs:
-                id_cols = []
+                def _clean(x) -> str:
+                    return str(x or "").split(":")[0].strip()
+
+                _stem_l = stem.lower()
+                _row2 = [_clean(t).lower() for t in (_type_row or [])]
+                # a/b) row2 规范名对齐 stem
+                if _row2:
+                    _stem_id_variants = {_stem_l, f"{_stem_l}_id", f"{_stem_l}id"}
+                    for _i, _r2 in enumerate(_row2):
+                        if _r2 and _r2 in _stem_id_variants:
+                            _name = _clean(_hdrs[_i]) if _i < len(_hdrs) else ""
+                            if _name:
+                                return [_name]
+                # c) 首列若像主键（含 id/编号/序号 或 row2 以 _id 结尾）
+                _first_name = _clean(_hdrs[0]) if _hdrs else ""
+                _first_r2 = _row2[0] if _row2 else ""
+                _first_nl = _first_name.lower()
+                if _first_name and (
+                        "id" in _first_nl or "编号" in _first_name
+                        or "序号" in _first_name or "主键" in _first_name
+                        or _first_r2.endswith("_id") or _first_r2.endswith("id")
+                        or _first_r2 == _stem_l):
+                    return [_first_name]
+                # d) 首个含 id/编号/序号/主键 的列（单列，非复合）
                 for h in _hdrs:
-                    if not h:
-                        continue
-                    name = str(h).split(":")[0].strip()
+                    name = _clean(h)
                     if not name:
                         continue
                     nl = name.lower()
-                    if "id" in nl or "编号" in nl or "序号" in nl or "主键" in nl:
-                        if name not in id_cols:
-                            id_cols.append(name)
-                if id_cols:
-                    return id_cols
-                # 无 id 列时首列兜底
-                first = str(_hdrs[0] or "").split(":")[0].strip()
-                return [first] if first else []
+                    if ("id" in nl or "编号" in name or "序号" in name
+                            or "主键" in name):
+                        return [name]
+                # e) 首列兜底
+                return [_first_name] if _first_name else []
         except Exception:
             pass
         return []
@@ -579,12 +610,18 @@ class ValidatorAgent(LLMSubAgent):
         闭环，用户补齐后才放行；不再预先 mark skipped，避免修好后 Step3 仍显示
         「用户跳过此项」。PK 自动分配列豁免（首列必非空时由 _dedup_inter_pk_dup 等处理）。
 
-        三条误报豁免（均「数据/指令」驱动，不绑业务词）：
+        四条误报豁免（均「数据/指令/schema」驱动，不绑业务词）：
           1. 全空列豁免：该列在既有所有数据行里从没填过 → 非业务必填列，不报。
           2. 否定式豁免：指令显式说「不带X/无X」→ 按语义补 0 放行，不报。
           3. 同族列豁免：同一族（描述族/名称族）里已有列被写入 → 同族其余列不报。
              （用户只说「描述'…'」，LLM 已填进「神通描述」，就没理由要求它也填满
              「功效描述」「升级描述」——误报会把整条新增标 skipped 拦下来。）
+          4. 反规范化镜像列豁免（§8）：名称/描述族列若 row2 规范名为空 → 该列是跨表
+             FK 反规范化的展示镜像列（值随 FK 引用的目标行派生，如 pet_evolve 的
+             「宠物名称/进化后的灵兽名称」镜像 pet.灵兽名称），非用户须提供的字段。
+             通用判据：本 schema 约定「真实数据列必带 row2 `name:type`，纯展示/派生
+             列 row2 为空」——命中即豁免，避免把 FK 镜像列误当用户漏填（gold 亦不含
+             这些列）。不绑业务词/表：只看该列有无 row2 规范名。
 
         Returns:
             list[Issue]，空 = 无业务必填列缺失。
@@ -638,6 +675,18 @@ class ValidatorAgent(LLMSubAgent):
                 _is_explicit_kw = any(kw in name for kw in explicit_kws)
                 if not _is_name_kw and not _is_explicit_kw:
                     continue
+                # §豁免4（§8）：名称/描述族列 row2 规范名为空 → 反规范化 FK 镜像/纯展示
+                # 列（值派生自 FK 引用目标，非用户须填）。通用 schema 约定：真实数据列
+                # 带 row2 `name:type`，展示/派生列 row2 空。命中即豁免（gold 亦不含）。
+                # 仅在 row2（type_row）确实可用时判定；不可用则保守走原行为（不豁免）。
+                if _is_name_kw and type_row:
+                    _r2 = ""
+                    for _hh, _tt in zip(headers or [], type_row or []):
+                        if str(_hh or "").split(":")[0].strip() == name:
+                            _r2 = str(_tt or "").split(":")[0].strip()
+                            break
+                    if not _r2:
+                        continue
                 # 显式赋值列需 raw 出现列名才报（防表头有「奖励」列但用户没提误报）
                 if _is_explicit_kw and not _is_name_kw \
                         and name.lower() not in raw_lower:

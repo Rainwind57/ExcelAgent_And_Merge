@@ -1,0 +1,282 @@
+
+===== 第1页 =====
+{'text': 'AI', 'name': '微软雅黑', 'size': 60.0, 'bold': True, 'color': None}
+{'text': '配表助手', 'name': '微软雅黑', 'size': 60.0, 'bold': True, 'color': None}
+{'text': '——', 'name': '微软雅黑', 'size': 20.0, 'bold': None, 'color': None}
+{'text': '自然语言驱动配表', 'name': '微软雅黑', 'size': 20.0, 'bold': None, 'color': None}
+{'text': '+', 'name': '微软雅黑', 'size': 20.0, 'bold': None, 'color': None}
+{'text': '三方合并', 'name': '微软雅黑', 'size': 20.0, 'bold': None, 'color': None}
+{'text': 'Merge', 'name': '微软雅黑', 'size': 20.0, 'bold': None, 'color': None}
+{'text': '吴植贤', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '2026', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '年', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '9', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '月', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '4', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+{'text': '日', 'name': '+mj-ea', 'size': 16.0, 'bold': None, 'color': None}
+
+===== 第2页 =====
+{'text': '目录', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '01 业务背景与任务目标', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '02 Excel-Agent：4-Ste', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '03 Merge：面向 SVN 目录分支', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '04 ', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '总结', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '归纳', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '02', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第3页 =====
+{'text': '一、业务背景', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '复杂 Excel 配表不是单表编辑问题，', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '03', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第4页 =====
+[table] {'text': '编号', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '存在问题', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '后果', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '1', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '85786A'}
+[table] {'text': 'Merge', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+[table] {'text': '过程出现漏行丢数据情况', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+[table] {'text': '数据会静默消失', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+{'text': '业务背景：真实配表的复杂性', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '04', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '编号', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '存在问题', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '后果', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': 'C00000'}
+[table] {'text': '1', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '85786A'}
+[table] {'text': 'Merge', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+[table] {'text': '过程出现漏行丢数据情况', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+[table] {'text': '数据会静默消失', 'name': '微软雅黑', 'size': 12.0, 'bold': None, 'color': '968C81'}
+{'text': '规模复杂', 'name': '微软雅黑', 'size': 13.0, 'bold': True, 'color': '1A1A1B'}
+{'text': '表多、字段多、跨表引用密集；', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '活动、奖励、技能、NPC、刷新点常跨多表', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '表达复杂', 'name': '微软雅黑', 'size': 13.0, 'bold': True, 'color': '1A1A1B'}
+{'text': '用自然语言描述目标，', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '通常不会精确写表名、列名、枚举值和外键链', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '协作复杂', 'name': '微软雅黑', 'size': 13.0, 'bold': True, 'color': '1A1A1B'}
+{'text': 'SVN 目录分支和外链并存；多人并行改 ', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第6页 =====
+{'text': '二、', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '4Step Excel-Agent', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '06', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第7页 =====
+{'text': 'Excel-Agent 总体定位', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'Excel-Agent是面向用户提供复杂', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '系统先定位候选表，再让 LLM 在真实 ', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '最终目标是', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '让 Step1 的 JSON 足够', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '准确', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '，因为后续 Step2/Step3/St', 'name': None, 'size': 14.0, 'bold': None, 'color': None}
+{'text': '07', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '架构总览：', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': 'LangGraph 编排 TableAg', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'p,', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '具体如下：', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'Step', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '职责', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '1', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '、解析', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '对输入执行：分段', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '->', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '定位', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '->schema', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '注入拆解', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '->', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '语义计划', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '编译', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+
+===== 第9页 =====
+{'text': 'Step1：全链路的核心', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'Step1', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '：自然语言', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '->', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '可执行计划', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': 'intent', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '技术', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '内容', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '指标', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '优化', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '09', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '操作', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '技术', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '说明', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '分段', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '规则', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '分段', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '指标', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'before', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'after', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '变化', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '定位', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '功能', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '0.6667', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '0.8056', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '+20.8%', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第20页 =====
+{'text': 'Skill 系统', 'name': '微软雅黑', 'size': None, 'bold': True, 'color': 'FFFFFF'}
+{'text': '将列名、如何定位', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '行、哪些操作历史出错沉淀成可查询规则，A', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '19', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '层级', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '目录', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '内容', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '生成方式', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'L0 人工/根目录', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'skills/*.yaml', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'sheet别名、引导动词、列短形式', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '人工+自动混合', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第22页 =====
+{'text': 'Skill 系统：效果数据', 'name': '微软雅黑', 'size': None, 'bold': True, 'color': 'FFFFFF'}
+{'text': '21', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '数据点', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '指标', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'before', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'after', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'skill简版30样例', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '定位成功率', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '0.933', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '1.000', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第24页 =====
+{'text': 'Merge', 'name': '微软雅黑', 'size': 30.0, 'bold': True, 'color': None}
+{'text': 'Merge-base', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'From', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '分支', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'To', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '分支', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'Merge', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '合并', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '结果', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'Merge', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '模式', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '过程', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '跨分支', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '合并', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '分支', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '合并', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '通过', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'From', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '分支与', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'To', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '分支比对合并到', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'To', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '分支', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+
+===== 第27页 =====
+[table] {'text': '版本', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '方法', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '解决', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '问题', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '性能', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '提升', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': 'A', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'Python', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '三重循环', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '——', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '10w', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '行', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '*100', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '列会', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '卡死', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+{'text': 'SVN merge-base 定位', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '在选择分支', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '/', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '目录后，找到', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': 'base', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '分支与', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': 'base', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '版本的核心方法：', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': 'copyfrom', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '反查', 'name': None, 'size': None, 'bold': True, 'color': None}
+{'text': '1', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '、', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'From', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '分支和', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'To', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '分支各自寻找自身的', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'copyfrom', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '；', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '2', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '、沿着', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': 'copyfrom', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '链上溯，寻找完整的祖先链；', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '3', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '、两条', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': 'copyfrom', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '链交叉寻找最近公共祖先', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '(LCA)', 'name': '微软雅黑', 'size': None, 'bold': None, 'color': None}
+{'text': '22', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '情况', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': 'copyfrom-', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': 'path', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '标记', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '正常', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '切分支', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'trunk@r1', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'inferred=false', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '优化', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'before', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'after', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'SVN rev', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '查询', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '每张表单独查一次版本，总计', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '191', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 's', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '一次递归查询全目录，缩减为', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '0.2', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 's', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第29页 =====
+{'text': 'Compare 全流程', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '比较过程分为四层：', 'name': None, 'size': 16.0, 'bold': None, 'color': None}
+{'text': '文件层：新增、删除、重命名、移动。', 'name': None, 'size': 16.0, 'bold': None, 'color': None}
+{'text': 'Sheet 层：新增 sheet、删除 ', 'name': None, 'size': 16.0, 'bold': None, 'color': None}
+{'text': '行列层：主键匹配、行新增删除、字段变更。', 'name': None, 'size': 16.0, 'bold': None, 'color': None}
+{'text': '语义层：公式、外键引用、ID 冲突和可合', 'name': None, 'size': 16.0, 'bold': None, 'color': None}
+{'text': '23', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '技术', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': ':', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '技术', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '解决', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '问题', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '效果', 'name': '微软雅黑', 'size': 14.0, 'bold': None, 'color': '604E39'}
+[table] {'text': '哈希索引', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'list.index', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '线性扫复杂度', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'O(n)', 'name': '微软雅黑', 'size': 14.0, 'bold': False, 'color': '968C81'}
+[table] {'text': '行定位', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+[table] {'text': 'O(1)', 'name': '微软雅黑', 'size': 12.0, 'bold': False, 'color': '968C81'}
+{'text': '优化：', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '指标', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'before', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'after', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '大表', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 'compare', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '平均', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '48s', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '平均', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': '6.4', 'name': None, 'size': None, 'bold': None, 'color': None}
+[table] {'text': 's', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第35页 =====
+{'text': '当前验证结论', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '最新代码合并后，核心回归通过 71 项；', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '这次更新对智能化有正向价值：enum r', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '剩余风险集中在复杂链路：跨段代词、省略主', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'ExcelAgent_And_Merge', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '30', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第36页 =====
+{'text': '四、总结', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'Excel-Agent 的正确方向不是堆', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'Merge 的正确方向是“可信 Base', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '后续重点：全字段交互修正、复杂链路上下文', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': 'ExcelAgent_And_Merge', 'name': None, 'size': None, 'bold': None, 'color': None}
+{'text': '31', 'name': None, 'size': None, 'bold': None, 'color': None}
+
+===== 第43页 =====
+{'text': 'THANK YOU', 'name': '微软雅黑', 'size': 60.0, 'bold': True, 'color': None}

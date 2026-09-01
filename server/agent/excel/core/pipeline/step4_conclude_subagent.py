@@ -139,6 +139,23 @@ class Step4ConcludeSubAgent:
         # Step4 只汇总，但最终 ok 必须反映全部前序 step，而非只镜像 Step3。
         prior = [r for sid, r in ctx.results.items() if sid != STEP4_CONCLUDE]
         all_ok = bool(prior) and all(r.ok for r in prior)
+        # §7 修复（通用，不绑业务）：Step1 产空以外的"用户意图被丢/部分漏解析"信号
+        # （segment_no_intent / segment_partial_coverage）是 soft error（is_hard=False），
+        # 不翻转 Step1.ok，于是 all_ok 恒 True → Step4 仍报"完成 N 个子任务"（假成功：
+        # 用户某条意图根本没进 Step2/3，却被当作全成功）。修：把"意图被丢/漏解析"类
+        # 前序错误纳入 all_ok 判据（无论 hard/soft），并在文案里显式点出漏解析段数，
+        # 让 Step4 不再对不完整链路报干净成功。判据是错误类型（结构信号），非业务词。
+        _DROPPED_INTENT_ERROR_TYPES = {
+            "segment_no_intent", "segment_partial_coverage",
+            "parse_empty", "parse_internal",
+        }
+        n_dropped = 0
+        for _r in prior:
+            for _e in (getattr(_r, "errors", None) or []):
+                _et = getattr(_e, "error_type", "")
+                if _et in _DROPPED_INTENT_ERROR_TYPES or getattr(_e, "is_hard", False):
+                    n_dropped += 1
+        has_incomplete = n_dropped > 0
         # §低危修复：ok=None（needs_confirm 待确认）不计失败，与 Step3 口径一致。
         # 原 `not s.get("ok")` 把 None 当失败 → n_fail 误计。
         n_ok = sum(1 for s in subtasks if s.get("ok") is True)
@@ -146,12 +163,27 @@ class Step4ConcludeSubAgent:
         n_skipped = sum(1 for s in subtasks if s.get("skipped"))
         n_pending = sum(1 for s in subtasks if s.get("needs_confirm")
                         and s.get("ok") is None)
+        # 最终 ok：前序全 ok + 无 Step3 硬失败 + 无"意图被丢/漏解析"信号。
+        all_ok = all_ok and n_fail == 0 and not has_incomplete
 
         # 汇总文案（模板，无 LLM）
         if all_ok and subtasks:
             summary = f"完成 {n_ok} 个子任务"
             if n_pending:
                 summary += f"，{n_pending} 个待确认"
+        elif has_incomplete and subtasks:
+            # 有子任务执行成功，但存在意图被丢/漏解析：如实报"部分完成"，不报干净成功。
+            summary = (f"部分完成：{n_ok} 个子任务已处理，"
+                       f"但有 {n_dropped} 处意图未能解析/被丢弃，请检查指令覆盖")
+            if n_fail:
+                summary += f"；{n_fail} 个失败"
+            if n_pending:
+                summary += f"；{n_pending} 个待确认"
+            for f in failures[:5]:
+                loc = f"{f.get('table', '?')}/{f.get('sheet', '?')}"
+                col = f" 列[{f.get('col')}]" if f.get("col") else ""
+                rc = f.get("root_cause") or "未知"
+                summary += f"\n- {loc}{col}：{rc}"
         elif subtasks:
             summary = f"完成 {n_ok}/{len(subtasks)} 个子任务，{n_fail} 个失败"
             if n_skipped:

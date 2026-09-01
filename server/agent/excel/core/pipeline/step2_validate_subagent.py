@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import copy
+import json
+import os
 import time
 from typing import Any, Optional
 
@@ -122,6 +124,52 @@ class Step2ValidateSubAgent:
                 is_hard=True))
         return errors
 
+    @staticmethod
+    def _plan_completeness_errors(step1_audit: dict | None) -> list[StepError]:
+        """Phase 1.5 完整性发现 → Step2 约束（默认 soft，只报告+建议）。
+
+        FK 闭包审计出的「漏表 / 悬空引用」在 step1_audit["plan_completeness"]。
+        本层把它转成 StepError 上报并附确定性修复建议；默认不阻断（is_hard=False），
+        以 CODEMAKER_PLAN_COMPLETENESS_GATE=1 显式开启硬阻断（灰度：保基线不回归）。
+        """
+        if not isinstance(step1_audit, dict):
+            return []
+        completeness = step1_audit.get("plan_completeness")
+        if not isinstance(completeness, dict):
+            return []
+        findings = completeness.get("findings") or []
+        if not findings:
+            return []
+        gate = os.getenv("CODEMAKER_PLAN_COMPLETENESS_GATE", "0").lower() in (
+            "1", "true", "yes", "on")
+        errors: list[StepError] = []
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            ftype = str(f.get("type") or "plan_incomplete").strip()
+            if ftype == "missing_producer_entity":
+                miss = f.get("missing_table") or "?"
+                msg = (f"计划不完整：实体{f.get('entity_id')}（表 {f.get('table')}）"
+                       f"的外键列 {f.get('field')} 引用了 {miss}，"
+                       f"但计划中缺少产出 {miss} 新行的新增实体")
+                suggestion = (f"补充一个 add {miss} 实体并让 {f.get('field')} 引用其产出；"
+                              f"或若该列指向已存在行，请改填 {miss} 的字面 id")
+            else:
+                ref = f.get("label") or f.get("entity_key") or "?"
+                msg = (f"计划不完整：实体{f.get('entity_id')} 的引用 {ref} "
+                       f"未找到任何产出它的实体（悬空引用）")
+                suggestion = "补齐产出该引用的实体，或移除该悬空引用"
+            errors.append(StepError(
+                step_id=STEP2_VALIDATE,
+                error_type=f"completeness_{ftype}",
+                message=msg,
+                root_cause=json.dumps(f, ensure_ascii=False),
+                table=f.get("table"),
+                column=f.get("field"),
+                suggestion=suggestion,
+                is_hard=gate))
+        return errors
+
     def execute(self, ctx: StepContext) -> StepResult:
         """Step2 执行：对 Step1 产出的 intents 跑 validate_two_layer。
 
@@ -174,6 +222,8 @@ class Step2ValidateSubAgent:
         )
         errors.extend(self._step1_quality_errors(step1_quality))
         errors.extend(self._semantic_compile_errors(semantic_compile_report))
+        step1_audit = s1.artifacts.get("step1_audit") if s1 else None
+        errors.extend(self._plan_completeness_errors(step1_audit))
         if self._services is not None:
             try:
                 # 复用 legacy validate_two_layer + ask + 修正

@@ -27,6 +27,7 @@ from typing import Any
 from ...parse_agent import ParseAgent
 from .contracts import STEP1_PARSE, StepContext, StepError, StepHardError, StepResult
 from .semantic_plan import compile_semantic_plan_to_intents
+from .plan_completeness import audit_plan_completeness
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +783,18 @@ def _build_step1_audit(intents: list,
     hard_issue_count = sum(
         1 for row in issue_dist.values() if row["severity"] == "hard")
     resolved_placeholders = placeholder_total - unresolved_placeholder
+
+    # Phase 1.5：FK 闭包完整性审计（0 LLM，只报告不阻断）。
+    # 用关系图对 semantic_plan 做「漏表/悬空引用」压力测试，产出结构化 findings +
+    # 补壳建议。此处仅纳入审计报告供 step2 与评测消费，不改变 step1 的 ok 门禁。
+    completeness = {"ok": True, "findings": [], "suggestions": [],
+                    "hard_count": 0, "finding_count": 0}
+    try:
+        completeness = audit_plan_completeness(semantic_plan)
+    except Exception:  # noqa: BLE001 - 审计失败不得影响 step1 主流程
+        logger.warning("plan_completeness 审计异常（已忽略，report-only）",
+                       exc_info=True)
+
     _first_raw = ""
     for _it in (intents or []):
         _first_raw = getattr(_it, "raw", "") or ""
@@ -817,10 +830,17 @@ def _build_step1_audit(intents: list,
             "cycle_count": plan_graph.get("cycle_count", 0),
             "hard_issue_count": hard_issue_count,
             "issue_count": len(issue_dist),
+            "completeness_missing_producer_count": sum(
+                1 for f in completeness.get("findings", [])
+                if f.get("type") == "missing_producer_entity"),
+            "completeness_unresolved_ref_count": sum(
+                1 for f in completeness.get("findings", [])
+                if f.get("type") == "unresolved_reference"),
         },
         "issue_distribution": {
             key: dict(row) for key, row in sorted(issue_dist.items())
         },
+        "plan_completeness": completeness,
         "ok": bool(quality.get("ok")) and hard_issue_count == 0,
     }
 

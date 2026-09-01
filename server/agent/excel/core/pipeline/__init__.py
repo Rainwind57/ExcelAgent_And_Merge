@@ -19,6 +19,7 @@ from .semantic_plan import (
     compile_semantic_plan_to_intents,
     compile_semantic_plan_to_operation_items,
 )
+from .plan_completeness import audit_plan_completeness
 from .step1_parse_subagent import Step1ParseSubAgent
 from .step2_validate_subagent import Step2ValidateSubAgent
 from .step3_execute_subagent import Step3ExecuteSubAgent
@@ -31,6 +32,7 @@ __all__ = [
     "ExcelAgentPipeline", "is_v2_enabled", "ExcelAgentServices",
     "compile_semantic_plan_to_intents",
     "compile_semantic_plan_to_operation_items",
+    "audit_plan_completeness",
     "Step1ParseSubAgent", "Step2ValidateSubAgent",
     "Step3ExecuteSubAgent", "Step4ConcludeSubAgent",
 ]
