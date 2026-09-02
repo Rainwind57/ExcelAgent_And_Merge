@@ -22,10 +22,27 @@ _VC_PATH = Path(__file__).resolve().parent.parent / "agent" / "excel" / "skills"
 _vc_cache: dict = {}
 
 
-def _load_value_constraints() -> dict:
-    """加载 value_constraints.yaml，返回 {stem: {sheet: {columns: {col: {type}}}}}。
+def _deep_merge_tables(base: dict, extra: dict) -> dict:
+    """递归深合并 extra 到 base（extra 优先，dict 级深合并，list 整值替换）。
 
-    缺失或无 yaml 时返回空 dict 降级。engine 层独立加载，避免向 agent 层反向耦合。
+    与 merge_engine._deep_merge_tables / agent.core.agent._deep_merge_tables 同语义，
+    engine 层独立实现避免跨层 import。
+    """
+    for k, v in extra.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge_tables(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def _load_value_constraints() -> dict:
+    """加载 value_constraints.yaml，并叠加 rules/validate 用户规则 overlay。
+
+    返回 {stem: {sheet: {columns: {col: {type, min, max, unique, regex}}}}}。
+    overlay 来自 rules_loader.get_value_constraints_overlay()，与 merge_engine /
+    agent.core.agent 读的是同一份用户规则源，engine 层独立合并与缓存，不 import
+    agent 层本体，避免跨层耦合。
     """
     try:
         cur_mtime = _VC_PATH.stat().st_mtime if _VC_PATH.exists() else 0.0
@@ -34,40 +51,62 @@ def _load_value_constraints() -> dict:
     if _vc_cache.get("mtime") == cur_mtime and "data" in _vc_cache:
         return _vc_cache["data"]
     if not _HAS_YAML or not cur_mtime:
-        _vc_cache["data"] = {}
-        _vc_cache["mtime"] = cur_mtime
-        return {}
-    data = _yaml.safe_load(_VC_PATH.read_text(encoding="utf-8")) or {}
-    _vc_cache["data"] = data.get("tables", {}) or {}
+        tables: dict = {}
+    else:
+        data = _yaml.safe_load(_VC_PATH.read_text(encoding="utf-8")) or {}
+        tables = data.get("tables", {}) or {}
+    try:
+        from agent.excel.core.rules_loader import get_value_constraints_overlay
+        overlay = get_value_constraints_overlay()
+        if overlay:
+            _deep_merge_tables(tables, overlay)
+    except Exception:
+        pass
+    _vc_cache["data"] = tables
     _vc_cache["mtime"] = cur_mtime
     return _vc_cache["data"]
 
 
-def _get_col_type(table_stem: str, sheet: str, col_header: str) -> str:
-    """查列类型标注（int/float/bool/…）。未命中返回空串。"""
+def _get_col_constraints(table_stem: str, sheet: str, col_header: str) -> dict:
+    """查列完整约束配置（type/min/max/unique/regex）。未命中返回空 dict（不校验）。"""
     header = (col_header or "").split(":")[0].strip()
     if not header or not table_stem:
-        return ""
+        return {}
     vc = _load_value_constraints()
     sheets = vc.get(table_stem, {})
     cols = sheets.get(sheet, {}).get("columns", {})
     info = cols.get(header) or cols.get(col_header)
-    return ((info or {}).get("type", "") or "").strip().lower()
+    return info or {}
 
 
-def _check_formula_result_type(col_type: str, val) -> tuple[bool, str]:
-    """公式重算结果类型校验。int/float 列强校验（公式产出应为数值）；空类型不校验。"""
-    t = (col_type or "").strip().lower()
+def _get_col_type(table_stem: str, sheet: str, col_header: str) -> str:
+    """查列类型标注（int/float/bool/…）。未命中返回空串。"""
+    return (_get_col_constraints(table_stem, sheet, col_header).get("type", "") or "").strip().lower()
+
+
+def _check_formula_result_type(col_cfg, val) -> tuple[bool, str]:
+    """公式重算结果约束校验：type（数值强校验）+ min/max（范围，来自 rules/validate）。
+
+    col_cfg 可传纯类型字符串（旧调用方式，向后兼容）或完整列约束 dict。
+    空/未命中不校验；regex 对公式数值结果意义不大，此处不做。
+    """
+    cfg = col_cfg if isinstance(col_cfg, dict) else {"type": col_cfg}
+    t = (cfg.get("type", "") or "").strip().lower()
     if not t:
         return True, ""
     if val is None:
         return True, ""
     if t in ("int", "integer", "long", "float", "double", "number"):
         try:
-            float(str(val))
-            return True, ""
+            fv = float(str(val))
         except (ValueError, TypeError):
             return False, f"公式重算结果 {val!r} 与列类型 {t} 不符"
+        vmin, vmax = cfg.get("min"), cfg.get("max")
+        if vmin is not None and fv < float(vmin):
+            return False, f"公式重算结果 {val!r} 小于规则允许的最小值 {vmin}"
+        if vmax is not None and fv > float(vmax):
+            return False, f"公式重算结果 {val!r} 大于规则允许的最大值 {vmax}"
+        return True, ""
     return True, ""
 
 
@@ -285,6 +324,44 @@ def _pick_author_representatives(
 
 # ── 向量化快速路径：numpy 矩阵 diff，大表纯数据场景 10-50× 提速 ──
 # 仅适用于无公式/无批注的纯数据 sheet；有公式/批注时回退逐格 Python 循环。
+def _tag_inserted_source(
+    result_rows: List[dict],
+    other_files: List[str],
+    version_meta: Optional[Dict[str, Dict[str, Any]]],
+) -> None:
+    """R18/R25-fix: 为 inserted 行标注来源文件/版本（供导出写批注 + 前端来源徽章）。
+
+    抽成公共函数：慢速逐格路径与向量化快速路径都要用——之前只有慢速路径打了
+    这个标记，向量化路径（无公式/无批注的表，覆盖大多数表）在 R25 排查"看不出
+    新增/重编号是哪个分支"时发现完全没打，导致这些表的新增行/重编号行前端拿不到
+    来源信息。就地修改 result_rows（原地打标记），不返回新对象。
+    """
+    for r in result_rows:
+        if r.get('row_type') != 'inserted':
+            continue
+        cells = r.get('cells') or []
+        src_file = ''
+        for fname in other_files:
+            for c in cells:
+                vers = c.get('versions') or {}
+                if vers.get(fname) is not None:
+                    src_file = fname
+                    break
+            if src_file:
+                break
+        r['source_file'] = src_file
+        r['source_version'] = ''
+        if src_file:
+            # SVN 模式优先取 version_meta 的 rev；demo 模式回退文件名 _N 后缀
+            vm = (version_meta or {}).get(src_file) or {}
+            if vm.get('rev'):
+                r['source_version'] = str(vm['rev'])
+            else:
+                m = re.search(r'_(\d+)\.xlsx$', src_file, re.IGNORECASE)
+                if m:
+                    r['source_version'] = m.group(1)
+
+
 def _compare_sheet_vectorized(
     file_rows: Dict[str, List[List[Any]]],
     base_name: str,
@@ -295,6 +372,7 @@ def _compare_sheet_vectorized(
     sparse: bool,
     merge_base_file: Optional[str],
     commit_authors: Optional[Dict[str, str]],
+    version_meta: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Optional[dict]:
     """numpy 矩阵 diff：对齐 PK 后一次性矩阵比较，有差异才物化单元格。
 
@@ -457,6 +535,26 @@ def _compare_sheet_vectorized(
         result_rows.append({'key': pk, 'cells': cells, 'row_type': row_type,
                            'presence': presence})
 
+    # R25-fix: 向量化快速路径此前完全没调用 resolve_id_conflicts——多分支各自新增
+    # 同一 PK 但内容不同的行（真实 ID 冲突，如 dev1/dev2 都插入 id=9999 但改成不同
+    # 名字）在这条路径上会被直接合并成一行、双方 versions 都保留却从不触发冲突/
+    # 重编号判定（旧代码硬编码返回空 id_resolution，且 inserted 行的 diff 分支写死
+    # 只在 row_type=='matched' 时生效，inserted 行整体跳过判定）。凡是不含公式/
+    # 批注的表都会走这条快速路径，等于这类表的多分支新增 ID 冲突检测完全失效。
+    # 这里补上跟慢速逐格路径一致的 id 冲突解析，行为对齐。
+    from .id_resolver import resolve_id_conflicts
+    id_res = resolve_id_conflicts(result_rows, headers, base_name, all_files, mode="split")
+    result_rows = id_res["resolved_rows"]
+    # split 可能重建/替换行，按最终 result_rows 重新统计（分组前按 pk 循环的计数
+    # 在 split 后可能不再准确，比如 1 个合并行拆成 2 个 inserted 行）
+    inserted_count = sum(1 for r in result_rows if r.get('row_type') == 'inserted')
+    deleted_count = sum(1 for r in result_rows if r.get('row_type') == 'deleted')
+
+    # R25: 新增行标来源分支（之前只有慢速路径打了这个标记，向量化路径完全没打，
+    # 导致这类表——即多数无公式/无批注的表——的"新增行是哪个分支加的"、
+    # "重编号冲突是哪个分支的编号被改了"在前端完全看不出来）。
+    _tag_inserted_source(result_rows, other_files, version_meta)
+
     return {
         'rows': result_rows,
         'headers': headers,
@@ -474,8 +572,12 @@ def _compare_sheet_vectorized(
         },
         'missing_rows': [],
         'structure_diff': structure_diff,
-        'id_resolution': {'id_mapping': {}, 'conflicts': [], 'pk_conflicts': [],
-                          'stats': {'resolved': 0}},
+        'id_resolution': {
+            'id_mapping': id_res['id_mapping'],
+            'conflicts': id_res['conflicts'],
+            'pk_conflicts': id_res['pk_conflicts'],
+            'stats': id_res['stats'],
+        },
     }
 
 
@@ -642,6 +744,7 @@ def compare_sheet(
     formula_count = 0          # 公式列单元格数（diff_type='formula'）
     formula_changed_count = 0  # 公式列因引用值变化需重算的单元格数
     formula_conflict_count = 0  # 公式文本各版本不一致（diff_type='formula_conflict'）
+    formula_row_drift_count = 0  # R25: 公式文本未变但行物理位置漂移（非冲突，独立统计，不计入 conflicts）
     comment_conflict_count = 0  # 批注文本各版本不一致
 
     # M7 性能优化：预建 {fname: {id(row): index_in_single_sheet}} 哈希映射。
@@ -680,6 +783,7 @@ def compare_sheet(
         vec = _compare_sheet_vectorized(
             file_rows, base_name, other_files, all_files, headers,
             structure_diff, sparse, merge_base_file, commit_authors,
+            version_meta,
         )
         if vec is not None:
             return vec
@@ -714,9 +818,24 @@ def compare_sheet(
             row_type = 'matched'
 
         # 找到该行在所有文件中的最大列数
+        # R25-fix: 若只看 value 矩阵(file_versions)算列数，会漏掉"只有公式、没有
+        # 缓存计算值"的尾部列——value 矩阵读取器(calamine/openpyxl data_only=True)
+        # 按每行末尾非空值裁剪，公式格如果从未在 Excel/LibreOffice 里重算过缓存值
+        # 为 None，会被当成"空尾列"裁掉，导致该列在 value 矩阵里长度不够，从而
+        # range(max_cols) 永远到不了那一列，公式冲突/漂移检测全部失效（哪怕
+        # formulas_active=True，逐列扫描也扫不到超出 max_cols 的列）。这里额外把
+        # 公式矩阵同一行的长度一起纳入 max，保证公式列不会因为没有缓存值被裁没。
         max_cols = 0
         for row in file_versions.values():
             max_cols = max(max_cols, len(row))
+        if formulas_active:
+            for fname in file_versions.keys():
+                _ri = file_row_idx.get(fname, -1)
+                if _ri < 0:
+                    continue
+                _frows = single_formulas.get(fname, [])
+                if _ri < len(_frows):
+                    max_cols = max(max_cols, len(_frows[_ri]))
 
         # ── Phase A：稀疏化预判定（仅 sparse=True 启用）──
         # matched 行若所有版本所有非主键列值一致、无公式单元格、无批注 → 不展开稠密 cells，
@@ -812,6 +931,7 @@ def compare_sheet(
                         'comment_conflict': False,
                         'author_resolved': False,
                         'formula_notice': '',
+                        'formula_row_drift': False,
                     }],
                     'row_type': row_type,
                     'presence': {
@@ -926,22 +1046,22 @@ def compare_sheet(
                     changed = False
                     diff_type = "formula_conflict"
                     formula_notice = "公式文本在各版本间不一致，请选择采纳的公式版本"
-                    # 公式文本冲突时也校验：各版本公式若可重算，结果类型与列类型不符则提示
+                    # 公式文本冲突时也校验：各版本公式若可重算，结果类型/范围与列约束不符则提示
                     if table_stem:
                         _col_header = headers[col_idx] if col_idx < len(headers) else ""
-                        _col_type = _get_col_type(table_stem, sheet_name, _col_header)
-                        if _col_type:
+                        _col_cfg = _get_col_constraints(table_stem, sheet_name, _col_header)
+                        if _col_cfg:
                             bad = []
                             for fn in all_files:
                                 ft = cell_formulas.get(fn)
                                 if not ft:
                                     continue
                                 ev = _eval_row_formula(ft, file_versions.get(fn, []))
-                                ok_t, _ = _check_formula_result_type(_col_type, ev)
+                                ok_t, _ = _check_formula_result_type(_col_cfg, ev)
                                 if not ok_t:
                                     bad.append(fn)
                             if bad:
-                                formula_notice += f"；{','.join(bad)} 公式重算结果与列类型 {_col_type} 不符"
+                                formula_notice += f"；{','.join(bad)} 公式重算结果与列约束（{_col_cfg.get('type','')}）不符"
                     # versions 改填各文件公式文本，供前端冲突选择 UI 按公式文本展示与对比
                     versions = {fn: cell_formulas.get(fn) for fn in all_files}
                     # 显示值取基准公式文本（基准无公式时取第一个有公式的版本）
@@ -952,6 +1072,7 @@ def compare_sheet(
                     formula_source = ""
                     preview_val = None
                     formula_text = base_formula_text
+                    formula_row_drift = False  # 已经是文本冲突，漂移提示无意义，不重复标
                 else:
                     # 公式文本一致 → 不算修改；引用值变化 → 标 formula_changed（原行为不变）
                     has_conflict = False
@@ -961,9 +1082,10 @@ def compare_sheet(
                     formula_changed = False
                     formula_source = ""
                     preview_val = None
-                    # 列类型约束（value_constraints.yaml）：用于校验重算结果类型
+                    # 列约束（value_constraints.yaml + rules/validate 深合并）：
+                    # 用于校验重算结果类型/取值范围
                     _col_header = headers[col_idx] if col_idx < len(headers) else ""
-                    _col_type = _get_col_type(table_stem or "", sheet_name, _col_header) if table_stem else ""
+                    _col_cfg = _get_col_constraints(table_stem or "", sheet_name, _col_header) if table_stem else {}
                     if base_formula_text:
                         # 公式文本一致 → 用各版本输入值重算，看是否与基准缓存不同
                         base_eval = _eval_row_formula(
@@ -979,9 +1101,9 @@ def compare_sheet(
                                 formula_changed = True
                                 formula_source = fname
                                 preview_val = other_eval
-                                # 公式重算结果类型校验：衍生输入导致重算结果与列类型不符时提示
-                                if _col_type:
-                                    ok_t, why_t = _check_formula_result_type(_col_type, other_eval)
+                                # 公式重算结果约束校验：衍生输入导致重算结果与列类型/范围不符时提示
+                                if _col_cfg:
+                                    ok_t, why_t = _check_formula_result_type(_col_cfg, other_eval)
                                     if not ok_t:
                                         formula_notice = f"公式重算结果类型不符（列类型 {_col_type}）：{why_t}"
                                 break
@@ -996,6 +1118,33 @@ def compare_sheet(
                         )
                     # 公式文本（供 inserted 行导出写入公式；matched 行由导出跳过 formula 列保留）
                     formula_text = base_formula_text
+
+                    # ── R25: 公式行漂移风险提示（非冲突）──
+                    # 场景：公式文本各版本完全一致（未落入 formula_conflict，没有"多个不同
+                    # 版本供选择"的场景），但该 PK 行在各版本 sheet 中的物理行位置不同（因
+                    # 其他行被增删导致位移）。若公式内嵌了绝对行号引用（如 =B5*100+C5），
+                    # 引用目标很可能仍指向"位移前"的旧行号——但这属于"潜在风险提示"，
+                    # 不是"合并冲突"：各分支公式文本完全一样，没有版本分歧可供用户选择，
+                    # 不应占用 conflict 状态、不应弹出选版本框。仅作非阻塞标记供人工核实，
+                    # 不计入 conflict_count/stats.conflicts，也不改变 diff_type（仍是
+                    # 'formula'，行为与既有公式列一致，只是附加一个风险位 + 提示文案）。
+                    formula_row_drift = False
+                    row_positions: Dict[str, int] = {}
+                    for _fn in all_files:
+                        _fro = file_versions.get(_fn, [])
+                        _ridx = row_idx_maps.get(_fn, {}).get(id(_fro), -1)
+                        if _ridx >= 0:
+                            row_positions[_fn] = _ridx
+                    if (
+                        len(set(row_positions.values())) > 1
+                        and re.search(r'[A-Za-z]{1,3}\d+', base_formula_text)
+                    ):
+                        formula_row_drift = True
+                        formula_notice = (
+                            f"提示（非冲突）：公式文本未变，但该行在各版本中的物理位置不同"
+                            f"（行号: {row_positions}），很可能是其他行被增删导致位移，"
+                            f"公式里的绝对行号引用未必仍指向本行数据，建议人工核实"
+                        )
             else:
                 # 非公式列：原有类 Git 三方合并判定
                 # #24: 基准值用语义归一 key（"100"==100=="1e2"、"a "=="a"），
@@ -1053,6 +1202,7 @@ def compare_sheet(
                 formula_source = ""
                 formula_text = ""
                 formula_notice = ""
+                formula_row_drift = False  # 非公式列，恒为 False
                 if has_conflict:
                     diff_type = 'content'
 
@@ -1074,6 +1224,10 @@ def compare_sheet(
                 formula_count += 1
                 if formula_changed:
                     formula_changed_count += 1
+                if formula_row_drift:
+                    # R25: 非冲突风险提示，不计入 conflict_count/stats.conflicts，
+                    # 只累计一个独立计数供前端后续可选展示（如"N 处公式行位置漂移，建议核实"）。
+                    formula_row_drift_count += 1
             if comment_conflict:
                 comment_conflict_count += 1
 
@@ -1092,6 +1246,7 @@ def compare_sheet(
                 'comment_conflict': comment_conflict,
                 'author_resolved': author_resolved,
                 'formula_notice': formula_notice,
+                'formula_row_drift': formula_row_drift,
             })
 
         result_rows.append({
@@ -1118,30 +1273,7 @@ def compare_sheet(
 
     # R18: 为 inserted 行标注来源文件/版本（供导出写批注 + 前端来源徽章）
     # 放在 id_resolver 之后：split 会重建行丢弃额外字段，故此处按 versions 重新推导
-    for r in result_rows:
-        if r.get('row_type') != 'inserted':
-            continue
-        cells = r.get('cells') or []
-        src_file = ''
-        for fname in other_files:
-            for c in cells:
-                vers = c.get('versions') or {}
-                if vers.get(fname) is not None:
-                    src_file = fname
-                    break
-            if src_file:
-                break
-        r['source_file'] = src_file
-        r['source_version'] = ''
-        if src_file:
-            # SVN 模式优先取 version_meta 的 rev；demo 模式回退文件名 _N 后缀
-            vm = (version_meta or {}).get(src_file) or {}
-            if vm.get('rev'):
-                r['source_version'] = str(vm['rev'])
-            else:
-                m = re.search(r'_(\d+)\.xlsx$', src_file, re.IGNORECASE)
-                if m:
-                    r['source_version'] = m.group(1)
+    _tag_inserted_source(result_rows, other_files, version_meta)
 
     # 重算统计：仅行级（split 可能增删 inserted 行数）；cell 级统计已在主循环累加，
     # id_resolver split 重建 cells 时 dict(c) 复制保留全部标志位，cell 级计数不变。
@@ -1168,6 +1300,7 @@ def compare_sheet(
             'formula': formula_count,
             'formula_changed': formula_changed_count,
             'formula_conflicts': formula_conflict_count,
+            'formula_row_drift': formula_row_drift_count,
             'comment_conflicts': comment_conflict_count,
         },
         'missing_rows': missing_rows_summary,

@@ -65,7 +65,7 @@ tables:
 | 字段 | 含义 | 校验位置 |
 |---|---|---|
 | `type` | 列类型 | Step2 类型 coerce |
-| `required` | 必填 | Step2 必填检查 |
+| `required` | 必填（`true`）/ 显式声明可留空以摘除误判（`false`） | Step2 必填检查 |
 | `enum` | 枚举白名单 | Step2 枚举检查 |
 | `min` / `max` | 数值范围 | Step2 范围检查 |
 | `unique` | 单列唯一约束 | Step2 唯一性检查 |
@@ -89,6 +89,43 @@ tables:
   （如 `fabao.FabaoLevel` 的 `(法宝id, 法宝等级)`）判成主键冲突。
 - 优先级：`primary_key` 声明 > `table_relations` FK 列推断 > 表头首列兜底。
 - 通配：表名/sheet 名可用 `*`，`_global.md` 里 `id: {unique: true}` 仍是单列兜底。
+
+### 纠正误判：`primary_key: []` 与 `required: false`
+
+未声明 `primary_key` 的 sheet，Step2 会用表头启发式（列名像不像 id/编号）
+**猜**一个主键出来；启发式会猜错——某些列名带 id/编号字样，业务上其实可以
+留空（如"关联ID""备注编号"），被误猜成主键后，缺失会硬阻断写盘。发现误判
+时，两种纠正方式：
+
+1. **该 sheet 根本没有主键**：显式声明空列表，让 Step2 别再猜——
+
+   ```yaml
+   tables:
+     some_table:
+       SomeSheet:
+         primary_key: []   # 明确声明：本 sheet 无主键，不做主键缺失硬阻断
+   ```
+
+2. **某一列被误判必填/主键，其他列没问题**：在该列上显式写 `required: false`
+   摘除，不用整体改主键声明——
+
+   ```yaml
+   tables:
+     some_table:
+       SomeSheet:
+         columns:
+           备注编号:
+             required: false   # 显式声明可留空，覆盖启发式/自动派生的必填判断
+   ```
+
+两者都是"显式声明 > 自动派生/启发式"，优先级最高、立即生效，不需要碰
+`skills/L1_derived/*.yaml` 或改代码。
+
+即便没有写这两条覆盖规则，Step2 现在对**未声明**的启发式主键猜测也会先看
+现有数据实证——如果这一列在已有行里本身就出现过空值，会自动判定"不是真主键"
+而不阻断（不需要用户手动纠正）；实证不足（如全新表）时，可选开启环境变量
+`CODEMAKER_VALIDATOR_LLM_PK_JUDGE=1` 让 LLM 结合表结构和现有样例数据做二次
+判断，仍拿不准则维持原来的硬阻断（宁可多问一次，不漏拦真正的主键缺失）。
 
 ### 通配
 

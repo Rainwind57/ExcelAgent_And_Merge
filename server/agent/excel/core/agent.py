@@ -4104,6 +4104,8 @@ class TableAgent:
             failed: list[str] = []
             failed_by_index: dict[int, tuple[str, str]] = {}
             _auto_cols: list[str] = []  # 快赢3:<auto> 批量收敛,循环后一次性 add
+            # §现象3 列匹配闸门：本行无法绑定表头的字段键台账（供写前 gate 判定）
+            _unmatched_keys: list[str] = []
             for col_name, val in fields.items():
                 # §P0 数字索引键兜底：col_name 为纯数字 = LLM 退化把列序号当键
                 # （fields 键约定为列名，纯数字绝非合法列名）。无法映射真实列，
@@ -4159,6 +4161,9 @@ class TableAgent:
                 m = matcher.match(col_name) or matcher.match_best(col_name)
                 if m is None:
                     res.add("match_field", False, f"未找到列[{col_name}]")
+                    # §现象3：记入未匹配台账，供写前列匹配闸门判定（关键列未匹配→
+                    # 整行判失败禁止脏写；仅非关键列未匹配→写后归正为 partial）。
+                    _unmatched_keys.append(str(col_name))
                     continue
                 col_type = self._get_col_type(stem, sheet, m.column)
                 coerced, warn, error = self._coerce_value(col_type, val, stem, sheet, m.column)
@@ -4234,6 +4239,14 @@ class TableAgent:
             if _auto_cols:
                 res.add("coerce_value", True,
                         f"以下列标 <auto>（用户未提及，留空）：{_auto_cols}")
+            # §现象3 写前列匹配闸门（默认开，CODEMAKER_COLUMN_MATCH_GATE=0 可回退）：
+            # 关键列（复合主键，与 P26"仅强校验主键"一致；单列主键自增故不入闸门）
+            # 未被覆盖 且 存在无法绑定表头的字段键 → 整行判失败、禁止写脏行、回 Step2。
+            # 仅非关键列未匹配 → 放行，写后由 _do_append_write 归正为 partial。
+            _gate_abort = self._column_match_gate_abort(
+                path, sheet, headers, values, _unmatched_keys, res)
+            if _gate_abort:
+                return res
             if values:
                 unresolved_failed = self._unresolved_failed_fields(failed_by_index, values)
                 for _idx, _col, _err in unresolved_failed:
@@ -4583,6 +4596,84 @@ class TableAgent:
             pass
         return False
 
+    def _column_match_gate_abort(self, path: Path, sheet: str, headers: list,
+                                 values: dict[int, any],
+                                 unmatched_keys: list, res: AgentResult) -> bool:
+        """§现象3 写前列匹配闸门：判定是否因关键列未匹配而中止整行写入。
+
+        通用能力（不绑表名/字段特判）：
+          - 关键列口径 = 本 sheet 复合主键列（rules primary_key overlay）。单列主键
+            由 _do_append 自增分配，不参与本闸门（与 P26"仅强校验主键"一致）。
+          - covered = 已成功匹配落库列的表头名；unmatched_keys = 无法绑定表头的字段键。
+          - 复合主键列未覆盖 且 存在未绑定键 → abort：整行判失败、禁止写脏行、
+            结构化 failure 回 Step2；仅非关键列未匹配 → 放行（写后归正 partial）。
+
+        Returns: True=已在 res 记失败并应中止写入; False=放行继续写。
+        """
+        import os as _os
+        if _os.environ.get("CODEMAKER_COLUMN_MATCH_GATE", "1") == "0":
+            return False
+        if not unmatched_keys:
+            return False
+        try:
+            from .pipeline.column_gate import evaluate_column_match_gate
+        except Exception:
+            return False
+        # 关键列：复合主键列（单列主键自增，不入闸门）
+        key_cols: list = []
+        try:
+            if hasattr(self, "_load_composite_pk_for_sheet"):
+                _pk = self._load_composite_pk_for_sheet(path, sheet) or []
+                if len(_pk) >= 2:
+                    key_cols = list(_pk)
+        except Exception:
+            key_cols = []
+        if not key_cols:
+            # 无复合主键声明 → 闸门永不 abort，仅留可追踪跳过痕迹
+            res.add_thinking("校验",
+                f"{sheet} 有未匹配字段键 {unmatched_keys}，无复合主键约束，"
+                f"跳过这些列写其余（partial）")
+            return False
+        # covered：values 里各 1-based 列号对应的表头名
+        covered: list = []
+        for _ci in values.keys():
+            if isinstance(_ci, int) and 1 <= _ci <= len(headers):
+                _h = headers[_ci - 1]
+                if _h:
+                    covered.append(str(_h).split(":")[0].strip())
+        verdict = evaluate_column_match_gate(
+            unmatched_keys=unmatched_keys,
+            covered_columns=covered,
+            key_columns=key_cols,
+        )
+        if verdict["action"] != "abort":
+            if verdict["action"] == "partial":
+                res.add_thinking("校验", verdict["reason"])
+            return False
+        # abort：整行判失败、禁止写盘、结构化 failure 回 Step2
+        res.add("column_match_gate", False, verdict["reason"])
+        res.ok = False
+        res.message = (
+            f"新增 {sheet} 关键列未匹配（{verdict['uncovered_key_columns']}），"
+            f"无法绑定的字段键：{verdict['unmatched_keys']}。已阻止写入残缺行，"
+            f"请修正列名后重试。")
+        try:
+            res.failures.append({
+                "type": "COLUMN_MATCH_GATE",
+                "table": path.stem,
+                "sheet": sheet,
+                "col": ",".join(verdict["uncovered_key_columns"]),
+                "root_cause": "关键列(复合主键)未匹配表头,存在无法绑定的字段键",
+                "attempted_strategies": ["ColumnMatcher.match", "match_best"],
+                "suggestion": "核对字段键与真实表头列名,或回 Step2 重规划",
+                "snip": str(verdict["unmatched_keys"]),
+                "status": "blocked",
+                "user_reply": "",
+            })
+        except Exception:
+            logger.debug("column_match_gate failure 记录失败", exc_info=True)
+        return True
+
     def _do_append(self, path: Path, sheet: str, values: dict[int, any],
                    res: AgentResult) -> AgentResult:
         """实际调用 cli.append_row 追加行并填充结果。
@@ -4736,10 +4827,14 @@ class TableAgent:
                 # 导致 Step6 汇总判失败但行实际已落库（状态不一致：写成功报失败）。
                 # 写后验证通过 = 行已正确落库 → 恢复 res.ok=True 并标 partial 让前端知
                 # 有字段被跳过。failed 列已在 steps 的 coerce_failed 显示。
-                _had_coerce_fail = any(
-                    getattr(s, "name", "") == "coerce_value" and not getattr(s, "ok", True)
+                # §现象3 统一"两套标准"：match_field 软失败（非关键列未匹配被跳过，
+                # 关键列未匹配已在写前闸门 abort）与 coerce_value 同口径归正为 partial，
+                # 消除"行已落库却整体判失败"的自相矛盾。
+                _had_soft_skip = any(
+                    getattr(s, "name", "") in ("coerce_value", "match_field")
+                    and not getattr(s, "ok", True)
                     for s in res.steps)
-                if _had_coerce_fail:
+                if _had_soft_skip:
                     res.ok = True
                     res.partial = True
                 res.add("append_row", True, f"新增行 row={new_row} 值={values}（写后验证通过）")
@@ -5849,9 +5944,11 @@ class TableAgent:
                 # → Step3 仍用原 99001 → 冲突落 Step3。现移到 _apply_ai_intent_check
                 # 之后对【最终 intents】校验（见 _step2_validate_intents 调用点），
                 # Step2 才是指令最终确认点。
-        # 1. 规则模板先跑已知模式(npc_dialogue/item/...)的精确结构 op(dialog/option/spawn/
-        #    prefab 产 produces/consumes 连线)作基线,保证已知模式稳覆盖。
-        if not _4step_parsed:
+        # §去硬模板：规则模板(npc_dialogue/item/...)硬编码正则抽字段，默认关闭
+        # （legacy V2=0 路径，仅 CODEMAKER_EXCEL_PIPELINE_V2=0 时可达）。
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启。
+        if not _4step_parsed and os.getenv(
+                "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") != "1":
             detect_action = detect_cross_table_action(orig_text)
             if detect_action:
                 splitter = CrossTableIntentSplitter()
@@ -5930,17 +6027,13 @@ class TableAgent:
                     cross_intents_nl = llm_intents
                     _stream_res.add_thinking(
                         "解析",
-                        f"LLM 链分解 {len(cross_intents_nl)} 条意图(splitter 模板不完整,LLM 为主)")
+                        f"LLM 链分解 {len(cross_intents_nl)} 条意图")
             except Exception:
-                logger.warning("LLM 链分解失败,保留 splitter 结果", exc_info=True)
-        # 模板产出仅作 baseline，不短路 LLM 拆分。
-        # 撤掉 fast-path 命中即跳过 parse_multi 的硬编码（combat_reward 等模板字段写死
-        # 会漏子任务，如「封印魔龙」只产 2 条丢 8 条）。现一律让 LLM parse_multi
-        # 补全：模板已覆盖的表 LLM 重拆也无害（同表去重），未覆盖的表 LLM 才是主力。
-        # 模板产出仅在 parse_multi 产空时作兜底 baseline（见下方 not intents 分支）。
+                logger.warning("LLM 链分解失败", exc_info=True)
+        # LLM 为主拆分路径，不再短路。
         if cross_intents_nl:
             _stream_res.add_thinking("解析",
-                f"模板/规则 baseline 产出 {len(cross_intents_nl)} 条意图"
+                f"已有产出 {len(cross_intents_nl)} 条意图"
                 f"(模式={cross_action},覆盖 {len(covered_stems)} 表),交 LLM 补全")
         # Step1 AI 校验 + LLM 补全：parse_multi 对整句重拆，补模板漏掉的子任务。
         # 命中跨表模式也不再跳过——准确率优先于避免超时（用户明确：不少指令是关键）。
@@ -5982,19 +6075,19 @@ class TableAgent:
                 intents = _merged
                 _stream_res.add_thinking("解析",
                     f"LLM parse_multi 补全得 {len(_llm_intents)} 条"
-                    f" + 模板补 {len(intents) - len(_llm_intents)} 条 = {len(intents)} 条")
+                    f" + 已有 {len(intents) - len(_llm_intents)} 条 = {len(intents)} 条")
             else:
                 intents = list(cross_intents_nl)
                 _stream_res.add_thinking("解析",
-                    f"LLM parse_multi 产空,回退模板 baseline {len(intents)} 条")
+                    f"LLM parse_multi 产空,沿用已有产出 {len(intents)} 条")
         else:
             intents = list(cross_intents_nl)
         # Step1 AI 校验：发现「主线意图遗漏」→ 回退 parse_multi 重拆（Test2 修复）；
         # 其余仅记录建议。
         intents = self._apply_ai_intent_check(intents, text, _stream_res,
                                                _4step_parsed=_4step_parsed)
-        # parse_multi 产空且无模板 baseline 时的二级兜底（逐段 parse）。
-        # 新逻辑上方已优先走 parse_multi，此处仅在 intents 仍空时兜底。
+        # LLM parse_multi 产空时，逐段 LLM 解析补全。
+        # 新逻辑上方已优先走 parse_multi，此处仅在 intents 仍空时尝试。
         if not intents:
             from ..parser.multi_intent_splitter import split_multi_intent
             try:
@@ -6015,7 +6108,7 @@ class TableAgent:
                 intents = fallback_intents
                 _stream_res.add_thinking(
                     "解析",
-                    f"parse_multi 产空，回退逐条 parse 成功 {len(intents)} 条意图")
+                    f"parse_multi 产空，逐段 LLM 解析得 {len(intents)} 条意图")
             if not intents:
                 err_type = getattr(self.parser, "_last_error_type", "") or "parse_failed"
                 _stream_res.ok = False

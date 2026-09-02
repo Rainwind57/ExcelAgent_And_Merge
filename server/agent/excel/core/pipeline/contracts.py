@@ -169,6 +169,28 @@ class StepContext:
     # 二次确认令牌（V2 透传）：run_v2 入口接收，Step3 用于 run_single 短路
     # __delete_confirmed__/__anti_pattern_confirmed__ 等标记，恢复 V2 下确认链路。
     confirm_token: Optional[str] = None
+    # ── 主线1 通用 resolution 台账（跨 Step 结构化决策账本）──
+    # issue_id(内容派生,稳定) → resolution。让所有 ask/校验结论只发生一次、
+    # 跨 Step/跨 deepcopy 稳定。以 dict 形态持久（随 ctx 携带），懒初始化为
+    # ResolutionLedger（见 resolution_ledger.py）。默认空 dict，不影响既有流程。
+    resolution_ledger: dict = field(default_factory=dict)
+
+    def get_ledger(self):
+        """返回 ResolutionLedger 视图（从 resolution_ledger dict 构造，回写同步）。
+
+        懒加载：首次访问从持久 dict 复原；调用方 record 后需 sync_ledger 回写，
+        或直接用返回对象操作后调 sync_ledger。为简化，这里返回持有引用的对象，
+        其内部 _items 与本 ctx.resolution_ledger 通过 sync_ledger 同步。
+        """
+        from .resolution_ledger import ResolutionLedger
+        return ResolutionLedger.from_dict(self.resolution_ledger)
+
+    def sync_ledger(self, ledger) -> None:
+        """把 ResolutionLedger 回写到持久 dict（跨 Step 携带）。"""
+        try:
+            self.resolution_ledger = ledger.to_dict()
+        except Exception:
+            pass
 
     def set_result(self, step_id: str, result: StepResult) -> None:
         self.results[step_id] = result

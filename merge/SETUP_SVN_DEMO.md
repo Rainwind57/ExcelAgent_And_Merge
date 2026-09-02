@@ -25,6 +25,11 @@ uv run python merge/scripts/setup_svn_demo.py --clean
 | 4 | `seed_svn_conflicts2.py` | 扩充冲突点 |
 | 5 | `seed_more_conflicts.py` | 再追加冲突 |
 | 6 | `seed_safe_conflicts.py` | 补充安全冲突 |
+| 7 | `seed_formula_row_drift.py` | 制造"公式行漂移"风险场景（非冲突，residence_putuan.xlsx，dev1 插行/dev2 删行，硬编码行号公式未随之调整，标记 formula_row_drift=True 供人工核实） |
+| 8 | `seed_formula_text_conflict.py` | 制造真正的"公式文本冲突"（guild.xlsx Const E27，dev1/dev2/trunk 三边公式文本互不相同，diff_type=formula_conflict） |
+| 9 | `seed_formula_sum_conflict.py` | 制造 SUM 区间公式冲突（guild.xlsx Const F 列，matched 行 GUILD_CREATE_COST_NUM，dev1/dev2 各写不同 SUM(...) 区间） |
+| 10 | `seed_delete_modify_conflict.py` | 制造"一边删除、另一边修改"冲突（reward.xlsx id=10005，dev1 删行/dev2 改行，presence 字段反推是哪一侧删的） |
+| 11 | `seed_ref_integrity_sync.py` | 制造"ID 重映射后外键引用同步更新"演示场景（ability.xlsx，dev2 的被动id 引用即将被重映射的 id=9999，重映射生效后自动同步为新编号） |
 
 完成后生成：
 

@@ -23,8 +23,14 @@ try:
 except ImportError:
     _HAS_YAML = False
 
-# server/agent/excel/skills/merge_strategies.yaml
-_SKILL_PATH = Path(__file__).resolve().parent.parent / "agent" / "excel" / "skills" / "merge_strategies.yaml"
+# server/agent/excel/skills/L1_derived/merge_strategies.yaml
+# R25-fix: 之前少写了 L1_derived 这一层目录，导致这个文件从来没被真正加载到
+# （_load_strategies 靠 mtime 判断文件是否存在，路径错了直接判"不存在"返回空
+# dict，_get_column_strategy 永远走 default='manual'），外键列识别
+# （strategy=='base_priority'）在 ref_integrity.py::_load_fk_columns 里因此
+# 永远拿不到任何外键候选列，"ID 重映射后同步外键引用"这条链路实际从未生效过。
+# 对照同文件里 value_constraints.yaml（下面一行）的正确写法改的。
+_SKILL_PATH = Path(__file__).resolve().parent.parent / "agent" / "excel" / "skills" / "L1_derived" / "merge_strategies.yaml"
 # value_constraints.yaml：列类型约束（int/float/bool/string…）
 _VC_PATH = Path(__file__).resolve().parent.parent / "agent" / "excel" / "skills" / "L1_derived" / "value_constraints.yaml"
 
@@ -32,11 +38,28 @@ _cache: dict = {}
 _vc_cache: dict = {}
 
 
-def _load_value_constraints() -> dict:
-    """加载 value_constraints.yaml，返回 {stem: {sheet: {columns: {col: {type}}}}}。
+def _deep_merge_tables(base: dict, extra: dict) -> dict:
+    """递归深合并 extra 到 base（extra 优先，dict 级深合并，list 整值替换）。
 
-    缺失或无 yaml 时返回空 dict 降级（不做类型校验，保持旧行为）。
-    与 agent.core.agent._load_value_constraints 同源数据，engine 层独立缓存避免跨层耦合。
+    与 agent.core.agent._deep_merge_tables 同语义，engine 层独立实现避免跨层 import。
+    """
+    for k, v in extra.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge_tables(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def _load_value_constraints() -> dict:
+    """加载 value_constraints.yaml，并叠加 rules/validate 用户规则 overlay。
+
+    返回 {stem: {sheet: {columns: {col: {type, min, max, unique, regex}}}}}。
+    overlay 来自 rules_loader.get_value_constraints_overlay()（rules/validate/*.md，
+    与 agent.core.agent._load_value_constraints 读的是同一份用户规则源），engine 层
+    独立合并与缓存（mtime 校验 L1 派生文件），不 import agent.py 本体，避免跨层耦合。
+    required/enum 不在此校验范围内（走 Agent 侧 Step2 独立通道，Merge 引擎不做业务
+    语义裁决，只做"改动后的值有没有明显违反已知约束"的兜底）。
     """
     try:
         cur_mtime = _VC_PATH.stat().st_mtime if _VC_PATH.exists() else 0.0
@@ -45,25 +68,40 @@ def _load_value_constraints() -> dict:
     if _vc_cache.get("mtime") == cur_mtime and "data" in _vc_cache:
         return _vc_cache["data"]
     if not _HAS_YAML or not cur_mtime:
-        _vc_cache["data"] = {}
-        _vc_cache["mtime"] = cur_mtime
-        return {}
-    data = yaml.safe_load(_VC_PATH.read_text(encoding="utf-8")) or {}
-    _vc_cache["data"] = data.get("tables", {}) or {}
+        tables: dict = {}
+    else:
+        data = yaml.safe_load(_VC_PATH.read_text(encoding="utf-8")) or {}
+        tables = data.get("tables", {}) or {}
+    try:
+        from agent.excel.core.rules_loader import get_value_constraints_overlay
+        overlay = get_value_constraints_overlay()
+        if overlay:
+            _deep_merge_tables(tables, overlay)
+    except Exception:
+        pass
+    _vc_cache["data"] = tables
     _vc_cache["mtime"] = cur_mtime
     return _vc_cache["data"]
 
 
-def _get_col_type(table_stem: str, sheet: str, col_header: str) -> str:
-    """查列类型标注（int/float/bool/string/…）。未命中返回空串（不校验）。"""
+def _get_col_constraints(table_stem: str, sheet: str, col_header: str) -> dict:
+    """查列完整约束配置（type/min/max/unique/regex）。未命中返回空 dict（不校验）。
+
+    数据来自 L1 自动派生 + rules/validate 用户规则深合并（见 _load_value_constraints）。
+    """
     header = (col_header or "").split(":")[0].strip()
     if not header:
-        return ""
+        return {}
     vc = _load_value_constraints()
     sheets = vc.get(table_stem, {})
     cols = sheets.get(sheet, {}).get("columns", {})
     info = cols.get(header) or cols.get(col_header)
-    return ((info or {}).get("type", "") or "").strip().lower()
+    return info or {}
+
+
+def _get_col_type(table_stem: str, sheet: str, col_header: str) -> str:
+    """查列类型标注（int/float/bool/string/…）。未命中返回空串（不校验）。"""
+    return (_get_col_constraints(table_stem, sheet, col_header).get("type", "") or "").strip().lower()
 
 
 def _check_value_type(col_type: str, value) -> tuple[bool, str]:
@@ -91,6 +129,43 @@ def _check_value_type(col_type: str, value) -> tuple[bool, str]:
         if isinstance(value, bool) or str(value).strip().lower() in ("0", "1", "true", "false", "是", "否"):
             return True, ""
         return False, f"bool 类型不符：{value!r}"
+    return True, ""
+
+
+def _check_value_constraints(col_cfg: dict, value) -> tuple[bool, str]:
+    """完整列约束校验：type + min + max + regex（来自 rules/validate overlay 深合并）。
+
+    在 _check_value_type 基础上补上 rules/validate 才有的 min/max（数值范围）和
+    regex（格式正则）两项，让 Merge 自动合并也能吃到用户在 rules/validate/*.md 里
+    显式声明的取值约束，不再局限于 L1 自动派生的纯类型信息。
+    unique 需要整列扫描，单值校验做不了，沿用旧行为交人工判断；required/enum 走
+    Agent 侧 Step2 独立通道，engine 层不做业务语义裁决。
+    """
+    if not isinstance(col_cfg, dict) or not col_cfg:
+        return True, ""
+    type_ok, type_reason = _check_value_type(col_cfg.get("type", ""), value)
+    if not type_ok:
+        return False, type_reason
+    if value is None:
+        return True, ""
+    vmin, vmax = col_cfg.get("min"), col_cfg.get("max")
+    if vmin is not None or vmax is not None:
+        try:
+            fv = float(str(value))
+            if vmin is not None and fv < float(vmin):
+                return False, f"值 {value!r} 小于规则允许的最小值 {vmin}"
+            if vmax is not None and fv > float(vmax):
+                return False, f"值 {value!r} 大于规则允许的最大值 {vmax}"
+        except (ValueError, TypeError):
+            pass  # 非数值时 min/max 不适用，已由 type 校验兜底
+    pattern = col_cfg.get("regex")
+    if pattern:
+        try:
+            import re as _re
+            if not _re.search(str(pattern), str(value)):
+                return False, f"值 {value!r} 不匹配规则要求的格式 {pattern!r}"
+        except Exception:
+            pass
     return True, ""
 
 
@@ -247,18 +322,19 @@ def auto_merge_sheet(
             strategy, reason = _get_column_strategy(table_stem, sheet_name, str(col_header) if col_header else "")
             new_val = _apply_strategy(strategy, versions, base_name, other_files)
 
-            # 类型校验：value_constraints.yaml 标注为 int/float/bool 的列，自动采纳值不符类型
-            # 时降级为人工（避免把等级列 int 写成 string、把数值列写成文本等"看似合理但
+            # 约束校验：value_constraints.yaml（L1 派生 type）+ rules/validate 用户
+            # 规则（min/max/regex）深合并后的列约束，自动采纳值不符时降级为人工
+            # （避免把等级列 int 写成 string、把数值列写成超范围值等"看似合理但
             # 违约束"的自动合并）。实际用户改动一般符合约束，此处只兜底异常分支。
-            col_type = _get_col_type(table_stem, sheet_name, str(col_header) if col_header else "")
-            type_ok, type_reason = _check_value_type(col_type, new_val) if new_val is not None else (True, "")
+            col_cfg = _get_col_constraints(table_stem, sheet_name, str(col_header) if col_header else "")
+            type_ok, type_reason = _check_value_constraints(col_cfg, new_val) if new_val is not None else (True, "")
 
             if new_val is None or not type_ok:
                 manual_left.append({
                     "ri": ri, "ci": ci,
                     "strategy": "manual" if new_val is None else strategy,
                     "reason": (reason or "未配置自动策略") if new_val is None
-                              else f"{reason or '自动策略'}；类型校验未通过：{type_reason}",
+                              else f"{reason or '自动策略'}；约束校验未通过：{type_reason}",
                     "col_header": col_header,
                     "type_violation": not type_ok,
                 })

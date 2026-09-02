@@ -121,4 +121,44 @@ def extract_fields_from_text(
     }
 
 
-__all__ = ["extract_fields_from_text"]
+def has_uncovered_literal_values(text: str, field_values: Iterable[Any]) -> bool:
+    """判断原文里的引号名/裸数字是否已经被现有字段值（跨所有 intent）覆盖。
+
+    用途：LLM 字段自检补漏（_llm_complete_fields）调用前的低成本预判——若原文
+    出现的字面值全部已在产出字段里出现过，大概率无字段可补，跳过一次昂贵 LLM
+    调用；只要有一个字面值未被覆盖，才值得真调 LLM 去核对。
+
+    纯启发式、无表名/列名硬编码，只做字符串包含关系比较（宁可误判"值得查"，
+    不可误判"无需查"而漏检——包含关系判断天然偏保守/宽松，不会漏报）。
+
+    Args:
+        text: 原始指令文本。
+        field_values: 当前所有 intent 已产出的字段值（跨表/跨 intent 合并）。
+
+    Returns:
+        True 表示存在原文字面值未被现有字段覆盖（值得调 LLM 核对）；
+        False 表示原文所有引号名/裸数字都已出现在某个字段值里（可跳过）。
+    """
+    text = str(text or "")
+    have = " \x00 ".join(str(v).strip() for v in (field_values or []) if str(v).strip())
+    if not have:
+        # 没有任何已产出字段值，但原文有字面值候选 → 明显值得一查
+        for m in _QUOTE_RE.finditer(text):
+            if m.group(1).strip():
+                return True
+        for m in _NUMBER_RE.finditer(text):
+            if m.group(1).strip():
+                return True
+        return False
+    for m in _QUOTE_RE.finditer(text):
+        v = m.group(1).strip()
+        if v and v not in have:
+            return True
+    for m in _NUMBER_RE.finditer(text):
+        v = m.group(1).strip()
+        if v and v not in have:
+            return True
+    return False
+
+
+__all__ = ["extract_fields_from_text", "has_uncovered_literal_values"]

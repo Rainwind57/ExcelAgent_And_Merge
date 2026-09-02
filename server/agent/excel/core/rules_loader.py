@@ -210,9 +210,40 @@ def get_required_fields_overlay() -> dict:
             if not isinstance(cols, dict):
                 continue
             req = [c for c, m in cols.items()
-                   if isinstance(m, dict) and m.get("required")]
+                   if isinstance(m, dict) and m.get("required") is True]
             if req:
                 out.setdefault(stem, {})[sheet] = req
+    return out
+
+
+def get_required_false_overlay() -> dict:
+    """校验规则中显式 ``required: false`` 的列 → {stem: {sheet: [col, ...]}}。
+
+    用途：从（启发式命名/派生 required_fields.yaml）自动判定的必填名单里
+    显式"摘除"误判列——例如某列名带"编号"字样被启发式误当必填/主键，
+    但业务上该列其实可以留空。用户在 rules/validate/*.md 写：
+
+        columns:
+          备注编号:
+            required: false
+
+    即可覆盖掉自动派生结果，不再对该列触发 MISSING_REQUIRED 硬阻断。
+    与 get_required_fields_overlay()（只做加法）配套，构成"先加后减"的
+    双向覆盖，而不是只能越描越死的单向硬规则。
+    """
+    rules = load_validate_rules()
+    out: dict = {}
+    for stem, sheets in rules.items():
+        if not isinstance(sheets, dict):
+            continue
+        for sheet, cfg in sheets.items():
+            cols = cfg.get("columns") if isinstance(cfg, dict) else None
+            if not isinstance(cols, dict):
+                continue
+            excl = [c for c, m in cols.items()
+                    if isinstance(m, dict) and m.get("required") is False]
+            if excl:
+                out.setdefault(stem, {})[sheet] = excl
     return out
 
 
@@ -296,10 +327,15 @@ def get_primary_key_overlay() -> dict:
     多个等级行（如 fabao.FabaoLevel 的 (法宝id, 法宝等级)）判成 PK 冲突。
 
     返回结构：
-        {stem_lower: {sheet_name: ["col1", "col2"]}}
+        {stem_lower: {sheet_name: ["col1", "col2"]}}  # 正常声明
+        {stem_lower: {sheet_name: []}}                # 显式声明"该 sheet 无主键"
     - 列名保留 yaml 原写法（中文表头/英文规范名），由消费者按 _norm_col 比对。
     - 单元素 ``primary_key: [id]`` 等价于旧列级 ``unique: true``，两条路收敛。
     - ``*`` 通配（``"*"`` 表/sheet）照常解析，由消费者按通配规则应用。
+    - ``primary_key: []``（显式空列表，区别于"没写这个 key"）表示用户明确声明
+      "这个 sheet 没有主键/不需要必填校验"，用于覆盖掉表头启发式（含 id/编号
+      字样的列）误判成主键的情况——某些键名字像主键，实际业务上可以留空，
+      写 ``primary_key: []`` 即可让 Step2 不再对该 sheet 做主键缺失硬阻断。
     """
     rules = load_validate_rules()
     out: dict = {}
@@ -309,16 +345,21 @@ def get_primary_key_overlay() -> dict:
         for sheet, cfg in sheets.items():
             if not isinstance(cfg, dict):
                 continue
+            if "primary_key" not in cfg:
+                continue  # 未声明该 key，交内层启发式推断，不覆盖
             pk = cfg.get("primary_key")
             if isinstance(pk, str):
                 pk = [pk]
-            if not isinstance(pk, (list, tuple)) or not pk:
+            if pk is None:
+                pk = []
+            if not isinstance(pk, (list, tuple)):
                 continue
-            # 去空/去类型后缀但保留大小写（消费者统一 _norm_col 比对）
+            # 去空/去类型后缀但保留大小写（消费者统一 _norm_col 比对）；
+            # pk 为空列表时 cols 也是空列表——显式声明"无主键"，仍要落盘
+            # （不能因为结果为空就 continue 跳过，否则退化成"未声明"）。
             cols = [str(c).split(":")[0].strip() for c in pk
                     if c is not None and str(c).strip()]
-            if cols:
-                out.setdefault(str(stem).lower(), {})[str(sheet)] = cols
+            out.setdefault(str(stem).lower(), {})[str(sheet)] = cols
     return out
 
 
@@ -335,6 +376,7 @@ __all__ = [
     "load_validate_rules",
     "get_value_constraints_overlay",
     "get_required_fields_overlay",
+    "get_required_false_overlay",
     "get_enum_overlay",
     "get_enum_map_overlay",
     "get_primary_key_overlay",

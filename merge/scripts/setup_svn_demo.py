@@ -1,12 +1,22 @@
 """一键搭建 SVN demo fixture（merge/svn/demo_svn/），供合并引导使用。
 
-串联 6 个脚本：
+串联 8 个脚本：
   1. build_svn_real.py          — svnadmin create + trunk/dev1/dev2/subdev_1 基础（r1-r8）
   2. build_svn_small_branches.py — 新增 4 个小表分支 dev3/dev4/subdev_2/subdev_3（排除大表）
   3. seed_svn_conflicts.py       — 追加首批冲突数据
   4. seed_svn_conflicts2.py     — 扩充冲突点
   5. seed_more_conflicts.py     — 再追加
   6. seed_safe_conflicts.py     — 补充安全冲突
+  7. seed_formula_row_drift.py — 制造"公式行漂移"风险场景（非冲突，插/删行导致硬编码行号
+                                  公式错位，标记 formula_row_drift=True，不占用 conflict）
+  8. seed_formula_text_conflict.py — 制造真正的"公式文本冲突"（guild.xlsx Const E27，
+                                  三边公式文本互不相同，diff_type=formula_conflict）
+  9. seed_formula_sum_conflict.py — 制造 SUM 区间公式冲突（guild.xlsx Const F 列，
+                                  matched 行，dev1/dev2 各写不同 SUM(...) 区间）
+  10. seed_delete_modify_conflict.py — 制造"一边删除、另一边修改"冲突（reward.xlsx
+                                  id=10005，dev1 删行/dev2 改行，presence 反推来源）
+  11. seed_ref_integrity_sync.py — 制造"ID 重映射后外键引用同步更新"演示场景
+                                  （ability.xlsx，dev2 的被动id 引用即将被重映射的 id=9999）
 
 其他用户 clone 项目后，只需本机装有 svn CLI（TortoiseSVN 等），直接运行：
     python merge/scripts/setup_svn_demo.py
@@ -26,7 +36,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# 搭建顺序：build 必须最先，4 个 seed 依赖已建好的 wc
+# 搭建顺序：build 必须最先，9 个 seed 依赖已建好的 wc
 PIPELINE = [
     "build_svn_real.py",
     "build_svn_small_branches.py",   # 新增 4 个小表分支 dev3/dev4/subdev_2/subdev_3
@@ -34,6 +44,11 @@ PIPELINE = [
     "seed_svn_conflicts2.py",
     "seed_more_conflicts.py",
     "seed_safe_conflicts.py",
+    "seed_formula_row_drift.py",     # 公式行漂移风险场景（residence_putuan.xlsx dev1/dev2）
+    "seed_formula_text_conflict.py",  # 公式文本冲突（guild.xlsx Const E27）
+    "seed_formula_sum_conflict.py",   # SUM 区间公式冲突（guild.xlsx Const F 列）
+    "seed_delete_modify_conflict.py",  # 删除/修改冲突（reward.xlsx id=10005）
+    "seed_ref_integrity_sync.py",      # ID 重映射后外键引用同步更新（ability.xlsx）
 ]
 
 

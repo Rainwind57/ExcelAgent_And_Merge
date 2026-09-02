@@ -15,6 +15,7 @@ formula_notice 规则——总体逻辑与模式一（merge_branch）完全一�
 """
 import asyncio
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -35,6 +36,7 @@ from pydantic import BaseModel
 from config import MERGE_DIR
 from engine.models import CompareResponse, FileGroup
 from engine.parallel_compare import parallel_map_tables
+from engine.cross_table_fk import sync_cross_table_refs
 from routers.merge_stages import (
     _build_group, _unresolved_conflicts, _sheets_stats,
     _collect_changes, _append_audit, _validate_apply_refs,
@@ -55,6 +57,9 @@ from routers.merge_branch import (
 )
 
 router = APIRouter(prefix="/api/merge/subdir", tags=["merge-subdir"])
+
+logger = logging.getLogger(__name__)
+
 
 # list_subdir_dirs 扫描时跳过的目录：
 #  - repo/：真实 SVN 仓库库体（svnadmin 产物，非工作副本）
@@ -481,6 +486,13 @@ def subdir_compare(req: SubdirCompareRequest, progress_cb=None):
         _tbl_progress = (lambda d, t: progress_cb("compare_tables", d, t)) if progress_cb else None
         for gn, fg in parallel_map_tables(_table_worker, table_names, progress_cb=_tbl_progress):
             groups[gn] = fg
+        # 跨表外键同步（第三遍，与 merge_branch.branch_compare 同款逻辑）：本次
+        # 请求内全部表 compare 完成后才有完整的 id_mapping/主键集合，据此按
+        # cross_table_fk.CROSS_TABLE_FK_RULES 全局扫描一次同步跨文件外键。
+        try:
+            sync_cross_table_refs(groups)
+        except Exception:
+            logger.warning("跨表外键同步失败，忽略（不阻断 compare）", exc_info=True)
         # 结构增删标注：base/src/tgt 三方 {group: set(sheet)} 对比
         try:
             base_sheets = _dir_sheet_sets(base_export_dir) if base_export_dir else {}

@@ -192,17 +192,27 @@ class Step2ValidateSubAgent:
         def _is_hard_validation_issue(error_type: str = "",
                                       issue_type: str = "",
                                       root: str = "") -> bool:
+            # 建议5：结构化优先——按 IssueType/error_type 命中硬集合判 hard（不看
+            # root 文案）。收口到纯函数 issue_severity.classify_severity（已单测）。
+            from .issue_severity import classify_severity, HARD_ISSUE_TYPES
+            if classify_severity(error_type, issue_type) == "hard":
+                return True
+            root_l = str(root or "").strip().lower()
+            # 结构化兜底：root 恰为硬类型 token（如 "type_mismatch: ..."）——匹配的是
+            # 类型 token 而非自然语言文案，仍属结构化。
+            if any(root_l == t or root_l.startswith(f"{t}:")
+                   for t in HARD_ISSUE_TYPES):
+                return True
+            # 兼容过渡（待 validator 对"指令明确给值但漏产的业务必填"发结构化 severity
+            # 后删除）：仅此一处窄字符串兜底。其余一律按结构化判定 soft。
             vals = {
                 str(error_type or "").strip().lower(),
                 str(issue_type or "").strip().lower(),
             }
-            root_l = str(root or "").strip().lower()
-            return bool(vals & _HARD_TYPES) or any(
-                root_l == t or root_l.startswith(f"{t}:")
-                for t in _HARD_TYPES
-            ) or (("missing_required" in vals or root_l.startswith("missing_required:"))
-                  and ("业务必填列" in str(root or "")
-                       or "指令明确" in str(root or "")))
+            return (("missing_required" in vals
+                     or root_l.startswith("missing_required:"))
+                    and ("业务必填列" in str(root or "")
+                         or "指令明确" in str(root or "")))
 
         if not intents:
             # Step1 已 hard 报错，Step2 无需校验
@@ -320,17 +330,56 @@ class Step2ValidateSubAgent:
                     is_hard=_is_hard_validation_issue(key[0], issue_type, root)))
 
         ok = not any(e.is_hard for e in errors)
+        # ── 最小清单#6 + P2：结构化 replan_hints（缺表/缺 producer/悬空FK/缺列），
+        # 供 Step1/planner 下一轮修计划。additive：默认不开 hard gate，仅作 artifacts
+        # 附带信息（灰度纪律），不改变 Step2 判定。
+        try:
+            from .replan_hints import build_replan_hints
+            _replan_hints = build_replan_hints(errors)
+        except Exception:
+            logger.debug("Step2 replan_hints 生成失败(非致命)", exc_info=True)
+            _replan_hints = []
+        # 内容派生），跨 Step/跨 deepcopy 稳定，供后续步与后续轮幂等去重。additive：
+        # 不改变校验行为，仅登记（PK 修正 + 被跳过的校验结论）。
+        try:
+            _ledger = ctx.get_ledger()
+            _changed = False
+            for it in validated:
+                _ex = getattr(it, "extras", None) or {}
+                _tbl = getattr(it, "table_hint", "") or ""
+                _sht = getattr(it, "sheet_hint", "") or ""
+                _pk = _ex.get("_pk_resolved")
+                if isinstance(_pk, dict) and _pk.get("col"):
+                    _ledger.record_kv(
+                        kind="pk_resolved", table=_tbl, sheet=_sht,
+                        col=_pk.get("col"), value=_pk.get("value"),
+                        resolved=_pk.get("value"), source="validator",
+                        detail="Step2 PK 修正/分配")
+                    _changed = True
+                _val = getattr(it, "validation", None)
+                if _val is not None and getattr(_val, "skipped", False):
+                    _ledger.record_kv(
+                        kind="validation_skipped", table=_tbl, sheet=_sht,
+                        col="", value=_sht, status="skipped", source="user",
+                        detail="Step2 用户跳过/未完成修正")
+                    _changed = True
+            if _changed:
+                ctx.sync_ledger(_ledger)
+        except Exception:
+            logger.debug("Step2 resolution 台账登记失败(非致命)", exc_info=True)
         return StepResult(
             step_id=STEP2_VALIDATE, ok=ok,
             errors=errors, warnings=warnings,
             metrics={"dur_ms": int((time.time() - t0) * 1000),
                      "intents": len(validated),
+                     "replan_hints": len(_replan_hints),
                      "step1_quality_hard": (
                          step1_quality or {}).get("hard_count", 0)
                      if isinstance(step1_quality, dict) else 0},
             artifacts={"validated": validated,
                        "step1_quality": step1_quality,
                        "semantic_plan": semantic_plan,
+                       "replan_hints": _replan_hints,
                        "semantic_compile_report": semantic_compile_report})
 
 

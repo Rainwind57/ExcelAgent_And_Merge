@@ -187,6 +187,52 @@ check("T10 未重映射行无标记",
       all(not r.get("original_pk") for r in non_remapped),
       str([r.get("original_pk") for r in non_remapped]))
 
+# ── Test 11: 跨 sheet 外键同步（同一张表文件内，聚合两个 sheet 的 id_mapping）──
+# 场景：item.xlsx 内 ItemBase(sheet A) 主键被重映射 99999→100000，
+# Equipment(sheet B) 有一行"分解获得道具id"（base_priority 外键）引用了旧 99999。
+# _build_group 修复前只把"自己 sheet 的 id_mapping"传给 validate_sheet_references，
+# Equipment 的重映射记录来自 ItemBase（另一个 sheet），会被漏掉——必须聚合两个
+# sheet 的 id_mapping 后一起传，才能命中同步。
+# table_stem 用叶子名"item"（对应 merge_strategies.yaml 的 tables.item 键），
+# 不能直接传嵌套 group_name"item/item"（另一处已修复的 bug，见 _build_group）。
+ITEM_HEADERS = ["物品编号", "分解获得道具id"]
+id_mapping_from_itembase_sheet = [
+    {"file": "item_dev2.xlsx", "old_pk": "99999", "new_pk": "100000"},
+]
+equipment_rows = [
+    _row("1", "matched", [
+        _cell(0, 1, {"base.xlsx": 1}),
+        _cell(1, 99999, {"item_dev2.xlsx": 99999}),  # 引用同文件另一 sheet 即将被重映射的旧 PK
+    ]),
+]
+# 聚合后传入（修复后 _build_group 的行为）：应命中同步
+r11 = validate_sheet_references(
+    list(equipment_rows), ITEM_HEADERS, "item", "Equipment",
+    id_mapping_from_itembase_sheet, {},
+)
+check("T11 跨sheet聚合后同步", str(r11 is not None), "")
+check("T11 跨sheet外键同步为100000",
+      str(equipment_rows[0]["cells"][1]["value"]) == "100000",
+      str(equipment_rows[0]["cells"][1].get("value")))
+check("T11 remapped_refs=1", r11["remapped_refs"] == 1, str(r11))
+
+# 对照：修复前的行为（只传 Equipment 自己的 id_mapping=[]）应该同步不到
+equipment_rows_unfixed = [
+    _row("1", "matched", [
+        _cell(0, 1, {"base.xlsx": 1}),
+        _cell(1, 99999, {"item_dev2.xlsx": 99999}),
+    ]),
+]
+r11b = validate_sheet_references(
+    equipment_rows_unfixed, ITEM_HEADERS, "item", "Equipment", [], {},
+)
+check("T11b 未聚合时不同步（复现修复前的漏检）",
+      str(equipment_rows_unfixed[0]["cells"][1]["value"]) == "99999",
+      str(equipment_rows_unfixed[0]["cells"][1].get("value")))
+check("T11b 未聚合时悬空（99999 不在本表主键集合）",
+      len(r11b["dangling"]) == 1, str(r11b["dangling"]))
+
+
 if __name__ == "__main__":
     passed = sum(1 for _, c, _ in results if c)
     print(f"\n{passed}/{len(results)} passed")

@@ -510,6 +510,8 @@ def _apply_edits_to_workbook(wb, req):
                         continue  # 第1列为主键，不写
                     # 公式列：保留公式文本，不覆写为缓存值（重算交由 libreoffice）
                     # 公式冲突选版本(formula_resolved=True)→ 写回用户选定的公式文本(formula_text)
+                    # R25: formula_row_drift 只是 diff_type='formula' 上附加的非冲突风险位，
+                    # 不是独立 diff_type，天然已被下面这一行覆盖，不需要额外分支。
                     if cell.diff_type == 'formula':
                         if getattr(cell, 'formula_resolved', False) and getattr(cell, 'formula_text', ''):
                             ws.cell(row=target_row, column=cell.col + 1, value=cell.formula_text)

@@ -17,8 +17,9 @@ class CellData(BaseModel):
     comments: Dict[str, Optional[str]] = {}  # M7: 各文件版本的单元格批注文本，key=文件名
     comment_conflict: bool = False     # M7: 批注是否存在冲突（各版本批注文本不同）
     author_resolved: bool = False       # D3: 该单元格是否因"同作者多次修改取最后一次值"规则被自动合并（供审计/前端展示，公式列恒为 False）
-    formula_notice: str = ""           # D3/4.1: 公式列各版本公式文本本身不一致时的人工确认提示文案（非公式列恒为空串）
+    formula_notice: str = ""           # D3/4.1: 公式列各版本公式文本本身不一致时的人工确认提示文案（非公式列恒为空串）；R25 起也复用来承载 formula_row_drift 的非阻塞风险提示文案
     formula_resolved: bool = False     # 公式冲突选版本后标记：apply 时据此写回用户选定的公式文本（formula_text），而非跳过保留原公式
+    formula_row_drift: bool = False    # R25: 公式列专属、非冲突的风险位——公式文本各版本完全一致（不落入 formula_conflict），但该行在各版本中的物理行号不同（其他行被增删导致位移），公式内硬编码的绝对行号引用可能已不再指向本行数据。不计入 conflict/stats.conflicts，不弹版本选择框，仅供前端可选地展示一个非阻塞提示（如 tooltip 图标），具体文案见 formula_notice
 
 
 # 一行数据模型，包含主键和该行所有单元格

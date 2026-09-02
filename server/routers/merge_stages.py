@@ -334,8 +334,12 @@ def _build_group(
     # 跨表主键聚合（用重映射后的合并行，供跨表外键悬空检测）。
     # 全表均无外键列时跳过：collect_cross_sheet_pks 需遍历全部行构建主键集合，
     # validate_sheet_references 遇空 fk_cols 早返回不会用到，跳过省全量行扫描。
+    # Bug: 嵌套表（group_name 形如 "item/item"）直接拿 group_name 去查
+    # merge_strategies.yaml 的 tables[key] 是精确 dict 查找，yaml 里键是叶子名
+    # "item"，"item/item" 永远查不到 → _load_fk_columns 恒空 → 嵌套表的外键列
+    # （FK 同步/悬空检测）从未生效。改用与 compare_sheet 一致的叶子名 table_stem。
     has_any_fk = any(
-        _load_fk_columns(m["headers"], group_name, sn)
+        _load_fk_columns(m["headers"], table_stem, sn)
         for sn, m in merged_by_sheet.items()
     )
     cross_sheet_pks = collect_cross_sheet_pks([
@@ -346,15 +350,26 @@ def _build_group(
     # 第二遍：引用完整性校验，组装 SheetDiff（透传 id_resolution 供前端展示重编号徽标）
     # 注：合并场景下 base 仅供参考，只有继承的两个版本可供选择，不提供"采纳推荐 base"
     #   的策略推荐（避免误把 base 当可选结果）；冲突解决交由 AI 建议（调接口综合推荐）。
+    # 跨 sheet 外键同步：聚合同一分组（同一张表文件）内所有 sheet 的 id_mapping。
+    # 之前每个 sheet 只拿到自己的 id_mapping，若外键列引用的是同文件另一个 sheet
+    # 的主键（如 item.xlsx Equipment.回收利用的道具id → 同文件 ItemBase 主键，
+    # 该主键恰好在合并时被重映射），validate_sheet_references 因看不到那条
+    # 重映射记录而无法同步，外键值会停留在旧编号（悬空或误指向新占用行）。
+    # id_mapping 以 (file, old_pk) 为键，各 sheet 沿用同一套派生文件名，聚合不会
+    # 产生跨 sheet 误命中。
+    group_id_mapping: List[dict] = []
+    for merged in merged_by_sheet.values():
+        group_id_mapping.extend((merged.get("id_resolution") or {}).get("id_mapping", []))
+
     sheets_diff = {}
     for sheet_name, merged in merged_by_sheet.items():
         headers = merged["headers"]
         rows = merged["rows"]
         id_resolution = merged.get("id_resolution")
-        id_mapping = (id_resolution or {}).get("id_mapping", [])
-        # 引用校验：消费 id_mapping 同步外键值 + 检测悬空（rows 为 compare 产出的 dict，就地同步生效）
+        # 引用校验：消费聚合后的 id_mapping 同步外键值（含跨 sheet 命中）+ 检测悬空
+        # （rows 为 compare 产出的 dict，就地同步生效）
         ref_res = validate_sheet_references(
-            rows, headers, group_name, sheet_name, id_mapping, cross_sheet_pks,
+            rows, headers, table_stem, sheet_name, group_id_mapping, cross_sheet_pks,
         )
         # 重编号后按主键自然排序，同步重映射 conflicts/dangling 的 ri（前端按 ri 定位行）
         rows = _sort_rows_by_pk(rows, id_resolution, ref_res)
@@ -441,9 +456,12 @@ def _validate_apply_refs(mr: MergeRequest, extra_pks: Optional[Dict[str, set]] =
                 cross_sheet_pks.setdefault(str(headers[PK_COL]), set()).update(disk)
     sheets_report: Dict[str, Any] = {}
     dangling_total = 0
+    # 同 _build_group：merge_strategies.yaml 的 tables 键是叶子名（如 "item"），
+    # mr.group_name 嵌套表形如 "item/item" 直接查会恒空，取叶子名与 _build_group 一致。
+    table_stem = mr.group_name.rsplit("/", 1)[-1] if mr.group_name else None
     for sd in plain:
         ref_res = validate_sheet_references(
-            sd["rows"], sd["headers"], mr.group_name, sd["name"], [], cross_sheet_pks,
+            sd["rows"], sd["headers"], table_stem, sd["name"], [], cross_sheet_pks,
             extra_local_pks=(extra_pks or {}).get(sd["name"]),
         )
         sheets_report[sd["name"]] = ref_res

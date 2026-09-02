@@ -50,8 +50,13 @@ def test_run_legacy_when_env_off():
         os.environ.pop("CODEMAKER_EXCEL_PIPELINE_V2", None)
 
 
-def test_step1_splitter_baseline_fallback_on_empty():
-    """Step1 产空 → splitter_baseline 兜底（Mock ParseAgent.parse 返空）。"""
+def test_step1_splitter_baseline_fallback_on_empty(monkeypatch):
+    """Step1 产空 → splitter_baseline 兜底（Mock ParseAgent.parse 返空）。
+
+    §去硬模板：Step1 层 splitter_baseline 二次兜底默认已关闭，本测试显式重新
+    开启验证该分支自身逻辑仍正确（功能未删除，只是默认不再介入主链路）。
+    """
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
     from server.agent.excel.core.pipeline import (
         Step1ParseSubAgent, StepContext, STEP1_PARSE,
     )

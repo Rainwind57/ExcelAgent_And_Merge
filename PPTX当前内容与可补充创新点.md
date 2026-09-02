@@ -5,7 +5,7 @@
 > 1. 不单独开"术语解释"段落，术语在**第一次出现的句子里用括号就近解释**；
 > 2. **只有英文/外来术语，或确实生僻的专业词才加括号注释**（比如 `BM25`、`schema`、`quarantine`），日常中文词（别名、账本、休眠等）靠上下文和例子理解，不重复加注；
 > 3. 每页仍保留：一句话定位 →【配图占位】→ 例子 → 数据表（如有）。
-> **代码基准**：2026-09-02，已核对 `agent.py`、`parse_agent.py`、`decompose_agent.py`、`step1_parse_subagent.py`、`subagent/base.py` 等最新改动。
+> **代码基准**：2026-09-02，已核对 `agent.py`、`parse_agent.py`、`decompose_agent.py`、`step1_parse_subagent.py`、`subagent/base.py`、`subagent/validator_agent.py`、`core/rules_loader.py` 等最新改动。
 
 ---
 
@@ -23,7 +23,7 @@
   → Step3确定性执行(18) → 写后自检与自修复(19) → 数据安全：备份与回滚(20)
   → Step4汇总与自学习(21) → 业务规则库(22)
   → Skill系统四层结构(23) → Skill系统生成审核机制(24) → Skill系统效果数据(25)
-  → 本轮优化①②③(26) → 本轮优化④⑤⑥⑦(27)
+  → 本轮优化①②③(26) → 本轮优化④⑤⑥⑦⑧(27)
 第三章 Merge：三方合并引擎(28-37)
   章节封面(28) → 三方合并模型(29) → 总体流程与模拟环境(30)
   → merge-base定位与优化链(31) → Compare四层比较(32) → ID重映射(33)
@@ -322,6 +322,8 @@ rapidfuzz_score = WRatio × 0.5 + token_set_ratio × 0.3 + partial_ratio × 0.2
 | L1 AI 裁决 | 1 次模型调用 | 自然语言覆盖度、值合理性判断 |
 | L2 人工 gate | 交互卡片 | 用户改字段/值后续跑三层校验 |
 
+> L0 里"主键必填""业务必填豁免"这两条不是铁板一块——第 27 页⑧号创新点讲了它们怎么从"猜错就死拦"变成"猜错能自动/半自动纠正"。
+
 ---
 
 ## 第 17 页｜Step2 交互修正（现状与计划）
@@ -505,11 +507,11 @@ rapidfuzz_score = WRatio × 0.5 + token_set_ratio × 0.3 + partial_ratio × 0.2
 
 ---
 
-## 第 27 页｜本轮代码优化④⑤⑥⑦：已落地但 PPT 里还没讲过的创新点
+## 第 27 页｜本轮代码优化④⑤⑥⑦⑧：已落地但 PPT 里还没讲过的创新点
 
-**一句话**：这四项都是**真实写进代码主链路**的能力，比堆旧数据更能体现工程严谨性。
+**一句话**：这五项都是**真实写进代码主链路**的能力，比堆旧数据更能体现工程严谨性。
 
-【配图占位：四个功能图标+简短说明卡片】
+【配图占位：五个功能图标+简短说明卡片】
 
 - **④ dict 列 lint**（**lint** 原意是代码静态检查，这里指对列值做结构合法性检查）：某些列本身就应该存字典/JSON 格式的值（比如"效果参数"列存 `{atk: 10, def: 5}`），以前的检查逻辑会把这种合法结构误判成"模型编造的假字段"直接清空。
   例子：策划让 Agent 给技能表填"效果参数：攻击+10，防御+5"，Agent 正确生成了 `{"atk": 10, "def": 5}`，旧逻辑因为它是个嵌套结构而误清空，新逻辑能区分"合法 dict 列"和"真的幻觉字段"。
@@ -527,6 +529,24 @@ rapidfuzz_score = WRatio × 0.5 + token_set_ratio × 0.3 + partial_ratio × 0.2
   例子：Step3 执行到"新增奖励"这一步失败（因为它引用的活动行还没建出来），系统会把这个失败信息和剩下的任务交给模型，模型给出新计划"先补建活动行，再重试奖励行"，系统按新计划重跑。
   现状：功能已实现并接入主流程，默认关闭，需要显式开启。
   代码位置：`server/agent/excel/subagent/replan_agent.py`，`agent.py:_run_replan_phase`。
+
+- **⑧ Step2 硬规则纠偏：显式覆盖 + 经验证据自动降级 + 可选 LLM 二次判断（已扩展到 3 处，含 1 个真实覆盖盲区修复）**：Step2 里有两条规则原来是纯关键词/命名猜测，猜错了没有任何纠正入口，只能硬拦。这次先修主键必填，再把同一套思路扩展到业务必填豁免；另外核对"枚举歧义"这条时，发现它本来就有 LLM 但存在一个真实的覆盖盲区，一并修掉：
+
+  **主键必填**：以前列名里带"id"/"编号"字样就当主键，猜错了（比如"关联ID""备注编号"这类本来可以留空的辅助列）也照样硬拦。排查还顺带挖出一个**隐藏 bug**：判断"是否已显式声明主键"这条分支里读取的字段 tip 从来就没有过，导致这条分支从建好起就没生效过，100% 全靠命名子串硬判——属于"代码里写着两条路径，实际只有一条在跑"的典型隐性缺陷。
+  修复后三层纠偏：① 规则文件里显式声明 `primary_key: []`（该 sheet 无主键）或 `required: false`（该列可留空），立即生效、优先级最高；② 无显式声明时先看现有数据，该列本来就有空值就自动降级不阻断，零模型调用；③ 实在判断不了（全新表、无历史数据）时，可选开一个环境变量让模型二次判断，默认关闭，判不出来则保持硬拦截。
+
+  **业务必填豁免**：判断"用户是否明确要求填某一列"（比如活动名称、发送人、奖励）原来全靠 4 条硬编码关键词/正则豁免（全空列/否定式/同族已填/反规范化镜像列），覆盖不到的表达方式就会被误判"漏填"，直接硬报错并把整条新增操作标记跳过。
+  新增第 5 条豁免：前 4 条都没命中时，可选开一个环境变量，让模型结合用户原始指令二次判断"这一列是不是真的被要求填了"，判"可选"才豁免；判不出来/模型不可达/没开启开关，一律维持原来的硬拦截——不会因为加了 LLM 就变得敢"悄悄放行"。
+
+  两条规则用的是**同一套安全阀设计**：显式配置 > 数据/规则确定性证据 > 可选 LLM 兜底 > 保守硬拦截，LLM 永远只在前面几层都判断不了的边界情况才出场，且只会让"过度硬拦"变宽松，绝不会让"真该拦的"变松。
+  例子（主键）：某张新表"关联ID"被误判成必填主键，写盘被硬拦截；开发者一看现有数据本来就有空的"关联ID"，或直接在规则文件补一行 `required: false`，问题立刻解决。
+  例子（业务必填）：用户说"开一个活动叫'九霄论剑'，发送人相关的以后再补"，"发送人"命中了硬编码关键词但用户其实没打算现在填——开启开关后模型能正确判定"可选"，不再因为这一列没填就把整条新增操作拦下来。
+  数据：主键纠偏新增 5 项回归测试、业务必填豁免新增 5 项回归测试，全部通过；全量测试套件（1500+ 项）跑完无新增回归。
+  代码位置：`server/agent/excel/subagent/validator_agent.py`（`_is_pk_missing`/`_pk_inferred_downgrade`/`_llm_judge_pk_required`/`_check_business_required_pre_add`/`_llm_judge_business_required`）、`server/agent/excel/core/rules_loader.py`（`get_primary_key_overlay`/`get_required_false_overlay`）；测试见 `test_pk_infer_downgrade_and_overrides.py`、`test_business_required_llm_judge.py`。
+
+  **枚举歧义（排查后发现是"覆盖盲区"而不是"没有 LLM"）**：中文标签→枚举数字码的推断（`_auto_resolve_enum`）本来就是 LLM 实现，且默认开启，一开始以为这条不用补。但真去代码里核对判断顺序后，发现了一个真实的覆盖盲区：原代码是"先判断有没有交互回调（前端会话），没有就直接跳过"，这一判断排在调用 LLM 自动推断**之前**——导致所有没有前端会话的场景（批量执行、CI 跑批）永远走不到这段自动推断，中文标签落进枚举列既不会被自动纠正，又因为这类问题本身不算硬阻断，会被原样写盘。现在把自动推断的调用顺序提到"判断有没有回调"之前，让批量场景也能吃到同一次自动纠正，不依赖有没有前端会话，且完全不影响原来有会话时的行为。
+  数据：该修复是顺序调整，不改变既有函数逻辑，风险低；具体行为不变的前提（LLM 不可达/无 session 时优雅返回，回落原逻辑）保持不动。
+  代码位置：`server/agent/excel/subagent/validator_agent.py`（`_auto_resolve_enum` 调用点顺序调整，函数本身未改）。
 
 > 对照第 11 页：L4 语义召回（BM25）同样属于"已经是真实实现"的能力，很多人会误以为只是设计稿，实际代码里默认开启。
 
@@ -762,6 +782,8 @@ final = 0.60 × llm_conf + 0.25 × rev_conf + 0.15 × value_conf
 | Replan-on-failure 默认开启 | 已实现，当前默认关闭，待更多场景验证后转默认开 |
 | 编号账本跨分支查重全面推广 | 单目录已生效，跨分支需要显式配置分支列表 |
 | 聊天区降噪 | 仅完成模拟压测验证，尚未合入生产代码 |
+| Step1 二次核对接入主流程 | `ai_verify_intents` 已实现且在旧 6-Step 路径生效，尚未接入现有 4-Step 主链路，评估中 |
+| Step1 长指令实体级分块 | 已定位到"复合长指令单次拆解漏项"是当前最大失分项，分块方案设计中，尚未实现 |
 | 更多端到端回归 | 持续补充复杂跨表/跨分支场景 |
 
 ---
@@ -827,6 +849,12 @@ final = 0.60 × llm_conf + 0.25 × rev_conf + 0.15 × value_conf
 | Skill 系统阈值常量 | `server/agent/excel/core/skill_updater.py` |
 | 语义召回实现 | `server/agent/excel/rag_searcher.py` + `server/agent/excel/locator/table_locator.py` |
 | Replan-on-failure 实现 | `server/agent/excel/subagent/replan_agent.py` |
+| 主键硬规则纠偏实现 | `server/agent/excel/subagent/validator_agent.py`（`_is_pk_missing`/`_pk_inferred_downgrade`/`_llm_judge_pk_required`）+ `server/agent/excel/core/rules_loader.py`（`get_primary_key_overlay`/`get_required_false_overlay`） |
+| 主键硬规则纠偏测试 | `server/tests/test_pk_infer_downgrade_and_overrides.py` |
+| 业务必填豁免 LLM 二次判断实现 | `server/agent/excel/subagent/validator_agent.py`（`_check_business_required_pre_add`/`_llm_judge_business_required`） |
+| 业务必填豁免 LLM 二次判断测试 | `server/tests/test_business_required_llm_judge.py` |
+| 枚举歧义非交互覆盖盲区修复 | `server/agent/excel/subagent/validator_agent.py`（`_auto_resolve_enum` 调用点顺序调整） |
+| 枚举歧义非交互覆盖盲区测试 | `server/tests/test_enum_autofix_noninteractive.py` |
 | 写后自检与自修复实现 | `server/agent/excel/core/agent.py:_run_verify_repair_loop` + `server/agent/excel/repair/` |
 | 备份/回滚/存档实现 | `server/agent/excel/core/agent.py`（`_compute_rollback_targets`/`_rollback_write`/`_save_nl_checkpoint`） |
 | AI 冲突置信度公式 | `server/services/agent_service.py:91-167` |

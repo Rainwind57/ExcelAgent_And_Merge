@@ -230,6 +230,30 @@ class Step3ExecuteSubAgent:
         # 短路越界 LLM 路径（_phase_execute 各 gate 读 thread-local 属性）。
         # services 侧不再冗余写 agent 实例属性，状态唯一来源 = agent thread-local。
 
+        # ── P3：dry-run/preflight 报告（观测只读，additive，不改写盘行为）──
+        # 预演：逐条检查是否有"上游无法产出"的悬空占位符（producer label 全局不存在）。
+        # 真实回滚/快照非本次范围（step3:296）；此处只产报告供 Step4 诊断。
+        _preflight_report: dict = {}
+        try:
+            from .preflight import build_preflight_report
+            _pf_items = []
+            for _pi, _pit in enumerate(ordered):
+                _u = _find_unresolved_placeholders(_pit)
+                _unk = [x for x in _u
+                        if _OO._norm_name(x) not in _known_producer_labels]
+                _pf_items.append({
+                    "index": _pi + 1,
+                    "table": getattr(_pit, "table_hint", "") or "",
+                    "sheet": getattr(_pit, "sheet_hint", "") or "",
+                    "action": getattr(_pit, "action", "") or "",
+                    "resolvable": True,
+                    "unresolved_placeholders": _unk,
+                })
+            _preflight_report = build_preflight_report(_pf_items)
+        except Exception:
+            logger.debug("Step3 preflight 预演报告生成失败(非致命)", exc_info=True)
+            _preflight_report = {}
+
         try:
             for i, it in enumerate(ordered):
                 _val = getattr(it, "validation", None)
@@ -648,6 +672,7 @@ class Step3ExecuteSubAgent:
                 # 收敛冗余键：原 steps/all_steps、results/all_result_rows 同源，删冗余。
                 "subtasks": sub_tasks, "results": all_result_rows,
                 "steps": all_steps, "failures": all_failures,
+                "preflight": _preflight_report,
             })
 
 

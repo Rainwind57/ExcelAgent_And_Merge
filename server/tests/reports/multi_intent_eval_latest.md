@@ -1,6 +1,6 @@
 # 多指令场景评测报告（capability: multi-intent-evaluation）
 
-- 生成时间: 2026-08-10 12:08:17
+- 生成时间: 2026-09-02 17:26:03
 - 纯逻辑层：OperationOrchestrator 直接测试（拓扑/回滚/加速比）
 - serve 层：复用 task_chain_eval（需 codemaker serve）
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | topo_correct_rate | 拓扑序满足依赖约束 | 1.0000 |
 | rollback_correct_rate | 跨表事务回滚标记正确 | 1.0000 |
-| multi_intent_speedup | 并行 vs 顺序加速比 | 3.882 |
+| multi_intent_speedup | 并行 vs 顺序加速比 | 3.875 |
 | split_correct_rate | 拆分意图数匹配期望 | 0.0000 |
 | step2_success_rate | 分区阶段成功率 | 0.0000 |
 | step3_success_rate | 计划阶段成功率 | 0.0000 |
@@ -25,9 +25,8 @@
 |---|---|---|---|---|
 | linear_chain | [0, 1, 2, 3] | 0 | - | ✓ |
 | diamond_deps | [0, 1, 2, 3] | 0 | - | ✓ |
-| independent | [0, 1, 2] | 0 | - | ✓ |
 | cycle_fallback | [0, 1] | 0 | ✓ | ✓ |
-| multi_producer_seq | [0, 1, 2] | 2 | ✓ | ✓ |
+| independent | [0, 1, 2] | 0 | - | ✓ |
 
 ## 三、回滚场景明细
 
@@ -40,9 +39,9 @@
 ## 四、并行加速比
 
 - 意图数: 4
-- 顺序: 321.3ms
-- 并行: 82.8ms
-- **加速比: 3.882**
+- 顺序: 321.4ms
+- 并行: 82.9ms
+- **加速比: 3.875**
 
 ## 五、serve 依赖层（拆分/分阶段/闭环）
 

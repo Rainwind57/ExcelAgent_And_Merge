@@ -2,7 +2,7 @@
   "summary": {
     "topo_correct_rate": 1.0,
     "rollback_correct_rate": 1.0,
-    "multi_intent_speedup": 3.882,
+    "multi_intent_speedup": 3.875,
     "split_correct_rate": 0,
     "step2_success_rate": 0,
     "step3_success_rate": 0,
@@ -40,18 +40,6 @@
         "correct": true
       },
       {
-        "id": "independent",
-        "order": [
-          0,
-          1,
-          2
-        ],
-        "violated": [],
-        "expect_cycle": false,
-        "cycle_detected": false,
-        "correct": true
-      },
-      {
         "id": "cycle_fallback",
         "order": [
           0,
@@ -63,30 +51,21 @@
         "correct": true
       },
       {
-        "id": "multi_producer_seq",
+        "id": "independent",
         "order": [
           0,
           1,
           2
         ],
-        "violated": [
-          {
-            "producer": 1,
-            "consumer": 0
-          },
-          {
-            "producer": 2,
-            "consumer": 0
-          }
-        ],
-        "expect_cycle": true,
-        "cycle_detected": true,
+        "violated": [],
+        "expect_cycle": false,
+        "cycle_detected": false,
         "correct": true
       }
     ],
     "topo_correct_rate": 1.0,
-    "n_cases": 5,
-    "n_correct": 5
+    "n_cases": 4,
+    "n_correct": 4
   },
   "rollback": {
     "scenarios": [
@@ -121,9 +100,9 @@
   },
   "speedup": {
     "n_intents": 4,
-    "serial_elapsed_ms": 321.3,
-    "parallel_elapsed_ms": 82.8,
-    "multi_intent_speedup": 3.882
+    "serial_elapsed_ms": 321.4,
+    "parallel_elapsed_ms": 82.9,
+    "multi_intent_speedup": 3.875
   },
   "serve": {
     "skipped": "未启用 --serve"

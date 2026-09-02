@@ -14,6 +14,7 @@ copyfrom 得到，不再依赖文件夹模拟快照（该方式已下线）。
 """
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ from pydantic import BaseModel
 from config import MERGE_DIR, SVN_DEMO_WC_DIR
 from engine.models import CompareResponse, MergeRequest, SheetMergeData
 from engine.parallel_compare import parallel_map_tables
+from engine.cross_table_fk import sync_cross_table_refs
 from routers.merge_stages import (
     _build_group, _unresolved_conflicts, _sheets_stats,
     _collect_changes, _append_audit, _validate_apply_refs,
@@ -47,6 +49,9 @@ from routers.svn_history import _resolve_branch_path, _run_soft, _resolve_branch
 from routers.structural import compute_structural_changes, build_display_group, build_display_sheet
 # 4.4 worker 隔离:不再模块级 import services.agent_service(触发 agent/__init__ 重依赖,
 # ProcessPool spawn 子进程导入本模块会死锁)。_prefetch_ai_suggestions 内已改局部 import。
+
+logger = logging.getLogger(__name__)
+
 
 # AI 建议预取后台线程池（fire-and-forget，绝不阻塞 compare 响应）
 _AI_PREFETCH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-prefetch")
@@ -1298,6 +1303,16 @@ def branch_compare(req: BranchCompareRequest, progress_cb=None):
         _tbl_progress = (lambda d, t: progress_cb("compare_tables", d, t)) if progress_cb else None
         for gn, fg in parallel_map_tables(_table_worker, table_names, progress_cb=_tbl_progress):
             groups[gn] = fg
+        # 跨表外键同步（第三遍）：每张表各自 _build_group 时已同步"同表内跨 sheet"
+        # 外键（见 merge_stages.py::_build_group 的 id_mapping 聚合），但不同 xlsx
+        # 文件间的外键（如 item.xlsx Chest.reward ID → reward.xlsx Reward.reward_id）
+        # 各表各自比对，彼此 id_mapping 互不可见，必须等本次请求内全部表 compare
+        # 完成、拿到每张表完整的 id_mapping/主键集合后才能全局扫描一次。
+        # CROSS_TABLE_FK_RULES 未覆盖到的表对（未同时被 compare 到）直接跳过。
+        try:
+            sync_cross_table_refs(groups)
+        except Exception:
+            logger.warning("跨表外键同步失败，忽略（不阻断 compare）", exc_info=True)
         # 结构增删标注：base/src/tgt 三方 {group: set(sheet)} 对比，识别表/sheet 增删
         try:
             base_sheets = _dir_sheet_sets(base_export_dir) if base_export_dir else {}

@@ -204,7 +204,7 @@ ValidateAgentFlow(sub_tasks):
   Output: validated list[SubTask]（fields 已修订）
 ```
 
-**LLM 调用预算**：字段层 0 次 + FK 层 0-1 次（`CODEMAKER_VALIDATOR_LLM_FORWARD_REFS` opt-in）= **0-1 次**
+**LLM 调用预算**：字段层 0 次 + FK 层 0-1 次（`CODEMAKER_VALIDATOR_LLM_FORWARD_REFS` opt-in）+ 未声明主键的启发式主键缺失判定 0-1 次（`CODEMAKER_VALIDATOR_LLM_PK_JUDGE` opt-in，经验证据不足时才触发，见 `_pk_inferred_downgrade`/`_llm_judge_pk_required`）+ 业务必填豁免二次判断 0-1 次/列（`CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED` opt-in，4 条硬编码豁免都没命中时才触发，见 `_llm_judge_business_required`）= **0-2+ 次**（业务必填按列触发，理论上限随缺失列数增长，实际场景通常 0-1 列）；另修复中文枚举标签→数字码推断（`_auto_resolve_enum`，默认开）在无交互回调（批量/CI）场景下完全触达不到的覆盖盲区，使其在非交互路径也生效（该调用不新增预算档位，属于修复既有默认能力的覆盖面，不是新增开关）。
 
 **避免的反模式**：完全并行 FK 层（无法判前向引用是否本批补建）；完全串行字段层（不必要，损失并行的延迟收益）。
 

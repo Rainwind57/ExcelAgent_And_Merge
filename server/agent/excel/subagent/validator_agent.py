@@ -378,7 +378,12 @@ class ValidatorAgent(LLMSubAgent):
                         if sn and sn.lower() == sheet.lower():
                             cols = cs
                             break
-                if cols:
+                # §修复：原 `if cols:` 对显式声明的空列表 `primary_key: []`
+                # （用户明确声明"该 sheet 无主键，别再猜"）也判 falsy 而继续
+                # 往下走启发式兜底，等于让显式声明形同虚设。改判 `is not None`：
+                # 只要 (stem, sheet) 在缓存里有记录（哪怕是空列表），就采信声明，
+                # 不再进入下面的表头启发式猜测。
+                if cols is not None:
                     return [c for c in cols if c]
             elif isinstance(sheets_map, (set, list, tuple)):
                 # 旧结构：整表单列 PK，不区分 sheet
@@ -537,6 +542,124 @@ class ValidatorAgent(LLMSubAgent):
             suggested_combo=_sug_combo,
         ))
         return out
+
+    def _pk_inferred_downgrade(self, stem: str, sheet: str, col: str,
+                               intent=None, data_getter=None) -> bool:
+        """判定"纯命名启发式猜出来的主键列缺失"是否该降级为非阻断。
+
+        只用于**未在 rules/validate primary_key 或 table_relations 里显式
+        声明**的 sheet——这类 sheet 的"主键"完全靠列名像不像 id/编号猜出来，
+        猜错就会把本可留空的列（如"关联ID""备注编号"）误拦成硬阻断。
+
+        两级降级依据（任一成立即降级，不阻断）：
+          1. 经验证据（零 LLM，优先）：现有数据里这一列本身就出现过空值/
+             `<auto>` 占位——直接证明它不是真正必填的主键，用不着猜。
+          2. LLM 二次判断（opt-in，``CODEMAKER_VALIDATOR_LLM_PK_JUDGE=1``，
+             默认关）：经验证据不足（无现有数据/新表）时，把列名 + 同表其他
+             列名 + 少量现有样例值交给 LLM，判断这列是否像"必填主键"还是
+             "可选辅助字段"。LLM 不可达/给不出明确结论 → 不降级，维持原硬
+             阻断（保守兜底，design D2：写前判断宁可多问一次，不可漏拦真
+             缺失的主键）。
+
+        显式声明的 PK（rules primary_key / table_relations）不会走到这里——
+        那部分在 `_is_pk_missing` 里已经按声明直接判定，不受这个降级影响。
+        """
+        try:
+            _ev = {}
+            if intent is None and callable(data_getter):
+                # 未拿到具体 intent（如兜底分支）时无法反查 existing_values，
+                # 经验证据缺失，直接尝试 LLM 判断（若开启），否则不降级。
+                pass
+            elif intent is not None and callable(data_getter):
+                _ev = (data_getter(intent) or {}).get("existing_values") or {}
+            _col_l = str(col or "").lower()
+            _vals = _ev.get(_col_l) if isinstance(_ev, dict) else None
+            if _vals is None and isinstance(_ev, dict):
+                for _k, _v in _ev.items():
+                    if str(_k).lower() == _col_l:
+                        _vals = _v
+                        break
+            if isinstance(_vals, (set, list, tuple)) and _vals:
+                if any(v in (None, "", "<auto>") for v in _vals):
+                    logger.info(
+                        "PK 推断降级[经验证据]:%s.%s 现有数据含空值,判定非真主键,不阻断",
+                        stem, col)
+                    return True
+            if os.environ.get("CODEMAKER_VALIDATOR_LLM_PK_JUDGE") == "1":
+                verdict = self._llm_judge_pk_required(stem, sheet, col, intent, data_getter)
+                if verdict == "optional":
+                    logger.info(
+                        "PK 推断降级[LLM]:%s.%s 判定为可选字段,不阻断", stem, col)
+                    return True
+        except Exception:
+            logger.debug("PK 推断降级判定异常", exc_info=True)
+        return False
+
+    def _llm_judge_pk_required(self, stem: str, sheet: str, col: str,
+                               intent=None, data_getter=None) -> str:
+        """LLM 二次判断:一个仅靠列名启发式猜出来的"主键候选列"，缺失时
+        是否真的该硬阻断写盘。
+
+        返回 'required' | 'optional' | ''（失败/不可达/无法判断）。
+        复用 SubAgent._call_llm_raw（隔离 session，免 R7）。
+
+        opt-in（``CODEMAKER_VALIDATOR_LLM_PK_JUDGE=1``，默认 off）；仅在
+        `_is_pk_missing` 判定"该 sheet 未显式声明主键 + 经验证据不足"时才
+        触发，不介入已显式声明或已有经验证据的路径——保持 design D2（写前
+        主路径尽量零 LLM）的克制，LLM 只兜最后一层不确定的猜测。
+
+        任何失败路径（无 session/异常/空响应/JSON 解析失败/未知 verdict）
+        均返回 ''（= 不降级 = 维持原硬阻断），避免"LLM 不可达时静默放行
+        真缺失的主键"这种更危险的失败模式。
+        """
+        sid = self._ensure_own_session()
+        if not sid:
+            logger.warning("PK 必填 LLM 判定无 session，维持硬阻断 %s.%s", stem, col)
+            return ""
+        headers = []
+        samples: list = []
+        try:
+            if intent is not None:
+                headers, _ = self._get_schema(intent, None)
+            if intent is not None and callable(data_getter):
+                ev = (data_getter(intent) or {}).get("existing_values") or {}
+                for k, v in list(ev.items())[:8]:
+                    if isinstance(v, (set, list, tuple)):
+                        samples.append(f"{k}: {list(v)[:5]}")
+        except Exception:
+            pass
+        prompt = (
+            f"配表校验。表「{stem}」的 sheet「{sheet}」里有一列「{col}」，"
+            f"命名像 id/编号，本次新增行没有填这一列。\n"
+            f"该表其他列名：{headers[:20] if headers else '未知'}\n"
+            f"该表现有数据抽样（部分列的已有取值）：{samples if samples else '无（新表）'}\n"
+            f"判断：这一列在业务上是【必须唯一填写的主键】（缺失应阻断写入，"
+            f"要求用户补一个新 id）还是【可以留空的普通/辅助字段】（缺失可放行，"
+            f"照常写盘）？\n"
+            f"仅输出 JSON：{{\"verdict\":\"required\"或\"optional\",\"reason\":\"简短理由\"}}"
+        )
+        try:
+            raw = self._call_llm_raw(prompt, timeout=30)
+        except Exception:
+            logger.warning("PK 必填 LLM 判定异常，维持硬阻断 %s.%s", stem, col, exc_info=True)
+            return ""
+        if not raw:
+            logger.warning("PK 必填 LLM 判定空响应，维持硬阻断 %s.%s", stem, col)
+            return ""
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            logger.warning("PK 必填 LLM 判定无 JSON，维持硬阻断 %s.%s raw=%s", stem, col, raw[:120])
+            return ""
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            logger.warning("PK 必填 LLM 判定 JSON 解析失败，维持硬阻断 %s.%s", stem, col)
+            return ""
+        v = str(d.get("verdict", "")).lower()
+        if v in ("required", "optional"):
+            return v
+        logger.warning("PK 必填 LLM 判定未知 verdict=%s，维持硬阻断 %s.%s", v, stem, col)
+        return ""
 
     @staticmethod
     def _never_filled_cols(headers: list, existing_values) -> set:
@@ -709,6 +832,19 @@ class ValidatorAgent(LLMSubAgent):
                 # §豁免1：该列历史从未填过 → 非业务必填列，不报
                 if name.lower() in never_used:
                     continue
+                # §豁免5（opt-in，CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED=1，默认
+                # 关）：前 4 条豁免全是硬编码关键词/正则（否定词表、name/desc 关键词
+                # 族），覆盖不到的表达方式就会被误判"漏填"直接硬阻断+skip 整条
+                # intent。开启此开关后，遇到前 4 条都没豁免掉的列，让模型结合原始
+                # 指令二次判断"用户是不是真的要求填这一列"，判"可选"才豁免；
+                # 判不出来/未开启/LLM 不可达 → 维持原硬阻断（宁可多报，不放过真正
+                # 漏填的字段，与 §主键必填 LLM 判断同一保守原则）。
+                if os.environ.get("CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED") == "1":
+                    verdict = self._llm_judge_business_required(name, raw, headers, fields)
+                    if verdict == "optional":
+                        logger.info(
+                            "业务必填降级[LLM]:列[%s] 判定为可选,不报 MISSING_REQUIRED", name)
+                        continue
                 issues.append(Issue(
                     col=name, issue_type=IssueType.MISSING_REQUIRED.value,
                     expected=f"业务必填列「{name}」（指令明确给出该列值，LLM 漏产）",
@@ -719,6 +855,63 @@ class ValidatorAgent(LLMSubAgent):
         except Exception:
             logger.warning("_check_business_required_pre_add 失败", exc_info=True)
         return issues
+
+    def _llm_judge_business_required(self, col: str, raw: str, headers: list,
+                                     fields: dict) -> str:
+        """LLM 二次判断：一个仅靠关键词/正则启发式判出来的"业务必填候选列"，
+        缺失时是否真的该硬阻断（报 MISSING_REQUIRED 并 skip 整条 intent）。
+
+        返回 'required' | 'optional' | ''（失败/不可达/无法判断）。
+        复用 SubAgent._call_llm_raw（隔离 session，免 R7）。
+
+        opt-in（``CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED=1``，默认 off）；仅在
+        `_check_business_required_pre_add` 的 4 条硬编码豁免（全空列/否定式/同族
+        已填/反规范化镜像列）都没能豁免掉某列时才触发，不介入已被豁免或已确认
+        必填的路径——保持 design D2（写前主路径尽量零 LLM）的克制，LLM 只兜最后
+        一层"关键词表覆盖不到"的判断盲区。
+
+        任何失败路径均返回 ''（= 不豁免 = 维持原硬阻断），避免"LLM 不可达时
+        静默放行真正漏填的业务字段"这种更危险的失败模式（与 `_llm_judge_pk_required`
+        同一保守原则）。
+        """
+        sid = self._ensure_own_session()
+        if not sid:
+            logger.warning("业务必填 LLM 判定无 session，维持硬阻断 col=%s", col)
+            return ""
+        _fields_preview = {k: v for k, v in list((fields or {}).items())[:10]}
+        prompt = (
+            f"配表校验。用户原始指令：「{raw}」\n"
+            f"这条指令要新增一行，已经解析出的字段：{_fields_preview}\n"
+            f"目标表还有一列「{col}」，本次没有给它填值。\n"
+            f"判断：结合原始指令的措辞，用户是否**明确要求**填写「{col}」这一列？\n"
+            f"- 如果指令里确实提到了这一列对应的具体内容（哪怕说法不完全一样），"
+            f"判【必须填】；\n"
+            f"- 如果指令根本没提这方面内容，只是列名恰好命中了"
+            f"'名称/描述/发送人/时间/奖励/图标'这类关键词，判【可选，可以留空】。\n"
+            f"仅输出 JSON：{{\"verdict\":\"required\"或\"optional\",\"reason\":\"简短理由\"}}"
+        )
+        try:
+            raw_resp = self._call_llm_raw(prompt, timeout=30)
+        except Exception:
+            logger.warning("业务必填 LLM 判定异常，维持硬阻断 col=%s", col, exc_info=True)
+            return ""
+        if not raw_resp:
+            logger.warning("业务必填 LLM 判定空响应，维持硬阻断 col=%s", col)
+            return ""
+        m = re.search(r"\{.*\}", raw_resp, re.DOTALL)
+        if not m:
+            logger.warning("业务必填 LLM 判定无 JSON，维持硬阻断 col=%s raw=%s", col, raw_resp[:120])
+            return ""
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            logger.warning("业务必填 LLM 判定 JSON 解析失败，维持硬阻断 col=%s", col)
+            return ""
+        v = str(d.get("verdict", "")).lower()
+        if v in ("required", "optional"):
+            return v
+        logger.warning("业务必填 LLM 判定未知 verdict=%s，维持硬阻断 col=%s", v, col)
+        return ""
 
     def _is_pk_like_col(self, col_clean: str, stem: str = "",
                         headers: list = None, sheet: str = "",
@@ -1351,6 +1544,32 @@ class ValidatorAgent(LLMSubAgent):
                         kept = [cols[0]]  # 首列兜底
                 stem_filtered[sheet_lower] = kept
             _filtered[stem_lower] = stem_filtered
+        # §显式排除（required:false）：无论某列是被用户 required:true 覆盖进来，
+        # 还是被上面「PK 集合筛 / 首个含 id・编号 的列 / 首列兜底」这条启发式链路
+        # 硬凑出来的，用户一旦确认它其实可以留空，就在 rules/validate/*.md 加一行
+        #     columns:
+        #       备注编号: {required: false}
+        # 精确摘除，不必绕开整条启发式，也不用为了纠正一个误判列而重写整条规则。
+        try:
+            from ..core.rules_loader import get_required_false_overlay
+            excl_overlay = get_required_false_overlay()
+            for _stem, _sheets in excl_overlay.items():
+                _stem_l = str(_stem).lower()
+                _stem_filtered = _filtered.get(_stem_l)
+                if not _stem_filtered:
+                    continue
+                for _sheet, _cols in _sheets.items():
+                    _sheet_l = str(_sheet).lower()
+                    _kept = _stem_filtered.get(_sheet_l)
+                    if not _kept:
+                        continue
+                    _drop = {str(c).replace("\n", "").replace(" ", "").strip().lower()
+                             for c in _cols}
+                    _stem_filtered[_sheet_l] = [
+                        c for c in _kept
+                        if c.replace("\n", "").replace(" ", "").strip().lower() not in _drop]
+        except Exception:
+            logger.debug("合并必填排除规则失败", exc_info=True)
         self._required_fields = _filtered
         return self._required_fields
 
@@ -2173,6 +2392,15 @@ class ValidatorAgent(LLMSubAgent):
                         _pk_skipped.add(sid)
                         continue
                     _suggested = self._suggest_next_id(_intent, _col, data_getter)
+                    # §现象1/主线1 幂等守卫：若该 intent 的 extras 里已有 _pk_resolved
+                    # 台账（上一轮用户接受的解决，随 deepcopy 携带过来），且解决的正是
+                    # 本列 → 视为已解决，不再重复弹 ask（根治"deepcopy 后 id() 变、局部
+                    # _pk_resolved 集失效 → 同一冲突反复 ask"）。
+                    _prev = (_intent.extras or {}).get("_pk_resolved")
+                    if (isinstance(_prev, dict) and _prev.get("col")
+                            and self._norm_col_name(_prev.get("col")) == self._norm_col_name(_col)):
+                        _pk_resolved.add(sid)
+                        continue
                     _reply = self._ask_pk_conflict(
                         _intent, _col, _val, _suggested)
                     if _reply.get("accept_suggest") and _suggested is not None:
@@ -2340,29 +2568,80 @@ class ValidatorAgent(LLMSubAgent):
         #   RANGE_OUTLIER → 降级 warning（modify 场景离群，add 不影响）
         _hard_issue_types = set(_HARD_ISSUE_TYPES)
         _pk_cols = self._pk_cols_cache or self._load_pk_cols_cache() or {}
+        _pk_downgrade_cache: dict = {}  # (stem_lower, sheet, col_norm) -> bool
         def _is_pk_missing(tip) -> bool:
-            """MISSING_REQUIRED 仅在主键列缺失时才算硬 issue。"""
+            """MISSING_REQUIRED 仅在主键列缺失时才算硬 issue。
+
+            §修复（原 bug）：tip/Issue 本身不带 table/stem 字段（见
+            Issue.to_dict()/assemble_tips，只有 col/issue_type/expected/
+            suggestion/value/suggested_combo + subtask_id），下面
+            ``tip.get("table") or tip.get("stem")`` 恒为空串——"显式声明 PK
+            精确匹配"这条分支从未真正命中过，实际 100% 落到最后一行的列名
+            子串启发式（任何列名带"id"/"编号"子串，不论首列与否、是否真主键，
+            统统硬阻断）。改用同函数内已建好的 ``_sid_to_intent``
+            （按 subtask_id 取回真实 intent）拿 table_hint/sheet_hint，
+            使显式声明（rules/validate primary_key、table_relations）真正生效、
+            优先于启发式；对没有任何声明的 sheet，才走启发式 + 经验证据/
+            LLM 二次判定兜底，避免"关联ID""备注编号"这类实际可空的列被误拦。
+            """
             if (tip.get("issue_type") if isinstance(tip, dict)
                     else getattr(tip, "issue_type", "")) != IssueType.MISSING_REQUIRED.value:
                 return False
-            stem = (tip.get("table") or tip.get("stem") or "") if isinstance(tip, dict) \
-                else (getattr(tip, "table", "") or getattr(tip, "stem", ""))
             col = (tip.get("col") or "") if isinstance(tip, dict) \
                 else getattr(tip, "col", "")
+            _sid = tip.get("subtask_id") if isinstance(tip, dict) else None
+            _it = _sid_to_intent.get(_sid) if _sid is not None else None
+            if _it is not None:
+                stem = getattr(_it, "table_hint", "") or ""
+                sheet = getattr(_it, "sheet_hint", "") or ""
+            else:
+                # 找不到对应 intent（理论上不该发生）→ 退回旧字段名兜底，
+                # 实际几乎恒为空，行为等价于"未声明"。
+                stem = (tip.get("table") or tip.get("stem") or "") if isinstance(tip, dict) \
+                    else (getattr(tip, "table", "") or getattr(tip, "stem", ""))
+                sheet = ""
             pk_set = set()
+            pk_declared = False  # 该 (stem, sheet) 是否在缓存里有明确记录（含空列表）
             if isinstance(_pk_cols, dict):
                 sheets_map = (_pk_cols.get(str(stem or "").lower())
                               or _pk_cols.get(stem) or {})
                 if isinstance(sheets_map, dict):
-                    for cols in sheets_map.values():
-                        if isinstance(cols, (list, tuple, set)):
-                            pk_set.update(_norm_col(c) for c in cols if c)
+                    _cols = sheets_map.get(sheet)
+                    if _cols is None:
+                        for _sn, _cs in sheets_map.items():
+                            if _sn and str(_sn).lower() == str(sheet).lower():
+                                _cols = _cs
+                                break
+                    if _cols is not None:
+                        pk_declared = True
+                        pk_set.update(_norm_col(c) for c in _cols if c)
+                    elif sheet == "":
+                        # 未定位到具体 sheet（如兜底分支未取到 sheet_hint）时，
+                        # 保守合并该 stem 下所有 sheet 的声明列做粗判，不标 declared
+                        # （避免跨 sheet 误判"已声明"而漏检真缺失）。
+                        for _cs in sheets_map.values():
+                            if isinstance(_cs, (list, tuple, set)):
+                                pk_set.update(_norm_col(c) for c in _cs if c)
                 elif isinstance(sheets_map, (list, tuple, set)):
+                    pk_declared = True
                     pk_set.update(_norm_col(c) for c in sheets_map if c)
+            if pk_declared:
+                # 显式声明（含 primary_key: [] = 明确"该 sheet 无主键"）→ 以
+                # 声明为准，不再猜测，杜绝启发式二次误判。
+                return _norm_col(col) in pk_set
             if pk_set and _norm_col(col) in pk_set:
                 return True
-            # 无 pk 缓存时回退到列名启发式（含 id/编号 且为首列）
-            return bool(col) and ("id" in str(col).lower() or "编号" in str(col))
+            # 未声明 → 命名启发式（复用模块级 _is_id_col：id 结尾/编号开头，
+            # 比原来"子串任意位置命中即真"严格得多），命中后再用现有数据实证
+            # /可选 LLM 二次判定是否应降级为非阻断。
+            if not (bool(col) and _is_id_col(col)):
+                return False
+            _dkey = (str(stem or "").lower(), str(sheet or ""), _norm_col(col))
+            if _dkey in _pk_downgrade_cache:
+                return not _pk_downgrade_cache[_dkey]
+            downgraded = self._pk_inferred_downgrade(stem, sheet, col, _it, data_getter)
+            _pk_downgrade_cache[_dkey] = downgraded
+            return not downgraded
 
         def _is_business_required(tip) -> bool:
             _it = (tip.get("issue_type") if isinstance(tip, dict)
@@ -2556,16 +2835,21 @@ class ValidatorAgent(LLMSubAgent):
                     continue  # 用户已明确跳过，保留 tip 进失败清单，不重复追问
                 # 非交互（无 _ask_callback）直接标 skipped 走原逻辑
                 # （枚举例外：非硬阻断，无 cb 时保留 warning 继续写盘，不 skip）
-                if getattr(self, "_ask_callback", None) is None:
-                    if _is_blocking_tip(tip):
-                        self._mark_intent_skipped(it)
-                    continue
-                # §交互 ask 循环：用户输入需校验，不符合类型再提醒（最多 3 轮）
+                #
+                # §修复（原覆盖盲区）：下面"自动建议优先"这段调 LLM 推断中文枚举
+                # 标签→数字码，本身不需要用户交互（推断不出就返回 None，不阻塞），
+                # 但原代码排在"无 _ask_callback 直接 continue"之后——导致批量执行
+                # /CI 等没有前端会话的场景，永远走不到这段自动推断：中文标签落
+                # 枚举列既不会被自动纠正，又因为 ENUM_INVALID 不是硬阻断类型不会
+                # 被标 skipped，最终原样把非法值写盘。现在把自动推断挪到"无
+                # callback"判断之前，让非交互场景也能吃到同一次自动纠正机会；
+                # 推断不出时再按原逻辑回落（有 cb 走 ask 交互，无 cb 走下面的
+                # skip/warning 判断），不改变原有交互路径的任何行为。
                 _col = (tip.get("col") if isinstance(tip, dict)
                         else getattr(tip, "col", "")) or ""
-                # §自动建议优先（不打断用户）：中文值落 int/枚举列时，先让 LLM
-                # 推断数字码并直接采用，避免弹对话框让用户手填。推断不出（低置信
-                # /无允许范围/LLM 不可用）才回落下方 ask 交互。
+                # §自动建议优先（不打断用户，也不依赖交互 callback）：中文值落
+                # int/枚举列时，先让 LLM 推断数字码并直接采用，避免弹对话框让
+                # 用户手填。推断不出（低置信/无允许范围/LLM 不可用）才回落下方。
                 # 覆盖两类：TYPE_MISMATCH（中文值落 int 列）与 ENUM_INVALID
                 # （中文值不在枚举白名单）——二者常是同一问题的两种表现，合并后
                 # 只剩 ENUM_INVALID，故此处必须把 ENUM_INVALID 也纳入。
@@ -2586,6 +2870,11 @@ class ValidatorAgent(LLMSubAgent):
                                       "_auto": True})
                         _resolved_sids.add(sid)
                         break
+                if getattr(self, "_ask_callback", None) is None:
+                    if _is_blocking_tip(tip):
+                        self._mark_intent_skipped(it)
+                    continue
+                # §交互 ask 循环：用户输入需校验，不符合类型再提醒（最多 3 轮）
                 _retry = 0
                 while _retry < 3:
                     _reply = self._ask_hard_issue(it, tip, data_getter=data_getter)
@@ -2770,18 +3059,53 @@ class ValidatorAgent(LLMSubAgent):
             logger.warning("_ask_pk_conflict 失败,降级 skip", exc_info=True)
             return {"mode": "skip"}
 
+    @staticmethod
+    def _norm_col_name(col) -> str:
+        """列名归一：去类型后缀/括号注释/空白/大小写，供 fields 键宽松匹配。"""
+        import re as _re
+        s = str(col or "").split(":", 1)[0]
+        s = _re.split(r"[（(]", s)[0]
+        return _re.sub(r"\s+", "", s).strip().lower()
+
+    @staticmethod
+    def _is_id_like_col(col) -> bool:
+        s = str(col or "")
+        return ("id" in s.lower()) or ("编号" in s) or ("主键" in s)
+
     def _apply_pk_to_intent(self, intent, col: str, new_id) -> None:
-        """核心4:把新 PK 值写入 intent.extras["fields"][col] + extras["pk_value"]。"""
+        """把新 PK 值写入 intent.extras["fields"] 的 PK 列 + extras["pk_value"]。
+
+        §现象1 修复：原实现无脑 `fields[col] = new_id`。当 col（如 'reward_id'/'编号'）
+        与 LLM 原始 fields 键（如 '物品编号'）不一致时，会**新增一个键**而旧的冲突
+        值仍留在原键里 → 写盘时冲突未被真正消除。改为：先覆盖与 col 同义的现有键；
+        若无同义键（跨语言键名不一致）且 fields 里恰有唯一 id 类键（PK 冲突必在 id 列），
+        覆盖该键；否则才按 col 新增。确保旧冲突值被替换而非并存。
+        """
         try:
             fields = intent.extras.setdefault("fields", {})
+            updated = False
             if col:
-                fields[col] = new_id
+                _norm = self._norm_col_name(col)
+                for k in list(fields.keys()):
+                    if self._norm_col_name(k) == _norm:
+                        fields[k] = new_id
+                        updated = True
+                if not updated:
+                    # col 无同义键：覆盖唯一的 id 类键（避免旧冲突值残留）
+                    _id_keys = [k for k in fields if self._is_id_like_col(k)]
+                    if len(_id_keys) == 1:
+                        fields[_id_keys[0]] = new_id
+                        updated = True
+                if not updated:
+                    fields[col] = new_id
             # 同步更新 pk_value(若列名是首列 id 或匹配)
             _col_lower = (col or "").lower()
             if _col_lower in ("id", "编号", "主键") or "id" in _col_lower:
                 intent.extras["pk_value"] = new_id
             # 标记 Core4 已解决 PK：下游 _apply_plan_fields(AI merge 路径) 据此
             # 强制保护，防止 AI 语义校验把改写后的值「按用户指令」回退成原冲突值。
+            # 该标记随 intent.extras 被 deepcopy 携带，是跨 Step 的稳定"已解决"台账，
+            # 供检测层幂等跳过重复 ask（见 validate 检测处 _pk_resolved 幂等守卫）。
             intent.extras["_pk_resolved"] = {"col": col, "value": new_id}
         except Exception:
             logger.warning("_apply_pk_to_intent 失败", exc_info=True)

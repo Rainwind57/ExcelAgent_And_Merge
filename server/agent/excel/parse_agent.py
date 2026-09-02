@@ -177,12 +177,12 @@ class ParseAgent:
                 logger.warning("ParseAgent LLM 路由分类失败,回退规则判定",
                                exc_info=True)
                 route = None
-        # §领域链型确定性展开（deterministic domain expander）：对高复杂高频链型
-        # （新建门派全链等）在分段/LLM 之前先命中——LLM 真实链路对这类多表长链常
-        # 分段后丢上下文/超时/漏意图（case0 实测分段后仅 6/19）。命中强判据时直接
-        # 产完整正确跨表链，仅做 schema grounding + 引用编译，跳过 LLM decompose。
-        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=1 关闭。
-        if os.getenv("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "") != "1":
+        # §去硬模板：领域链型确定性展开（正则抽字段，跳过 LLM decompose）默认关闭
+        # ——判定门/字段抽取均为硬编码规则，不代表 agent 真实解码能力，已改为默认
+        # 不介入主链路（一律走 LLM decompose，让表/sheet/列匹配全部由 LLM 完成）。
+        # 仍保留代码 + 单测（school_chain_expander 自身单测不走本入口，不受影响），
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=0 显式重新开启（供对照/紧急回退）。
+        if os.getenv("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "1") != "1":
             try:
                 _dom = self._try_domain_chain(text, route=route)
             except Exception:  # noqa: BLE001
@@ -268,10 +268,10 @@ class ParseAgent:
             locator_result = self._locate_with_route(text, route)
         except Exception:
             logger.warning("ParseAgent 粗路由失败", exc_info=True)
-            self._think("ParseAgent 粗路由异常,回退")
+            self._think("ParseAgent 粗路由异常,本次无候选,返回空")
             return []
         if not locator_result or not locator_result.candidates:
-            self._think("ParseAgent 粗路由无候选,回退")
+            self._think("ParseAgent 粗路由无候选表,返回空")
             return []
         # §Step1 列名信号：locate 已内置 ColumnExtractor，直接从 result 取
         self._last_column_extraction = getattr(locator_result, "column_signal", None)
@@ -291,13 +291,13 @@ class ParseAgent:
                 text, locator_result, force_single=_force_single)
         except Exception:
             logger.warning("ParseAgent DecomposeAgent 失败", exc_info=True)
-            self._think("ParseAgent DecomposeAgent 异常,回退 splitter_baseline")
+            self._think("ParseAgent DecomposeAgent 异常,LLM 拆分失败,返回空")
             return []
         if not split_intents:
             self._think(
-                f"ParseAgent DecomposeAgent 产空"
+                f"ParseAgent DecomposeAgent LLM 产空"
                 f"({len(locator_result.candidates)} 候选/{len(locator_result.fk_edges)} FK 边)"
-                f",回退 splitter_baseline")
+                f",本次无产出")
             return []
         return self._assemble(split_intents, text, locator_result)
 
@@ -385,8 +385,8 @@ class ParseAgent:
             import time as _t_dl
             _dl = getattr(self, "_step1_deadline", None)
             if _dl is not None and _t_dl.monotonic() > _dl:
-                self._think(f"ParseAgent Step1 deadline 超时，冻结并发段路径走 baseline")
-                return []  # 调用方走 _splitter_baseline
+                self._think(f"ParseAgent Step1 deadline 超时，冻结并发段路径,本次无产出")
+                return []  # 调用方收到空,不再回退硬编码兜底
             with ThreadPoolExecutor(
                     max_workers=min(5, len(segs))) as ex:
                 for r in ex.map(_do_one, _seg_pairs):
@@ -401,7 +401,7 @@ class ParseAgent:
                     break
                 all_split.extend(_do_one((idx, seg)))
         if not all_split:
-            self._think("ParseAgent 多段全产空,回退 splitter_baseline")
+            self._think("ParseAgent 多段 LLM 全产空,本次无产出")
             return []
         # locator_result：多段需合并候选和 FK 边。若只取首段，后续段的
         # produces/consumes 修复、缺表 backfill 与 Step2 FK 校验都会缺上下文。
@@ -533,6 +533,14 @@ class ParseAgent:
                         text, split_intents, locator_result.candidates,
                         locator_result.fk_edges, _fk_block, _per_to,
                         column_signal=getattr(locator_result, "column_signal", None))
+                    # §ReAct 全局表级自检：分段路径下每段 decompose_segment 各自独立
+                    # 视野窄（只看本段候选），_llm_verify_table_coverage 之前只接在
+                    # 单段 decompose() 主路径，分段场景完全没跑到——补在这里，用
+                    # merge 后的全量候选池 + FK 图，给 LLM 一次"看全局"的机会，
+                    # 覆盖跨段遗漏（如复杂多段指令里某段候选裁剪过窄漏表）。
+                    split_intents = _da._llm_verify_table_coverage(
+                        text, split_intents, locator_result.candidates,
+                        locator_result.fk_edges, _per_to)
             except Exception:  # noqa: BLE001
                 logger.warning("ParseAgent _assemble 全局 backfill 失败", exc_info=True)
         # §3.1 step 6a: SplitIntent → NLIntent 适配（SubTask 超集）
@@ -548,7 +556,29 @@ class ParseAgent:
         # add（只挂 produces=new_xxx_id 占位）。这类空壳既无字段可写，又没被本批
         # 其他 intent 消费（不是任何 FK 链前置），写盘必失败。框架级判据：
         # ① fields 无任何非空值；② 本批无 intent 消费其 produces。同时满足 → 删。
-        nl_intents = self._drop_orphan_empty_adds(nl_intents)
+        # §主线2：不静默——记录 thinking + 结构化 dropped 台账。
+        _kept_oea, _dropped_oea = self._partition_orphan_empty_adds(nl_intents)
+        if _dropped_oea:
+            for _d in _dropped_oea:
+                _dstem = getattr(_d, "table_hint", "") or "?"
+                _dsheet = getattr(_d, "sheet_hint", "") or "?"
+                self._think(f"Step1 丢弃孤立空壳 add：{_dstem}/{_dsheet}"
+                            f"（无字段值且未被本批消费；raw={str(getattr(_d,'raw','') or '')[:40]}）")
+            try:
+                _led = getattr(self, "_dropped_intents", None)
+                if _led is None:
+                    _led = []
+                    self._dropped_intents = _led
+                for _d in _dropped_oea:
+                    _led.append({
+                        "reason": "orphan_empty_add",
+                        "table_stem": getattr(_d, "table_hint", "") or "",
+                        "table_sheet": getattr(_d, "sheet_hint", "") or "",
+                        "raw": str(getattr(_d, "raw", "") or "")[:120],
+                    })
+            except Exception:
+                pass
+        nl_intents = _kept_oea
         # §P1 缺陷A 修复：灌值守卫 choke point 化。_assemble 是 DecomposeAgent LLM 路径
         # 的汇合点，所有 SplitIntent→NLIntent 在此统一过 _scrub_narrative_scalar 一道闸，
         # 兜住 LLM 退化把长叙述灌进数字/布尔列的 intent（清空灌值字段，不丢整条）。
@@ -1133,7 +1163,7 @@ class ParseAgent:
             prod = it.extras.get("produces") if it.extras else None
             if prod and not it.produces_label:
                 it.produces_label = str(prod)
-        self._think(f"ParseAgent baseline 产出 {len(nl_intents)} 条(source=splitter_baseline)")
+        self._think(f"ParseAgent splitter 适配产出 {len(nl_intents)} 条")
         return nl_intents
 
     # ── 内部 ───────────────────────────────────────────────────
@@ -1220,13 +1250,25 @@ class ParseAgent:
         判据：add 且 fields 无任何非空值（None/空串/占位符都算空），且本批
         无其他 intent 消费其 produces（非 FK 链前置）。两者同时满足才删——
         被消费的空壳（如纯 producer 占位行）保留，交下游拓扑回填。
+
+        §主线2 修复：原实现静默丢弃（连日志都不发），子任务凭空消失、既不在成功
+        也不在失败列表。现改为**不静默**——把被删的 intent 收集返回，由调用方
+        `_drop_orphan_empty_adds_logged` 记录 thinking + 结构化 dropped 台账，
+        供 Step4 汇总口径感知（不再让子任务无声蒸发）。
         """
+        kept, _dropped = ParseAgent._partition_orphan_empty_adds(intents)
+        return kept
+
+    @staticmethod
+    def _partition_orphan_empty_adds(
+            intents: list[NLIntent]) -> tuple[list[NLIntent], list[NLIntent]]:
+        """返回 (保留, 被删) 两组孤立空壳 add 划分（纯函数，供日志/台账用）。"""
         if not intents:
-            return intents
+            return list(intents or []), []
         # 仅当本批 >1 条（跨表上下文）才做孤立空壳过滤：单条空 add 可能是
         # 用户单表新增（如「新增 quest」），空 fields 交 Step2 补，不能删。
         if len(intents) <= 1:
-            return intents
+            return list(intents), []
 
         def _has_real_value(fields) -> bool:
             if not isinstance(fields, dict):
@@ -1258,6 +1300,7 @@ class ParseAgent:
                         consumed.add(m.group(1).strip())
 
         kept: list = []
+        dropped: list = []
         for it in intents:
             if getattr(it, "action", "") != "add":
                 kept.append(it)
@@ -1272,8 +1315,9 @@ class ParseAgent:
             if label_s and label_s in consumed:
                 kept.append(it)  # 被消费的空壳 producer，保留供拓扑
                 continue
-            # 孤立空壳 → 删
-        return kept
+            # 孤立空壳 → 删（由调用方记录，不静默）
+            dropped.append(it)
+        return kept, dropped
 
     def _resolve_same_batch_name_refs(self, intents: list[NLIntent],
                                       locator_result: Optional[LocatorResult]) -> int:
@@ -3598,7 +3642,7 @@ class ParseAgent:
                     consumes_labels=[], source="splitter_baseline",
                 )
                 intents.append(nl)
-                self._think(f"A+规则兜底补 {rs_stem}/{rs_sheet} option 空壳"
+                self._think(f"补齐悬空引用 {rs_stem}/{rs_sheet} option"
                             f"（{rlabel}，option_text={'有' if text_opt else '留空'}）")
         n_rule = sum(len(v) for v in rule_shells.values())
 

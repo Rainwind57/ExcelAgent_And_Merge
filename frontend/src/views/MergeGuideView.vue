@@ -597,6 +597,18 @@ function branchNameOf(fname) {
   if (role === 'to') return toBranchName.value || versionLabel(fname)
   return versionLabel(fname)
 }
+// R25: matched 行里"某一侧其实已经把整行删了、另一侧却在改这行"——这种行现在会被
+// 归为普通 matched 行，冲突格里被删的那侧显示成空值，容易被误读成"对方就是填了个
+// 空值"而不是"对方把整行删掉了"。用 row.presence（该行在各文件里是否存在）反推
+// 出"哪些非基准分支已经没有这一行"，供行首打一个明确的"单侧删除"提示。
+function rowDeletedSides(row) {
+  const presence = row && row.presence
+  if (!presence || row.row_type !== 'matched') return []
+  const baseFile = curGroup.value?.base_file
+  return Object.keys(presence)
+    .filter(fn => fn !== baseFile && presence[fn] === false)
+    .map(fn => branchNameOf(fn))
+}
 // 角色 + 分支名 + 版本号，用于弹窗/AI 建议等需要精确定位到具体版本的场景
 function versionFullTag(fname) {
   const rev = versionLabel(fname)
@@ -1414,8 +1426,21 @@ const danglingByCell = computed(() => {
 function cellDangling(ri, ci) { return danglingByCell.value[`${ri}:${ci}`] }
 // 当前 sheet 悬空外键数（供横幅展示）
 const curSheetDanglingCount = computed(() => (curSheet.value?.ref_integrity?.dangling || []).length)
+// R25: 当前 sheet 因 ID 重映射而被自动同步改写的外键引用数（ref_integrity.remapped_refs）
+const curSheetRemappedRefsCount = computed(() => curSheet.value?.ref_integrity?.remapped_refs || 0)
 // 当前 sheet 重编号数（id_resolution.stats.ids_remapped）
 const curSheetRemappedCount = computed(() => curSheet.value?.id_resolution?.stats?.ids_remapped || 0)
+// R25: 当前 sheet 公式行漂移提示数（非冲突，仅供核实：公式文本未变但该行物理位置变化）
+const curSheetFormulaDriftCount = computed(() => {
+  const rows = curSheet.value?.rows || []
+  let n = 0
+  for (const r of rows) {
+    for (const c of (r.cells || [])) {
+      if (c && c.formula_row_drift) n++
+    }
+  }
+  return n
+})
 
 // ── 整表改用版本 X（带预览，作用范围：当前 Sheet 全部冲突） ──
 function showAcceptAllPreview(fname) {
@@ -2177,10 +2202,12 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
       <span>此 Sheet 仅存在于 {{ structOriginLabel(curSheet?.origin) }}，为只读展示，不参与本次合并写回</span>
     </div>
 
-    <!-- 编号冲突重映射 / 悬空外键 提示横幅（compare 阶段产出） -->
-    <div v-if="curSheet && (curSheetRemappedCount || curSheetDanglingCount)" class="bm-ref-banner">
+    <!-- 编号冲突重映射 / 悬空外键 / 外键同步 / 公式行漂移提示 横幅（compare 阶段产出） -->
+    <div v-if="curSheet && (curSheetRemappedCount || curSheetDanglingCount || curSheetRemappedRefsCount || curSheetFormulaDriftCount)" class="bm-ref-banner">
       <span v-if="curSheetRemappedCount" class="ref-pill ref-remap" :title="'多分支同主键 inserted 行已按先到先得自动重编号，原编号见各行「重编号」徽标'">🔢 自动重编号 {{ curSheetRemappedCount }} 行</span>
+      <span v-if="curSheetRemappedRefsCount" class="ref-pill ref-syncedfk" :title="'某分支的主键被自动重编号后，该分支内引用旧编号的外键列已同步改成新编号，避免合并后变成悬空引用'">🔗 已同步外键 {{ curSheetRemappedRefsCount }} 处</span>
       <span v-if="curSheetDanglingCount" class="ref-pill ref-dangling" :title="'合并后外键目标不存在，请在冲突弹窗内留意 ⚠ 标记'">⚠ 悬空外键 {{ curSheetDanglingCount }} 处</span>
+      <span v-if="curSheetFormulaDriftCount" class="ref-pill ref-formula-drift" :title="'公式文本各版本未变，但该行在各版本中的物理位置不同（其他行被增删所致），公式里的绝对行号引用可能不再指向本行数据，建议人工核实——这不是冲突，无需强制处理，格子上有 ƒ⚠ 小标可定位'">ƒ⚠ 公式位置提示 {{ curSheetFormulaDriftCount }} 处</span>
     </div>
 
     <!-- 多选行工具栏 -->
@@ -2229,7 +2256,9 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
             <td class="bm-key">
               <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
               <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
-              <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+              <span v-if="item.row.row_type === 'inserted' && item.row.source_file && !item.row.id_remapped" class="bm-pill pill-source" :title="'新增来源：' + branchNameOf(item.row.source_file) + (item.row.source_version ? ('（v' + item.row.source_version + '）') : '')">来自{{ branchNameOf(item.row.source_file) }}</span>
+              <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：' + (item.row.source_file ? (branchNameOf(item.row.source_file) + ' ') : '') + '原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号{{ item.row.source_file ? ('(' + branchNameOf(item.row.source_file) + ')') : '' }}</span>
+              <span v-if="rowDeletedSides(item.row).length" class="bm-pill pill-delmod" :title="rowDeletedSides(item.row).join('、') + ' 已删除该行，但其他分支仍保留/修改了它——请核实是否要连同删除，还是保留其他分支的修改'">⊘{{ rowDeletedSides(item.row).join('/') }}已删</span>
             </td>
             <td class="bm-key row-act-col">
               <button class="row-act-btn" @click.stop="openRowPreview([item.ri])" :disabled="!diffCellsOf(item.row).length" title="预览各版本在本行冲突列的具体内容，并选择版本整行应用">👁</button>
@@ -2238,6 +2267,9 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
             <td v-for="(cell, ci) in item.row.cells" :key="ci"
               :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict, 'cell-conflict-td': cell.conflict }"
               @click="cellClick(cell, item.ri, ci)">
+              <span v-if="cell.diff_type === 'formula' || cell.diff_type === 'formula_conflict'"
+                    class="formula-badge" :class="{ 'formula-badge-warn': cell.formula_row_drift }"
+                    :title="cell.formula_row_drift ? cell.formula_notice : ('公式列' + (cell.formula_text ? '：' + cell.formula_text : ''))">{{ cell.formula_row_drift ? '⚠' : 'ƒ' }}</span>
               <template v-if="cell.resolved">
                 <span class="resolved-cell" @click.stop="reopenConflict(item.ri, ci)" :title="'已采纳 '+resolvedLabel(cell)+'，点击撤销'" v-html="'<span class=&quot;resolved-tag&quot;>'+branchNameOf(cell.resolvedBy)+'</span>'+renderDiffFor(cell.value, baseValOf(cell))"></span>
                 <template v-if="cell.formula_text && cell.formula_resolved && String(cell.formula_text).startsWith('=')">
@@ -2312,13 +2344,18 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
                   <td class="bm-key">
                     <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
                     <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
-                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+                    <span v-if="item.row.row_type === 'inserted' && item.row.source_file && !item.row.id_remapped" class="bm-pill pill-source" :title="'新增来源：' + branchNameOf(item.row.source_file) + (item.row.source_version ? ('（v' + item.row.source_version + '）') : '')">来自{{ branchNameOf(item.row.source_file) }}</span>
+                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：' + (item.row.source_file ? (branchNameOf(item.row.source_file) + ' ') : '') + '原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号{{ item.row.source_file ? ('(' + branchNameOf(item.row.source_file) + ')') : '' }}</span>
+                    <span v-if="rowDeletedSides(item.row).length" class="bm-pill pill-delmod" :title="rowDeletedSides(item.row).join('、') + ' 已删除该行，但其他分支仍保留/修改了它——请核实是否要连同删除，还是保留其他分支的修改'">⊘{{ rowDeletedSides(item.row).join('/') }}已删</span>
                   </td>
                   <td v-for="(cell, ci) in item.row.cells" :key="ci"
                       :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict, 'sp-cell-conflict': cell.conflict, 'sp-cell-resolved': cell.resolved, 'sp-cell-adopted': cell.resolved && cell.resolvedBy === sideFiles[0], 'sp-cell-clickable': cell.conflict || cell.resolved, 'sp-cell-ai-suggest': cell.conflict && sideFiles[0] !== curGroup?.base_file && aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[0] }"
                       :title="cell.conflict ? '点击采纳 ' + branchNameOf(sideFiles[0]) + ' 的值解决冲突；点 🎯 看 AI 建议' + (aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[0] ? '（AI 建议本侧' + (aiCache[`${item.ri}-${ci}`]?.reasoning ? '：' + aiCache[`${item.ri}-${ci}`].reasoning : '') + '）' : '') : (cell.resolved ? (cell.resolvedBy === sideFiles[0] ? '已采纳本侧，点击切到对侧' : '本侧未采纳，点击重新采纳') : '')"
                       @click="cell.conflict ? resolveCellSplit(cell, sideFiles[0], item.ri, ci) : (cell.resolved ? switchResolveSide(cell, item.ri, ci) : null)">
                     <div class="sp-cell-inner">
+                      <span v-if="cell.diff_type === 'formula' || cell.diff_type === 'formula_conflict'"
+                            class="formula-badge" :class="{ 'formula-badge-warn': cell.formula_row_drift }"
+                            :title="cell.formula_row_drift ? cell.formula_notice : ('公式列' + (cell.formula_text ? '：' + cell.formula_text : ''))">{{ cell.formula_row_drift ? '⚠' : 'ƒ' }}</span>
                       <span v-html="splitCellHtml(cell, sideFiles[0], sideRowStatus(item.row, sideFiles[0]))"></span>
                       <button v-if="cell.conflict" class="sp-ai-btn" @click.stop="openCellModal(cell, item.ri, ci)" title="打开冲突/AI 弹窗">🎯</button>
                     </div>
@@ -2344,13 +2381,18 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
                   <td class="bm-key">
                     <span class="row-type-tag" :class="'tag-' + item.row.row_type" :title="rowTypeLabel(item.row)">{{ rowTypeIcon(item.row) }}</span>
                     <span v-html="highlightSearchHit(item.row.key, 200, rowSearchKey)"></span>
-                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号</span>
+                    <span v-if="item.row.row_type === 'inserted' && item.row.source_file && !item.row.id_remapped" class="bm-pill pill-source" :title="'新增来源：' + branchNameOf(item.row.source_file) + (item.row.source_version ? ('（v' + item.row.source_version + '）') : '')">来自{{ branchNameOf(item.row.source_file) }}</span>
+                    <span v-if="item.row.id_remapped" class="bm-pill pill-remap" :title="'编号冲突已自动重映射：' + (item.row.source_file ? (branchNameOf(item.row.source_file) + ' ') : '') + '原编号 ' + (item.row.original_pk || '?') + ' → ' + item.row.key">重编号{{ item.row.source_file ? ('(' + branchNameOf(item.row.source_file) + ')') : '' }}</span>
+                    <span v-if="rowDeletedSides(item.row).length" class="bm-pill pill-delmod" :title="rowDeletedSides(item.row).join('、') + ' 已删除该行，但其他分支仍保留/修改了它——请核实是否要连同删除，还是保留其他分支的修改'">⊘{{ rowDeletedSides(item.row).join('/') }}已删</span>
                   </td>
                   <td v-for="(cell, ci) in item.row.cells" :key="ci"
                       :class="{ 'cell-conflict': cell.conflict, 'cell-resolved': cell.resolved, 'cell-changed': cell.changed && !cell.conflict, 'sp-cell-conflict': cell.conflict, 'sp-cell-resolved': cell.resolved, 'sp-cell-adopted': cell.resolved && cell.resolvedBy === sideFiles[1], 'sp-cell-clickable': cell.conflict || cell.resolved, 'sp-cell-ai-suggest': cell.conflict && sideFiles[1] !== curGroup?.base_file && aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[1] }"
                       :title="cell.conflict ? '点击采纳 ' + branchNameOf(sideFiles[1]) + ' 的值解决冲突；点 🎯 看 AI 建议' + (aiCache[`${item.ri}-${ci}`]?.suggested_version === sideFiles[1] ? '（AI 建议本侧' + (aiCache[`${item.ri}-${ci}`]?.reasoning ? '：' + aiCache[`${item.ri}-${ci}`].reasoning : '') + '）' : '') : (cell.resolved ? (cell.resolvedBy === sideFiles[1] ? '已采纳本侧，点击切到对侧' : '本侧未采纳，点击重新采纳') : '')"
                       @click="cell.conflict ? resolveCellSplit(cell, sideFiles[1], item.ri, ci) : (cell.resolved ? switchResolveSide(cell, item.ri, ci) : null)">
                     <div class="sp-cell-inner">
+                      <span v-if="cell.diff_type === 'formula' || cell.diff_type === 'formula_conflict'"
+                            class="formula-badge" :class="{ 'formula-badge-warn': cell.formula_row_drift }"
+                            :title="cell.formula_row_drift ? cell.formula_notice : ('公式列' + (cell.formula_text ? '：' + cell.formula_text : ''))">{{ cell.formula_row_drift ? '⚠' : 'ƒ' }}</span>
                       <span v-html="splitCellHtml(cell, sideFiles[1], sideRowStatus(item.row, sideFiles[1]))"></span>
                       <button v-if="cell.conflict" class="sp-ai-btn" @click.stop="openCellModal(cell, item.ri, ci)" title="打开冲突/AI 弹窗">🎯</button>
                     </div>
@@ -2776,7 +2818,7 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
 .hm-header h3 { margin: 0; }
 .hm-body { overflow: auto; flex: 1; }
 .hm-empty { padding: 32px; text-align: center; color: var(--text-secondary); }
-.bm-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+.bm-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: box-shadow .2s ease; }
 .bm-card-wide { display: flex; flex-direction: column; }
 .bm-ttab-struct { border-style: dashed; }
 .struct-tag, .ver-origin { color: #fff; }
@@ -2836,22 +2878,22 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
 .bm-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .bm-dot-y { background: var(--warning); }
 .bm-ok { background: var(--success-soft); color: var(--success); }
-.bm-pill { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; line-height: 1.4; white-space: nowrap; }
+.bm-pill { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; line-height: 1.4; white-space: nowrap; transition: filter .15s ease; }
 .ver-origin { margin-left: 5px; vertical-align: middle; }
 .bm-stat { margin-left: auto; font-size: 0.85rem; color: var(--text-secondary); }
 .bm-stat b { color: var(--text-primary); }
 .bm-stat b.hot { color: var(--danger); }
 .bm-toolbar { display: flex; gap: 10px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
-.bm-toolbar > button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; transition: border-color .15s ease, background .15s ease; }
-.bm-toolbar > button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.bm-toolbar > button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.bm-toolbar > button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
 .bm-toolbar > button:disabled { opacity: 0.35; cursor: not-allowed; }
 .bm-conf-count { font-size: 0.8rem; color: var(--text-secondary); }
 .bm-filter { display: flex; gap: 4px; align-items: center; }
-.bm-filter label { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem; cursor: pointer; color: var(--text-secondary); }
+.bm-filter label { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem; cursor: pointer; color: var(--text-secondary); transition: border-color .15s ease, background .15s ease; }
 .bm-filter label.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .fr-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 /* 应用合并：独立高亮操作栏，与整表改用分行，突出显示避免被工具栏淹没 */
-.bm-action-bar { display: flex; gap: 10px; align-items: center; padding: 10px 14px; margin: 6px 0 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
+.bm-action-bar { display: flex; gap: 10px; align-items: center; padding: 10px 14px; margin: 6px 0 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); flex-wrap: wrap; }
 .bm-global-stat { font-size: 0.85rem; color: var(--text-secondary); }
 .bm-global-stat b { color: var(--text-primary); }
 .bm-global-stat b.hot { color: var(--danger); }
@@ -2860,7 +2902,7 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
 .bm-apply:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
 
 /* ── 步骤指示器（1 选方式 → 2 比对 → 3 解决冲突 → 4 应用） ── */
-.bm-stepper { display: flex; align-items: center; gap: 6px; padding: 10px 14px; margin-bottom: 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; }
+.bm-stepper { display: flex; align-items: center; gap: 6px; padding: 10px 14px; margin-bottom: 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .step-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; }
 .step-dot { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 0.78rem; font-weight: 700; }
 .step-label { font-size: 0.85rem; font-weight: 600; }
@@ -2875,20 +2917,20 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
 
 /* ── 底部应用区（流程终点：全局未决 + 应用合并） ── */
 .bm-apply-bar { display: flex; align-items: center; gap: 14px; padding: 12px 14px; margin-top: 10px; background: var(--bg-stripe); border: 1px solid var(--border); border-radius: 8px; }
-.bm-table-wrap { display: flex; flex-direction: column; overflow: auto; max-height: calc(100vh - 480px); min-height: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.bm-table-wrap { display: flex; flex-direction: column; overflow: auto; max-height: calc(100vh - 480px); min-height: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .bm-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 .bm-table tbody tr { content-visibility: auto; contain-intrinsic-size: auto 2.2rem; }
 .bm-table tbody tr:nth-child(even) { background: var(--bg-stripe, rgba(0,0,0,0.018)); }
 .bm-table tbody tr:hover > td { background: rgba(0,0,0,0.035); }
-.bm-table th, .bm-table td { border: 1px solid var(--border-soft); padding: 6px 10px; text-align: left; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
-.bm-table th { background: var(--bg-stripe); color: var(--text-secondary); position: sticky; top: 0; z-index: 1; font-weight: 600; }
+.bm-table th, .bm-table td { border: 1px solid var(--border-soft); padding: 7px 11px; text-align: left; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; transition: background .12s ease; }
+.bm-table th { background: var(--bg-stripe); color: var(--text-secondary); position: sticky; top: 0; z-index: 1; font-weight: 700; letter-spacing: .02em; }
 .bm-key { background: var(--bg-stripe); font-weight: 600; color: var(--text-primary); position: sticky; left: 0; z-index: 1; }
 .sel-col { width: 30px; text-align: center; }
 .row-act-col { width: 40px; text-align: center; }
 .rt-inserted { background: rgba(46, 204, 113, 0.30) !important; box-shadow: inset 4px 0 0 var(--success); }
 .rt-deleted { background: rgba(231, 76, 60, 0.22) !important; box-shadow: inset 4px 0 0 var(--danger); }
 .rt-changed { background: rgba(241, 196, 15, 0.30) !important; box-shadow: inset 4px 0 0 var(--warning); }
-.row-type-tag { display: inline-block; width: 16px; margin-right: 4px; text-align: center; font-weight: 700; border-radius: 5px; }
+.row-type-tag { display: inline-block; width: 16px; margin-right: 4px; text-align: center; font-weight: 700; border-radius: 6px; transition: transform .12s ease; }
 .tag-inserted { color: var(--success); }
 .tag-deleted { color: var(--danger); }
 .tag-matched { color: var(--warning); }
@@ -2907,6 +2949,20 @@ Promise.all([loadBranchDirs(), loadSubdirDirs(), loadCommits()]).finally(() => {
 .formula-text { color: var(--accent); font-family: monospace; }
 .formula-eq { color: var(--text-muted); margin: 0 2px; font-family: monospace; }
 .formula-value { color: var(--text-primary); font-family: monospace; font-weight: 600; }
+/* R25: 公式列角标——ƒ 表示这是一个公式格（不参与冲突判定，仅提示"这里是公式"）；
+   ⚠ 变体表示 formula_row_drift（公式文本未变但该行物理位置漂移），是非阻塞风险
+   提示，不是冲突，因此不用 danger 红色，用中性 accent / warning 色区分。 */
+.formula-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-right: 4px; vertical-align: middle;
+  border-radius: 4px; font-size: 0.68rem; font-weight: 700; line-height: 1;
+  font-family: Georgia, 'Times New Roman', serif; font-style: italic;
+  background: var(--accent-soft); color: var(--accent); cursor: help;
+}
+.formula-badge-warn {
+  font-style: normal; font-family: inherit;
+  background: var(--warning-soft); color: var(--warning);
+}
 mark.search-hit { background: var(--warning); color: #fff; padding: 0 1px; border-radius: 2px; }
 .conflict-badge { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--danger); color: #fff; font-size: 0.72rem; }
 .cell-conflict-versions { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; font-size: 0.78rem; }
@@ -3090,10 +3146,20 @@ mark.search-hit { background: var(--warning); color: #fff; padding: 0 1px; borde
 
 /* ── 编号冲突重映射 / 悬空外键 ── */
 .pill-remap { margin-left: 6px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+/* R25: 新增行来源徽章——标注这行是哪个分支新增的（source_file 经 branchNameOf
+   映射成短分支名），跟"重编号"徽章用同色系但弱化一点（success 系＝正常新增，
+   不是需要特别关注的冲突），避免和 pill-remap 的 accent 色混淆。 */
+.pill-source { margin-left: 6px; background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
+/* R25: 单侧删除/单侧修改 提示——matched 行但某分支其实整行已删，用 danger 色系
+   （跟真冲突同色）提醒用户这不是普通的"值变化"，需要人工判断去留。 */
+.pill-delmod { margin-left: 6px; background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
 .bm-ref-banner { display: flex; gap: 8px; flex-wrap: wrap; padding: 6px 10px; margin: 6px 0; background: var(--bg-hover); border: 1px solid var(--border-soft); border-radius: 6px; }
 .ref-pill { padding: 2px 10px; border-radius: 10px; font-size: 0.74rem; font-weight: 600; }
 .ref-remap { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
 .ref-dangling { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+.ref-formula-drift { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
+/* R25: 外键同步——ID 重映射后自动改写的外键引用，成功/正常态用 success 色。 */
+.ref-syncedfk { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
 .cell-dangling { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 0.62rem; font-weight: 700; background: var(--danger-soft); color: var(--danger); }
 
 /* ── 整表改用/行预览弹窗 ── */

@@ -88,6 +88,7 @@ def _prior_step_failures(ctx: StepContext) -> list[dict]:
         for err in (getattr(result, "errors", None) or []):
             out.append({
                 "type": getattr(err, "error_type", "step_error"),
+                "step_id": getattr(err, "step_id", "") or sid,
                 "table": getattr(err, "table", "") or "",
                 "sheet": getattr(err, "sheet", "") or "",
                 "col": getattr(err, "column", "") or "",
@@ -124,6 +125,10 @@ class Step4ConcludeSubAgent:
         s3 = ctx.get_result("step3_execute")
         subtasks = (s3.artifacts.get("subtasks") if s3 else []) or []
         failures = list((s3.artifacts.get("failures") if s3 else []) or [])
+        # 建议7：Step3 artifact failures 标注来源 step（供 Step4 分桶输出）
+        for _f in failures:
+            if isinstance(_f, dict):
+                _f.setdefault("step_id", "step3_execute")
         seen = {
             (f.get("type"), f.get("table"), f.get("sheet"), f.get("col"),
              f.get("root_cause"))
@@ -158,13 +163,30 @@ class Step4ConcludeSubAgent:
         has_incomplete = n_dropped > 0
         # §低危修复：ok=None（needs_confirm 待确认）不计失败，与 Step3 口径一致。
         # 原 `not s.get("ok")` 把 None 当失败 → n_fail 误计。
+        # §计数互斥修复（现象2 "2+4+2≠6"）：skipped 子任务在 Step3 被同时标 ok=False
+        # 且 skipped=True（step3_execute_subagent.py），原 n_fail 用 `ok is False` 会把
+        # skipped 那几条**同时**计进 n_fail 和 n_skipped → 同一对象被算两遍，四类桶之和
+        # 大于子任务总数。改为四类桶互斥：n_fail 只数"真失败（ok False 且非 skipped/pending）"。
         n_ok = sum(1 for s in subtasks if s.get("ok") is True)
-        n_fail = sum(1 for s in subtasks if s.get("ok") is False)
         n_skipped = sum(1 for s in subtasks if s.get("skipped"))
         n_pending = sum(1 for s in subtasks if s.get("needs_confirm")
-                        and s.get("ok") is None)
-        # 最终 ok：前序全 ok + 无 Step3 硬失败 + 无"意图被丢/漏解析"信号。
-        all_ok = all_ok and n_fail == 0 and not has_incomplete
+                        and s.get("ok") is None and not s.get("skipped"))
+        n_fail = sum(1 for s in subtasks
+                     if s.get("ok") is False and not s.get("skipped")
+                     and not (s.get("needs_confirm") and s.get("ok") is None))
+        # 建议7：部分写入（partial）也不算干净成功——须显式上报
+        n_partial = sum(1 for s in subtasks if s.get("partial"))
+        # 建议7：干净成功判据收口到纯函数 is_clean_success——有真失败/跳过/部分写入/
+        # 漏解析/任何 problem failure（排除 pending 待确认）即非干净成功。诊断类 warning
+        # 走 warnings 通道、不在此列。
+        from .conclude_report import is_clean_success, render_bucketed_failures
+        n_problem_failures = sum(
+            1 for f in failures
+            if isinstance(f, dict) and f.get("status") != "pending")
+        all_ok = is_clean_success(
+            prior_ok=all_ok, n_ok=n_ok, n_fail=n_fail, n_skipped=n_skipped,
+            n_partial=n_partial, has_incomplete=has_incomplete,
+            n_failures=n_problem_failures)
 
         # 汇总文案（模板，无 LLM）
         if all_ok and subtasks:
@@ -179,29 +201,31 @@ class Step4ConcludeSubAgent:
                 summary += f"；{n_fail} 个失败"
             if n_pending:
                 summary += f"；{n_pending} 个待确认"
-            for f in failures[:5]:
-                loc = f"{f.get('table', '?')}/{f.get('sheet', '?')}"
-                col = f" 列[{f.get('col')}]" if f.get("col") else ""
-                rc = f.get("root_cause") or "未知"
-                summary += f"\n- {loc}{col}：{rc}"
+            _fb = render_bucketed_failures(failures)
+            if _fb:
+                summary += "\n" + _fb
         elif subtasks:
-            summary = f"完成 {n_ok}/{len(subtasks)} 个子任务，{n_fail} 个失败"
+            # 现象2 修复：跳过项必须显式上报，不再被并进 n_fail 或被 all_ok 掩盖。
+            _done_part = f"完成 {n_ok}/{len(subtasks)} 个子任务"
+            _bits = []
+            if n_fail:
+                _bits.append(f"{n_fail} 个失败")
             if n_skipped:
-                summary += f"（其中 {n_skipped} 个因 Step2 未解决被跳过写入）"
+                _bits.append(f"{n_skipped} 个因 Step2 未解决被跳过写入（请补齐字段后重试）")
+            if n_partial:
+                _bits.append(f"{n_partial} 个部分写入（有字段被跳过，请核对）")
             if n_pending:
-                summary += f"，{n_pending} 个待确认"
-            for f in failures[:5]:
-                loc = f"{f.get('table', '?')}/{f.get('sheet', '?')}"
-                col = f" 列[{f.get('col')}]" if f.get("col") else ""
-                rc = f.get("root_cause") or "未知"
-                summary += f"\n- {loc}{col}：{rc}"
+                _bits.append(f"{n_pending} 个待确认")
+            summary = _done_part + ("，" + "，".join(_bits) if _bits else "")
+            # 建议7：失败按 Step1/2/3 分桶输出，不截前 5 条
+            _fb = render_bucketed_failures(failures)
+            if _fb:
+                summary += "\n" + _fb
         elif failures:
             summary = ctx.folded_message()
-            for f in failures[:5]:
-                loc = f"{f.get('table') or '?'}/{f.get('sheet') or '?'}"
-                col = f" [{f.get('col')}]" if f.get("col") else ""
-                rc = f.get("root_cause") or "unknown"
-                summary += f"\n- {loc}{col}: {rc}"
+            _fb = render_bucketed_failures(failures)
+            if _fb:
+                summary += "\n" + _fb
         else:
             summary = ctx.folded_message()
 
@@ -247,6 +271,34 @@ class Step4ConcludeSubAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("Step4 修复经验沉淀失败（降级）", exc_info=True)
 
+        # ── 最小清单#1 + P4：StepTrace 统一账本 + 慢因归因（观测只读，additive）──
+        # 聚合各前序 Step 的 metrics + LLM 快照，产"本次慢在哪"的开发者诊断。
+        _step_trace: dict = {}
+        try:
+            from .step_trace import build_step_trace
+            _step_metrics = {
+                sid: dict(getattr(r, "metrics", None) or {})
+                for sid, r in (ctx.results or {}).items()
+                if sid != STEP4_CONCLUDE
+            }
+            _llm_stats = None
+            _agent = getattr(self._services, "_agent", None) if self._services else None
+            _counter = getattr(_agent, "_llm_counter", None) if _agent else None
+            if _counter is not None and hasattr(_counter, "as_dict"):
+                try:
+                    _llm_stats = _counter.as_dict()
+                except Exception:
+                    _llm_stats = None
+            _step_trace = build_step_trace(_step_metrics, _llm_stats)
+            if _step_trace.get("slow_cause", "none") != "none":
+                warnings.append(
+                    f"[诊断] 慢因={_step_trace['slow_cause']}："
+                    + "；".join(a.get("evidence", "")
+                               for a in _step_trace.get("attribution", [])[:3]))
+        except Exception:
+            logger.debug("Step4 StepTrace 汇总失败(非致命)", exc_info=True)
+            _step_trace = {}
+
         return StepResult(
             step_id=STEP4_CONCLUDE, ok=all_ok,
             errors=errors, warnings=warnings,
@@ -257,10 +309,13 @@ class Step4ConcludeSubAgent:
                 "subtasks_skipped": n_skipped,
                 "failures": len(failures),
                 "alias_ingested": alias_ingested,
+                "slow_cause": _step_trace.get("slow_cause", "none"),
             },
             artifacts={
                 "summary": summary, "failures": failures,
                 "induced_count": induced_count,
+                # 最小清单#1 + P4：统一 trace + 慢因归因（开发者诊断，观测只读）。
+                "step_trace": _step_trace,
             })
 
 

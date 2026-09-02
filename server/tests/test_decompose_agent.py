@@ -445,12 +445,17 @@ def test_consume_broken_link():
 
 
 # ── 样例8: 空/畸形 LLM 返回降级（零 LLM 兜底） ────────────────
-def test_malformed_llm_fallback():
+def test_malformed_llm_fallback(monkeypatch):
     """LLM 返非 JSON 时走 _splitter_baseline 零 LLM 兜底，不返空。
 
     pet 进化链文本触发 detect_cross_table_action=evolve → splitter 11 模板产 intent。
     保链路完整走通，serve 挂/超时/非 JSON 时仍产可执行 intent。
+
+    §去硬模板：splitter 11 模板默认已关闭（decompose_agent._splitter_baseline），
+    本测试显式重新开启，验证该模板函数自身逻辑仍正确（模板未删除，只是默认不再
+    介入主链路——生产环境下 LLM 产空改走通用 ColumnExtractor 兜底，不再套模板）。
     """
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
     da, parser = make_agent()
     parser.client.set_response("抱歉,无法理解指令")
     lr = LocatorResult(

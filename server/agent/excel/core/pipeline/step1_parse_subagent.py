@@ -951,12 +951,21 @@ class Step1ParseSubAgent:
         try:
             # §split 复用：parse 内部已调 split_multi_intent 并缓存到 _last_segments，
             # Step1 读它做段级对账，不再重复调 split（消除冗余 + 双源风险）。
+            # §主线2：清空上一轮的"被丢弃 intent"台账，避免跨 run 泄漏。
+            try:
+                self._parse_agent._dropped_intents = []
+            except Exception:
+                pass
             intents = self._parse_agent.parse(ctx.user_text)
             segments = getattr(self._parse_agent, "_last_segments", []) or []
             ctx.segments = segments
 
-            # §增强：产空 → splitter_baseline 兜底（本层直接接，少一层 run() 重来）
-            if not intents and segments:
+            # §去硬模板：Step1 层的二次 splitter_baseline 兜底（cross_table_splitter
+            # 11 模板）默认关闭，理由同 decompose_agent._splitter_baseline——硬编码
+            # 正则抽字段会越权替 LLM 做业务判断。可用
+            # CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启。
+            if not intents and segments and os.environ.get(
+                    "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") != "1":
                 warnings.append("ParseAgent 产空,尝试 splitter_baseline 兜底")
                 try:
                     from ...core.cross_table_splitter import (
@@ -1086,6 +1095,19 @@ class Step1ParseSubAgent:
                 root_cause=json.dumps(quality.get("issues", [])[:8], ensure_ascii=False),
                 suggestion="Fix Step1 references before Step2/Step3 execution",
                 is_hard=True))
+        # §主线2：被丢弃的 intent（孤立空壳等）不再静默——转成 soft 错误让 Step4
+        # 报"部分完成"而非干净成功（error_type 属 Step4._DROPPED_INTENT_ERROR_TYPES）。
+        _dropped = getattr(self._parse_agent, "_dropped_intents", None) or []
+        for _dp in _dropped:
+            errors.append(StepError(
+                step_id=STEP1_PARSE,
+                error_type="segment_partial_coverage",
+                message=(f"子任务被丢弃（{_dp.get('reason','')}）："
+                         f"{_dp.get('table_stem','?')}/{_dp.get('table_sheet','?')}"),
+                root_cause=(f"该 add 无字段值且未被本批消费，已丢弃；"
+                            f"raw={_dp.get('raw','')}"),
+                suggestion="若该子任务是用户真实意图，请补齐其字段或检查指令覆盖",
+                is_hard=False))
         # 本步 LLM 调用数（差值法）
         _llm_calls = 0
         try:

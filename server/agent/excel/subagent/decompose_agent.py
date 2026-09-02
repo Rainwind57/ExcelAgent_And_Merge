@@ -162,6 +162,47 @@ class DecomposeAgent(LLMSubAgent):
             self._tls.session_id = sid
         return sid
 
+    # ── 建议2：Step1 LLM 调用硬预算（默认 3，可回退 env=大数/0 关闭） ──
+    def _init_step1_budget(self) -> None:
+        """每次 Step1 decompose 入口重置 LLM 预算。CODEMAKER_STEP1_LLM_BUDGET 控制，
+        默认 3（主拆分 1 次 + 至多 2 次可选补洞）。超预算后 _call_llm* 短路返 None，
+        调用方走 baseline/partial，不再串行补洞。"""
+        import os as _os
+        from ..core.pipeline.llm_budget import LLMBudget
+        try:
+            _lim = int(_os.environ.get("CODEMAKER_STEP1_LLM_BUDGET", "3"))
+        except (TypeError, ValueError):
+            _lim = 3
+        self._step1_budget = LLMBudget(_lim)
+        self._budget_partial = False
+
+    def _budget_gate(self) -> bool:
+        """消费一次预算。返回 True=可调 LLM；False=预算耗尽（记 partial + trace）。"""
+        b = getattr(self, "_step1_budget", None)
+        if b is None:
+            return True  # 未初始化预算（非 Step1 入口）→ 不限制
+        if b.try_consume():
+            return True
+        self._budget_partial = True
+        try:
+            self.add_thinking(
+                getattr(self, "_default_phase", "细分"),
+                f"Step1 LLM 预算耗尽（上限 {b.limit} 次），跳过本次 LLM，"
+                f"返回结构化 partial，不再串行补洞（治超时/墙钟爆炸）")
+        except Exception:
+            pass
+        return False
+
+    def _call_llm(self, prompt: str, timeout: int = 90):
+        if not self._budget_gate():
+            return None
+        return super()._call_llm(prompt, timeout=timeout)
+
+    def _call_llm_raw(self, prompt: str, timeout: int = 90):
+        if not self._budget_gate():
+            return None
+        return super()._call_llm_raw(prompt, timeout=timeout)
+
     def decompose(self, text: str, locator_result: LocatorResult,
                   force_single: bool = False) -> list:
         """主入口:text + LocatorResult → SplitIntent[]。
@@ -198,12 +239,12 @@ class DecomposeAgent(LLMSubAgent):
 
         import os as _os
 
-        # §领域链型确定性展开（deterministic domain expander）：对高复杂高频链型
-        # （新建门派全链等），LLM 真实链路常超时/漏意图（case0 实测 12/19）。命中
-        # 强判据时直接产完整、正确的跨表链，跳过 LLM decompose（同时根治超时）。
-        # 仅对强判据命中（新建门派+编号/类型+神通）触发，不误伤 LLM 能做好的简单意图。
-        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=1 关闭。
-        if _os.environ.get("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "") != "1":
+        # 建议2：重置本次 Step1 LLM 预算（≤3 次，超则跳过补洞走 partial）
+        self._init_step1_budget()
+
+        # §去硬模板：领域链型确定性展开默认关闭（同 parse_agent.py 入口，理由一致）。
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=0 显式重新开启。
+        if _os.environ.get("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "1") != "1":
             try:
                 _dom = self._try_domain_expander(text)
             except Exception:  # noqa: BLE001
@@ -220,8 +261,16 @@ class DecomposeAgent(LLMSubAgent):
         # 思考；长超时让 LLM 卡住拖垮整链。40s 够单段拆分。
         per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
         candidates = locator_result.candidates
+        # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：把 context 级噪声表
+        # 从 schema 注入剔除，缩短 prompt。required/dependency 完整保留（不伤多表写入）。
+        self._context_drop_stems = self._context_drop_set(locator_result)
         fk_block = self._build_fk_block(locator_result.fk_edges)
         column_signal = getattr(locator_result, "column_signal", None)
+        # §知识增强：缓存 fk_edges 供 _build_schema_block 逐列标注 [PK]/[FK→...]，
+        # 让 LLM 直接看到列间关系而非只看表头字符串，不引入硬编码业务规则
+        # （数据源是 LocatorAgent 已算好的 fk_edges：声明式 json + 运行时列名模式
+        # 推导，PK 来自 rules/validate 用户声明，均是数据驱动，非本函数硬判）。
+        self._last_fk_edges = locator_result.fk_edges
 
         single_threshold = int(_os.environ.get(
             "CODEMAKER_DECOMPOSE_SINGLE_PROMPT_THRESHOLD", "3"))
@@ -318,7 +367,8 @@ class DecomposeAgent(LLMSubAgent):
                 f"触发单表 schema 重拆：{retry_stems[:8]}")
             # 构单表候选：从原 candidates 找该 stem 的 CandidateTable，单表小 schema
             cand_by_stem = {c.stem: c for c in candidates}
-            for _rs in retry_stems:
+
+            def _retry_dropped_one(_rs: str):
                 _rc = cand_by_stem.get(_rs)
                 if _rc is None:
                     # 候选外 stem，构造单表候选（sheet 留空让 schema 读全部业务 sheet）
@@ -329,6 +379,22 @@ class DecomposeAgent(LLMSubAgent):
                         text, [_rc], fk_block, per_to, column_signal=column_signal)
                 except Exception:  # noqa: BLE001
                     _rit, _rdrp = [], []
+                return _rs, _rit
+
+            # §落地：串行 for 改并发（仿 _backfill_missing 同款 ThreadPool 模式）。
+            # 原为逐 stem 串行等 per_to（40s）超时，N 个丢弃表就是 N×40s 叠加墙钟；
+            # 改并发后墙钟收窄到"最慢的一个"，LLM 调用次数/成本不变。
+            if len(retry_stems) <= 1:
+                _dropped_results = [_retry_dropped_one(s) for s in retry_stems]
+            else:
+                from concurrent.futures import ThreadPoolExecutor as _TPE2
+                import os as _os_dr
+                _dr_workers = min(len(retry_stems),
+                    int(_os_dr.environ.get("CODEMAKER_DECOMPOSE_WORKERS", "4")) or 1)
+                with _TPE2(max_workers=_dr_workers) as _ex2:
+                    _dropped_results = [f.result() for f in
+                        [_ex2.submit(_retry_dropped_one, s) for s in retry_stems]]
+            for _rs, _rit in _dropped_results:
                 if _rit:
                     self.add_thinking("细分",
                         f"单表重拆 {_rs} 产 {len(_rit)} 条意图（叙述灌值丢弃后补救）")
@@ -342,14 +408,16 @@ class DecomposeAgent(LLMSubAgent):
             f"({'单 prompt' if use_single else '并发'}"
             f"{'+' if all_dropped else ''}{'重拆' if all_dropped else ''})")
         # §零 LLM 兜底：LLM 路径产空（serve 慢/超时/非 JSON）时不返空，
-        # 改用确定性 splitter_baseline（cross_table_splitter 11 模板，0 LLM）。
+        # 改用确定性 splitter_baseline（默认只剩通用 path b——ColumnExtractor
+        # 候选表兜底，11 硬编码模板已默认关闭，见 _splitter_baseline 内部）。
         # 保链路完整走通——LLM 不稳时仍能产可执行 intent，不依赖 serve 健康。
+        # 可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 额外重开 11 模板。
         if not all_intents:
             fb = self._splitter_baseline(text, candidates, locator_result.fk_edges)
             if fb:
                 self.add_thinking("细分",
                     f"DecomposeAgent LLM 路径产空,零 LLM 兜底产 {len(fb)} 条"
-                    f"(splitter_baseline 11 模板)")
+                    f"(ColumnExtractor 通用兜底)")
                 all_intents = fb
         # §分段单 prompt 兜底（与 splitter_baseline 互补）：仍空时按 split_multi_intent
         # 分段，每段调 decompose_segment（段内候选裁剪 + 小 prompt），LLM 路径产准。
@@ -385,6 +453,13 @@ class DecomposeAgent(LLMSubAgent):
             all_intents = self._backfill_missing(
                 text, all_intents, candidates, locator_result.fk_edges,
                 fk_block, per_to, column_signal)
+        # §ReAct 表级回读自检：规则集合差（_backfill_missing）兜不住的语义性遗漏，
+        # 交给 LLM 自己看着候选池+FK图复核一遍（受 Step1 LLM 预算门控，预算耗尽
+        # 自动跳过，不额外叠调用）。默认开，CODEMAKER_DECOMPOSE_TABLE_SELFCHECK=0
+        # 关闭。
+        if all_intents:
+            all_intents = self._llm_verify_table_coverage(
+                text, all_intents, candidates, locator_result.fk_edges, per_to)
         # §Step1 解析层健康自检 + 保守回填（dict 残留/consumes 标签悬空）：
         # 把 LLM 产出质量问题在 Step1 就抓出/修正，不流到 Step3 才爆。零 LLM，
         # 边界独立。返回修正/告警条数供观测。
@@ -452,10 +527,14 @@ class DecomposeAgent(LLMSubAgent):
             logger.warning("DecomposeAgent 无 parser,跳过段分解")
             return []
         import os as _os
+        # 建议2：重置本段 Step1 LLM 预算（≤3 次，超则跳过补洞走 partial）
+        self._init_step1_budget()
         # 段级 schema 小(单段+剪枝后候选表少)，不需整句级长 timeout。默认与
         # decompose 整句入口(L85)对齐为 40，消除两处默认不一致；runner/env
         # 可经 CODEMAKER_DECOMPOSE_TIMEOUT 进一步下压（串行/并发累加墙钟由此收敛）。
         per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+        # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：剔除 context 级噪声表 schema。
+        self._context_drop_stems = self._context_drop_set(locator_result)
         candidates = self._prune_segment_candidates(
             seg, locator_result.candidates,
             getattr(locator_result, "column_signal", None),
@@ -515,29 +594,19 @@ class DecomposeAgent(LLMSubAgent):
                         f"段级单表重拆 {_rs} 仍产空/叙述灌值，未能补救")
         # §零 LLM 兜底：段分解产空时走 _splitter_baseline（与主流程一致），
         # 保段级覆盖（多段指令某段 LLM 产空不漏）。
-        # §分支叙事例外：npc_dialogue/npc_composite（对话树+多选项分支）结构
-        # 因指令而异（选项数量/每个选项跳转目标各不相同），splitter_baseline
-        # 走的是固定形状模板，套不上任意分支形状——实测会拼出结构错乱的假数据
-        # （如把整段奖励叙述塞进选项文字字段、丢主对话），比"留空"更危险（留空
-        # 至少能被下方逐表重拆/全局对账发现并补，假数据会静默走完 Step2/3）。
-        # 这类段跳过模板兜底，直接落到下方逐表重拆（真 LLM，单表小 schema 更
-        # 容易在短超时内成功，出的是真结构而非套模板）。
-        _is_branching_dialog = False
-        try:
-            from ..core.cross_table_splitter import detect_cross_table_action as _dct
-            _is_branching_dialog = _dct(seg) in ("npc_dialogue", "npc_composite")
-        except Exception:
-            pass
-        if not intents and not _is_branching_dialog:
-            fb = self._splitter_baseline(seg, candidates, locator_result.fk_edges)
-            if fb:
-                self.add_thinking("细分",
-                    f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
-                intents = fb
-        elif not intents and _is_branching_dialog:
-            self.add_thinking("细分",
-                "DecomposeAgent 段分解产空(分支对话结构),跳过零 LLM 兜底模板"
-                "(固定形状套不上任意分支,改走下方逐表重拆求真结构)")
+        # §去硬模板：原分支叙事例外（npc_dialogue/npc_composite 跳过模板兜底）
+        # 是为规避 cross_table_splitter 固定形状模板套不上任意分支形状的问题；
+        # 该硬编码模板路径已默认关闭（_splitter_baseline 现只保留通用 path b），
+        # 无需再做这类叙事特判，统一走同一条通用兜底。
+        # §用户要求关闭兜底（LLM 单次调用应能产出 JSON）：注释掉段级 _splitter_baseline
+        # 兜底，LLM 段产空即保持空，由上层 Step1 段级对账记录该段漏覆盖（soft error），
+        # 不再回退硬编码规则路径。若需恢复取消注释下方块。
+        # if not intents:
+        #     fb = self._splitter_baseline(seg, candidates, locator_result.fk_edges)
+        #     if fb:
+        #         self.add_thinking("细分",
+        #             f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
+        #         intents = fb
         # §框架级：段级大候选池单 prompt 超时产空（如 school 段 5 表 schema 过大），
         # splitter 模板又不覆盖新链型 → 该段整段漏产。这里对裁剪后候选逐表单表
         # 重拆（单表小 schema 不易超时），把每张真实动作主语表拆出来。仅产空时
@@ -778,35 +847,41 @@ class DecomposeAgent(LLMSubAgent):
                            fk_edges: list) -> list:
         """零 LLM 兜底：LLM 路径产空时产确定性 intent。
 
-        两路径合并（保覆盖）：
-          a. cross_table_splitter 11 模板（detect_cross_table_action 命中则用，
-             覆盖 npc/item/mail/quest/pet/school/combat/residence 等已知链型）
-          b. ColumnExtractor 候选表 → 每表产 1 条 add intent（fields 用指令
-             文本提到的列值，无值留空）+ FK 边 → produces/consumes 占位符连线
+        §去硬模板：原 path a（cross_table_splitter 11 模板，正则抽字段/produces/
+        consumes，跳过 LLM 决策）+ _key_value_type_baseline（"第N条"句式正则硬编码）
+        默认关闭，只保留通用 path b —— ColumnExtractor 候选表 → 每表产 1 条 add
+        intent，字段值靠真实表头锚定通用抽取（value_extractor），不含任何表名/
+        业务词硬编码分支。表/sheet/列匹配交给 LLM 主链路（decompose 的真实 LLM
+        调用）完成，本方法只在 LLM 彻底产空时兜底，不越权替 LLM 做业务判断。
+        可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启旧模板
+        兜底（供对照/紧急回退）。
 
-        不调 LLM，不依赖 serve 健康。产空仍返 []（极少见，splitter 模板
-        不命中 + 候选表无 FK 边），由 Step1 外层再回退。
+        不调 LLM，不依赖 serve 健康。产空仍返 []（由 Step1 外层再回退）。
         """
+        import os as _os_sb
+        _template_fallback_disabled = _os_sb.environ.get(
+            "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") == "1"
         all_fb: list = []
-        # a. splitter 11 模板
-        try:
-            from ..core.cross_table_splitter import (
-                CrossTableIntentSplitter, detect_cross_table_action)
-            if detect_cross_table_action(text):
-                sp = CrossTableIntentSplitter()
-                sp_intents = sp.split(text)
-                if sp_intents:
-                    # Template fallback is a deterministic full-chain answer for known
-                    # cross-table patterns. Do not mix in ColumnExtractor candidate
-                    # fallback afterwards; shared columns such as model_id/coords can
-                    # otherwise hallucinate weakly related tables into executable tasks.
-                    return sp_intents
-        except Exception:  # noqa: BLE001
-            logger.warning("DecomposeAgent splitter_baseline 模板失败",
-                           exc_info=True)
-        kv_fb = self._key_value_type_baseline(text, candidates)
-        if kv_fb:
-            return kv_fb
+        if not _template_fallback_disabled:
+            # a. splitter 11 模板（默认关闭，硬编码规则，见上）
+            try:
+                from ..core.cross_table_splitter import (
+                    CrossTableIntentSplitter, detect_cross_table_action)
+                if detect_cross_table_action(text):
+                    sp = CrossTableIntentSplitter()
+                    sp_intents = sp.split(text)
+                    if sp_intents:
+                        # Template fallback is a deterministic full-chain answer for known
+                        # cross-table patterns. Do not mix in ColumnExtractor candidate
+                        # fallback afterwards; shared columns such as model_id/coords can
+                        # otherwise hallucinate weakly related tables into executable tasks.
+                        return sp_intents
+            except Exception:  # noqa: BLE001
+                logger.warning("DecomposeAgent splitter_baseline 模板失败",
+                               exc_info=True)
+            kv_fb = self._key_value_type_baseline(text, candidates)
+            if kv_fb:
+                return kv_fb
         # b. ColumnExtractor 信号兜底：每候选表产 1 条 add intent
         # 候选表已含列名信号，从 text 提取列值填 fields
         if len(all_fb) < len(candidates):
@@ -918,6 +993,32 @@ class DecomposeAgent(LLMSubAgent):
                         _m = _pat.search(text)
                         if _m:
                             fields[col] = _m.group(1)
+                    # §现象3 确定性字段抽取补强（header 锚定 "列名<分隔>值"）：
+                    # 弱 baseline 只抓"列名紧邻数字"，漏掉 str 列的"列名：值"、引号名、
+                    # 图标路径等。value_extractor 高精度（需真实表头名 + 分隔符命中原文，
+                    # 几乎无歧义）补齐这些确定性字段，残余模糊字段仍留给 LLM/模板。
+                    # 默认开，CODEMAKER_BASELINE_VALUE_EXTRACTOR=0 可回退。不绑表名/字段。
+                    import os as _os_ve
+                    if _os_ve.environ.get(
+                            "CODEMAKER_BASELINE_VALUE_EXTRACTOR", "1") != "0":
+                        try:
+                            from ..core.pipeline.value_extractor import (
+                                extract_fields_from_text)
+                            _idx_cache = getattr(self, "_table_index_cache", None) or {}
+                            _vp = _idx_cache.get(stem) or _idx_cache.get(stem.lower())
+                            _vsheet = (getattr(cand, "sheet", "")
+                                       or self._default_sheet_for(stem))
+                            if _vp is not None and _vsheet:
+                                _vhdrs, _ = self._read_schema_cached(_vp, stem, _vsheet)
+                                if _vhdrs:
+                                    _ve = extract_fields_from_text(
+                                        text, _vhdrs, existing=fields)
+                                    for _vc, _vv in (_ve.get("fields") or {}).items():
+                                        if _vc not in fields:
+                                            fields[_vc] = _vv
+                        except Exception:  # noqa: BLE001
+                            logger.debug("baseline value_extractor 补强失败",
+                                         exc_info=True)
                 cand_loc_field = _loc_field
                 if cand_loc_field:
                     for e in fk_edges or []:
@@ -1172,6 +1273,193 @@ class DecomposeAgent(LLMSubAgent):
                     f"缺表重拆 {_ms} 仍产空（该表可能非动作主语，如 FK 引用目标）")
         return intents
 
+    def _llm_verify_table_coverage(self, text: str, intents: list, candidates: list,
+                                    fk_edges: list, per_to: int) -> list:
+        """§ReAct 表级回读自检：把当前产出表清单 + 候选池的 FK 关联图丢回 LLM，
+        问一遍"这些候选表里有没有该产但没产的"。
+
+        与 _backfill_missing 的关键区别：_backfill_missing 用规则算 expected（候选
+        非弱级 + FK 边两端）与 produced 做集合差，缺了就重拆——是"算法猜该补哪个"。
+        本方法把同一份结构事实（候选表 + FK 图）连同当前产出**原样摊给 LLM**，让
+        LLM 自己判断"看着这些表和它们的关联，你的产出是否漏了什么"——是"LLM 自己
+        决定该补哪个"，不是规则代劳。两者互补：_backfill_missing 兜底纯结构性漏拆
+        （FK 两端必须同时出现的硬约束），本方法补规则覆盖不到的语义性遗漏（如
+        "指令提到刷新实体但没建 spawn_world_entity"，FK 图上 entity_prefab 未必
+        直接连 spawn_world_entity，规则集合差找不到，需要 LLM 读语义判断）。
+
+        §grounding 硬约束（防幻觉）：LLM 只能从**给定候选池**里选缺失表，不允许
+        提出候选池外的新表名——同 _llm_complete_fields 的"允许列表"设计原则。
+        返回的缺失 stem 会各自触发一次单表小 schema 重拆（真实 LLM 决定字段），
+        不是本方法直接编字段。
+
+        Args:
+            text: 原始指令
+            intents: 当前已产出的 SplitIntent 列表
+            candidates: 候选表列表（grounding 边界，缺失表只能从这里选）
+            fk_edges: 候选表之间的 FK 关系
+            per_to: 单表重拆超时（复用主 decompose 的超时设置）
+
+        Returns:
+            intents（原地补充后返回；LLM 关闭/失败/无候选/无缺失 → 原样返回）。
+        """
+        import os as _os_tc
+        if _os_tc.getenv("CODEMAKER_DECOMPOSE_TABLE_SELFCHECK", "1") == "0":
+            return intents
+        if not intents or not candidates or self.parser is None:
+            return intents
+        produced_stems = {(getattr(it, "table_hint", "") or "").strip().lower()
+                           for it in intents if getattr(it, "table_hint", "")}
+        # 候选池里"还没产出"的表——只有这些才可能被 LLM 判定为缺失（grounding 边界）
+        unproduced = [c for c in candidates
+                      if (c.stem or "").strip().lower() not in produced_stems]
+        # §精确率反向检查不要求 unproduced 非空——候选已全部产出时仍可能存在
+        # "弱信号凑巧混入的多余表"需要复核，不能因为没有缺表候选就整体跳过。
+        # 只有"两边都没什么好查"（无未产出候选 且 产出表数 <=1，没有多余可言）才跳过。
+        if not unproduced and len(produced_stems) <= 1:
+            return intents
+
+        produced_lines = []
+        for it in intents:
+            stem = getattr(it, "table_hint", "") or "?"
+            sheet = getattr(it, "sheet_hint", "") or "?"
+            prod = getattr(it, "produces", "") or ""
+            produced_lines.append(f"- {stem}/{sheet}" + (f"（产出 {prod}）" if prod else ""))
+
+        unproduced_lines = [f"- {c.stem}/{c.sheet or '?'}" for c in unproduced]
+
+        fk_lines = []
+        _prod_and_unprod = produced_stems | {(c.stem or "").lower() for c in unproduced}
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").lower()
+            ts = (getattr(e, "to_stem", "") or "").lower()
+            if fs in _prod_and_unprod and ts in _prod_and_unprod:
+                fk_lines.append(
+                    f"- {getattr(e, 'from_stem', '')}.{getattr(e, 'from_column', '')} "
+                    f"-> {getattr(e, 'to_stem', '')}.{getattr(e, 'to_column', '')}")
+
+        prompt = (
+            "你在做配表拆解的自我复核。下面是同一条指令，你刚才已经拆出的表清单，"
+            "以及候选池里还没被你使用的表、和它们之间的外键关联图。请重新看一遍"
+            "指令，做两件事：\n"
+            "1）判断候选池里「还没用到的表」中，有没有其实应该产出但被你漏掉的"
+            "（只能从「候选池未用表」里选，不允许提出这个列表之外的新表）。\n"
+            "2）判断「你已产出的表」里，有没有其实指令根本没要求、只是弱信号"
+            "凑巧混进来的多余表（比如只因为跟已产出表有外键关联、或候选池噪声，"
+            "但原文根本没提到要新增/修改它的具体内容）。\n\n"
+            f"## 指令\n{text}\n\n"
+            f"## 你已产出的表\n" + "\n".join(produced_lines) + "\n\n"
+            f"## 候选池里还没用到的表\n" + "\n".join(unproduced_lines) + "\n\n"
+            + (f"## 这些表之间的外键关联\n" + "\n".join(fk_lines) + "\n\n" if fk_lines else "")
+            + "判断标准：只有当指令原文明确要求新增/修改这张表的具体数据（能从原文"
+              "找到对应的名称/id/描述等实际内容）才算需要；仅仅因为该表与其他表"
+              "存在外键关联、或候选池里凑巧出现，并不代表指令真的要动它——这种情况"
+              "既不算漏产也应该算多余。拿不准就都不填（宁可保留现状，不做改动）。\n"
+            + '只输出 JSON：{"missing_stems": ["表名", ...], "extra_stems": ["表名", ...]}，'
+              '都没有则都填 []。'
+        )
+        data = None
+        try:
+            data = self._call_llm(prompt, timeout=max(15, min(per_to, 25)))
+        except Exception:  # noqa: BLE001
+            logger.warning("ReAct 表级自检 LLM 调用异常，跳过", exc_info=True)
+            return intents
+        if not isinstance(data, dict):
+            return intents
+
+        # §精确率反向检查：产出表里被判定"多余"的，安全前提下移除（不是别的
+        # intent 依赖的 FK producer 才移除——避免撕断真实跨表引用链）。
+        extra = data.get("extra_stems")
+        if isinstance(extra, list) and extra:
+            _extra_norm = {s.strip().lower() for s in extra if isinstance(s, str)}
+            _extra_norm &= produced_stems  # grounding：只能是已产出的表，不接受幻觉
+            if _extra_norm:
+                def _referenced_elsewhere(stem: str) -> bool:
+                    _labels = {str(getattr(it, "produces", "") or "").strip()
+                               for it in intents
+                               if (getattr(it, "table_hint", "") or "").strip().lower() == stem
+                               and getattr(it, "produces", "")}
+                    _labels.discard("")
+                    if not _labels:
+                        return False
+                    for other in intents:
+                        if (getattr(other, "table_hint", "") or "").strip().lower() == stem:
+                            continue
+                        _f = getattr(other, "fields", None)
+                        if not isinstance(_f, dict):
+                            continue
+                        for v in _f.values():
+                            _vs = str(v)
+                            if any(f"<{lb}>" in _vs for lb in _labels):
+                                return True
+                    return False
+
+                _removed = []
+                _kept_intents = []
+                for it in intents:
+                    _stem = (getattr(it, "table_hint", "") or "").strip().lower()
+                    if _stem in _extra_norm and not _referenced_elsewhere(_stem):
+                        _removed.append(_stem)
+                        continue
+                    _kept_intents.append(it)
+                if _removed:
+                    self.add_thinking("细分",
+                        f"ReAct 表级自检：LLM 判定 {sorted(set(_removed))} 为多余表"
+                        f"（弱信号凑巧混入,原文未要求,且非其它表FK依赖）,已剔除")
+                    intents = _kept_intents
+
+        missing = data.get("missing_stems")
+        if not isinstance(missing, list) or not missing:
+            return intents
+        valid_stems = {(c.stem or "").strip().lower() for c in unproduced}
+        confirmed = [s for s in missing
+                     if isinstance(s, str) and s.strip().lower() in valid_stems]
+        if not confirmed:
+            return intents
+        self.add_thinking("细分",
+            f"ReAct 表级自检：LLM 判定候选池里漏产 {confirmed}，触发单表重拆补救")
+        cand_by_stem = {c.stem: c for c in unproduced}
+
+        def _verify_retry_one(_ms: str):
+            _rc = cand_by_stem.get(_ms) or cand_by_stem.get(_ms.strip())
+            if _rc is None:
+                return _ms, []
+            try:
+                _res = self._decompose_single_prompt(
+                    text, [_rc], self._build_fk_block(fk_edges), per_to)
+                return _ms, (_res[0] if isinstance(_res, tuple) else _res)
+            except Exception:  # noqa: BLE001
+                return _ms, []
+
+        if len(confirmed) <= 1:
+            _vresults = [_verify_retry_one(s) for s in confirmed]
+        else:
+            from concurrent.futures import ThreadPoolExecutor as _TPE_TC
+            _tc_workers = min(len(confirmed), 4)
+            with _TPE_TC(max_workers=_tc_workers) as _ex_tc:
+                _vresults = [f.result() for f in
+                             [_ex_tc.submit(_verify_retry_one, s) for s in confirmed]]
+        _existing_keys = {((getattr(it, "table_hint", "") or "").lower(),
+                           (getattr(it, "sheet_hint", "") or "").strip())
+                          for it in intents}
+        for _ms, _rit in _vresults:
+            if not _rit:
+                self.add_thinking("细分",
+                    f"ReAct 表级自检补拆 {_ms} 仍产空（可能确实不需要该表）")
+                continue
+            _added = 0
+            for _ni in _rit:
+                _nk = ((getattr(_ni, "table_hint", "") or "").lower(),
+                       (getattr(_ni, "sheet_hint", "") or "").strip())
+                if _nk in _existing_keys:
+                    continue
+                intents.append(_ni)
+                _existing_keys.add(_nk)
+                _added += 1
+            if _added:
+                self.add_thinking("细分",
+                    f"ReAct 表级自检补拆 {_ms} 补 {_added} 条意图")
+        return intents
+
     def _decompose_single_prompt(self, text: str, candidates: list[CandidateTable],
                                   fk_block: str, per_to: int,
                                   column_signal=None) -> list:
@@ -1202,11 +1490,21 @@ class DecomposeAgent(LLMSubAgent):
             _t.Thread(target=_mirror, daemon=True).start()
         from .base import _isolated_empty_dir
         import time as _time_retry
-        # §抖动容错：empty_response 重试 1 次（短退避），仅对 serve 抖动返空生效；
-        # 顶满 timeout 返空不重试（重试仍顶满，浪费墙钟）。env CODEMAKER_DECOMPOSE_SINGLE_RETRY。
+        # §抖动容错 + 空数组重试：原来只在 LLM 返回空字符串（raw=""）时重试，
+        # 对"LLM 返回合法 JSON 但内容是空数组 []"（确信地什么都不产）完全没有
+        # 二次确认——这正是分段路径里"某段整体产空"复现（同输入多次跑，产空的
+        # 段位置不同）的根因之一：单次采样的偶然空判定被直接当最终结果接受。
+        # 改为：raw 为空 或 解析出的 arr 为空，都算"可疑空结果"，都在同一重试
+        # 预算内重采样一次（自然由 LLM 自身非确定性产生不同样本，等价轻量
+        # self-consistency：不做真正的多数投票，但至少给一次"换一次采样"的
+        # 机会，比"死认第一次的空结果"更稳）。超时不重试（顶满仍会顶满，
+        # 浪费墙钟），仅对"抖动/确信空判定"生效。
+        # env：CODEMAKER_DECOMPOSE_SINGLE_RETRY 控制总重试次数（默认 1，同一
+        # 预算覆盖两种触发条件，不叠加）。
         _RETRY_MAX = max(0, int(os.environ.get("CODEMAKER_DECOMPOSE_SINGLE_RETRY", "1")))
         raw = ""
         _resp_err = ""
+        arr: list = []
         for _attempt in range(_RETRY_MAX + 1):
             raw = ""
             _resp_err = ""
@@ -1225,14 +1523,16 @@ class DecomposeAgent(LLMSubAgent):
                     _resp_err = str(getattr(resp, "error", "")
                                     or getattr(resp, "error_type", "") or "")
                 if raw:
-                    break  # 成功 → 出循环
+                    arr = self._parse_json_array(raw)
+                    if arr:
+                        break  # 成功且非空 → 出循环
             except Exception as e:  # noqa: BLE001
                 _resp_err = f"{type(e).__name__}: {e}"
                 if _attempt >= _RETRY_MAX:
                     self.add_thinking("细分",
                         f"DecomposeAgent 单 prompt 调用失败({_resp_err})")
                     return []
-            # empty_response/失败：超时不重试（顶满返空重试浪费墙钟），抖动返空重试
+            # 可疑空结果（空响应 或 合法但空数组）：超时不重试，其余重采样一次
             if _attempt < _RETRY_MAX:
                 _is_timeout = any(_x in _resp_err.lower()
                                   for _x in ("timed out", "timeout", "超时"))
@@ -1241,9 +1541,15 @@ class DecomposeAgent(LLMSubAgent):
                         f"DecomposeAgent 单 prompt 超时空响应(stems={_stems}),"
                         f"不重试节省墙钟（重试仍顶满 timeout）")
                     break
-                self.add_thinking("细分",
-                    f"DecomposeAgent 单 prompt 空响应(stems={_stems}),"
-                    f"抖动重试 attempt={_attempt+1}/{_RETRY_MAX}")
+                if not raw:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 单 prompt 空响应(stems={_stems}),"
+                        f"抖动重试 attempt={_attempt+1}/{_RETRY_MAX}")
+                else:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 单 prompt 返回合法空数组(stems={_stems}),"
+                        f"重采样确认 attempt={_attempt+1}/{_RETRY_MAX}"
+                        f"（防单次采样偶然判定为空）")
                 _time_retry.sleep(1.5)  # 短退避 1.5s 待 serve 抖动恢复
                 continue
         # §观测C：落 prompt/raw IO（env 开），定位 LLM 实际产出与退化。
@@ -1753,6 +2059,23 @@ class DecomposeAgent(LLMSubAgent):
                             f"，无 FK 边可回填（交 Step2/backfill 兜底）")
         return n
 
+    def _context_drop_set(self, locator_result) -> set:
+        """从 schema 注入中剔除的 context 级噪声表 stem 集合。
+
+        文档 #2/#3「候选池撑长 prompt」的安全修法：只剔除 context 级——即弱信号
+        （column_extract/substring）、且经 locator 阶段 LLM 复核判定「非真正涉及」、
+        又不与 required 表 FK 关联的旁证表。required（含 LLM 判定相关）/dependency
+        （FK 关联，多表写入需其列）完整保留，绝不误删动作主语表或用户要写的表。
+
+        依赖 LocatorResult.candidate_groups（locator 已用 LLM 复核 + FK 关联分好层）。
+        默认启用；CODEMAKER_DECOMPOSE_DROP_CONTEXT=0 关闭回退（零行为改动）。
+        """
+        import os as _os
+        if _os.environ.get("CODEMAKER_DECOMPOSE_DROP_CONTEXT", "1") == "0":
+            return set()
+        groups = getattr(locator_result, "candidate_groups", None) or {}
+        return set(groups.get("context", []) or [])
+
     def _build_schema_block(self, candidates: list[CandidateTable],
                              text: str = "", column_signal=None) -> str:
         """读每表所有业务 sheet 的 row1+row2 表头,构 schema 块。
@@ -1772,9 +2095,12 @@ class DecomposeAgent(LLMSubAgent):
         import os as _os
         # §P1-2.5 schema 瘦身：按候选数动态调 sheets/cols。候选少（≤3）给 4 sheet
         # 保覆盖，候选多（>5）压 2 sheet 防 prompt 膨胀致超时。cols 同理。
+        # §激进提速：>5 候选 cols 8→6、3~5 候选 12→10（命中列强制保留，仅砍非命中
+        # 噪声列，见下方 kept 逻辑）——"召回宽、决策窄"，LLM 看更少噪声列、prompt 更短。
+        # 可回退：显式设 CODEMAKER_DECOMPOSE_SCHEMA_COLS / _SHEETS 覆盖。
         _n_cands = len(candidates)
         _default_sheets = "4" if _n_cands <= 3 else ("2" if _n_cands > 5 else "3")
-        _default_cols = "16" if _n_cands <= 3 else ("8" if _n_cands > 5 else "12")
+        _default_cols = "16" if _n_cands <= 3 else ("6" if _n_cands > 5 else "10")
         max_sheets = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_SHEETS", _default_sheets)))
         max_cols = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_COLS", _default_cols)))
         # 列名信号：构建 (stem, sheet) -> 命中列名集合，供 sheet 排序加权
@@ -1790,7 +2116,17 @@ class DecomposeAgent(LLMSubAgent):
             return ""
         lines: list[str] = []
         _records: list[dict] = []  # schema_budget 用（stem/sheet/cols/sig_cols）
+        # context 级噪声表剔除（文档 #2/#3）：全部候选都在 drop 集时放弃裁剪（避免 schema 空）。
+        _drop = set(getattr(self, "_context_drop_stems", None) or set())
+        if _drop:
+            _all_stems = {c.stem for c in candidates if getattr(c, "stem", None)}
+            if not (_all_stems - _drop):
+                _drop = set()
+        _dropped_n = 0
         for cand in candidates:
+            if _drop and cand.stem in _drop:
+                _dropped_n += 1
+                continue
             p = all_tables.get(cand.stem)
             if p is None:
                 continue
@@ -1841,17 +2177,35 @@ class DecomposeAgent(LLMSubAgent):
                 rest_budget = max(0, max_cols - len(kept))
                 cols = kept + rest[:rest_budget]
                 if cols:
-                    lines.append(f"- {cand.stem}/{sh}: " + " | ".join(cols))
+                    # §块1/2 prompt 改进：候选来源提示——弱信号候选（FK扩表/列名巧合/
+                    # 语义补表等，非 alias/rule 直接命中）标注来源，帮 LLM 判断"这张表
+                    # 是不是真的该用",而不是盲选。只标弱信号，强命中（alias/rule）不加
+                    # 提示，防止 token 膨胀抵消 schema 预算裁剪的提速收益。
+                    _lvl = (getattr(cand, "level", "") or "").strip()
+                    _hint = ""
+                    if _lvl in ("fk_expanded", "column_extract", "column_reverse",
+                                "substring", "spawn_semantic", "entity_semantic",
+                                "retry_single"):
+                        _hint = f" [候选来源:{_lvl},供参考,请自行判断是否真正相关]"
+                    lines.append(f"- {cand.stem}/{sh}: " + " | ".join(cols) + _hint)
                     _records.append({"stem": cand.stem, "sheet": sh,
                                      "cols": cols, "sig_cols": set(kept)})
-        # schema_budget（MVP #4，默认 OFF）：CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET>0
-        # 且完整 schema 超预算时，按候选分层降注入粒度（required 完整 / dependency
-        # 摘要 / context 不注入），缩短 prompt 而非拉长 timeout。关闭时字节级不变。
+        # schema_budget（MVP #4）：CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET>0 且完整
+        # schema 超预算时，按候选分层降注入粒度（required 完整 / dependency 摘要 /
+        # context 不注入），缩短 prompt 而非拉长 timeout。
+        # §提速：默认值由 0 改为 6000（可回退：设 0 关闭）。只有 schema 块**超**该
+        # 字符阈时才裁剪 dependency 表为摘要——小 prompt（单测/常见输入）字节不变，
+        # 仅对"多候选表堆叠"的大 prompt 生效，直接压缩 serve 往返体量。
+        # §提速（金标 shadow 数据驱动）：默认 1500。真实 locator 宽召回（4~12 候选）
+        # 下，旧路径给全部候选注入完整 schema（实测 schOff 达 4006 字符）；预算 1500 +
+        # 候选分层（required 完整 / dependency 转 PK+FK 摘要 / context 省略）实测把 schema
+        # 平均压 ~62%（对齐文档"prompt 降 60%"目标）。可回退：设 0 关闭。
         _budget = 0
         try:
-            _budget = int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET", "0"))
+            _budget = int(_os.environ.get(
+                "CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET", "1500"))
         except (TypeError, ValueError):
-            _budget = 0
+            _budget = 1500
         if _budget > 0 and _records:
             try:
                 from .schema_budget import apply_schema_budget
@@ -1951,13 +2305,6 @@ class DecomposeAgent(LLMSubAgent):
                 if (getattr(it, "action", "") or "").strip().lower() == "add"]
         if not _add:
             return intents
-        stems = sorted({str(getattr(it, "table_hint", "") or "").strip()
-                        for it in _add if getattr(it, "table_hint", "")})
-        if not stems:
-            return intents
-        schema_full, allowed = self._build_full_schema_block(stems)
-        if not schema_full:
-            return intents
 
         def _fields_of(it):
             f = getattr(it, "fields", None)
@@ -1966,6 +2313,28 @@ class DecomposeAgent(LLMSubAgent):
             ex = getattr(it, "extras", None) or {}
             f = ex.get("fields")
             return f if isinstance(f, dict) else None
+
+        # §落地：低成本预判——原文字面值（引号名/裸数字）若已全部被现有字段值
+        # 覆盖，大概率无字段可补，跳过这次昂贵 LLM 自检调用（默认 40s+）。只要
+        # 有一个字面值未覆盖才真调 LLM 去核对。纯字符串包含判断，宁可误判"值得
+        # 查"也不误判"无需查"（偏保守，不会漏检）。
+        # 可用 CODEMAKER_DECOMPOSE_COMPLETE_SKIP_CHECK=0 关闭该预判，强制每次都调。
+        if _os.getenv("CODEMAKER_DECOMPOSE_COMPLETE_SKIP_CHECK", "1") != "0":
+            from ..core.pipeline.value_extractor import has_uncovered_literal_values
+            _all_values = []
+            for it in intents:
+                for v in (_fields_of(it) or {}).values():
+                    _all_values.append(v)
+            if not has_uncovered_literal_values(text, _all_values):
+                return intents
+
+        stems = sorted({str(getattr(it, "table_hint", "") or "").strip()
+                        for it in _add if getattr(it, "table_hint", "")})
+        if not stems:
+            return intents
+        schema_full, allowed = self._build_full_schema_block(stems)
+        if not schema_full:
+            return intents
 
         _cur = []
         for it in intents:
@@ -2580,7 +2949,7 @@ class DecomposeAgent(LLMSubAgent):
         except ValueError:
             return []
         if result:
-            self.add_thinking("细分", "DecomposeAgent JSON 解析失败,LLM 修复兜底成功")
+            self.add_thinking("细分", "DecomposeAgent JSON 解析失败,LLM 重新生成成功")
         return result
 
     def _to_split_intents(self, arr: list, text: str) -> tuple:
@@ -2598,8 +2967,10 @@ class DecomposeAgent(LLMSubAgent):
         SI = _SplitIntent()
         intents: list = []
         dropped_stems: list[str] = []
+        _dropped_nondict = 0  # §主线2：非 dict 元素静默丢弃计数，转可追踪 trace
         for item in arr:
             if not isinstance(item, dict):
+                _dropped_nondict += 1
                 continue
             stem = str(item.get("table") or "").strip()
             sheet = str(item.get("sheet") or "").strip() or None
@@ -2704,6 +3075,35 @@ class DecomposeAgent(LLMSubAgent):
                 locator_field=loc_field, locator_value=loc_value,
                 locator_fields=loc_fields, locator_values=loc_values,
             ))
+            # §建议4 schema-first：surfacing 未知列（不在目标 sheet 表头列集合内的键）。
+            # additive：只记可追踪 trace 供 Step2/诊断可见；不从 fields 移除（模糊/别名
+            # 匹配交 agent ColumnMatcher，写前由 column_gate 处置），避免误伤。
+            try:
+                if stem and sheet and fields and self._cli is not None:
+                    _idxc = getattr(self, "_table_index_cache", None) or {}
+                    if not _idxc:
+                        self._all_table_stems()
+                        _idxc = getattr(self, "_table_index_cache", None) or {}
+                    _pp = _idxc.get(stem) or _idxc.get(stem.lower())
+                    if _pp is not None:
+                        _hdrs, _ = self._read_schema_cached(_pp, stem, sheet)
+                        if _hdrs:
+                            from ..core.pipeline.field_partition import (
+                                partition_fields_by_schema)
+                            _known, _unknown = partition_fields_by_schema(fields, _hdrs)
+                            if _unknown:
+                                self.add_thinking("细分",
+                                    f"schema-first：{stem}/{sheet} 未知列 "
+                                    f"{list(_unknown.keys())}（不在表头列集合，"
+                                    f"交 ColumnMatcher/写前闸门处置）")
+            except Exception:  # noqa: BLE001
+                logger.debug("schema-first 未知列 surfacing 失败", exc_info=True)
+        # §主线2：非 dict 元素被丢弃时留可追踪 trace（原静默 continue），供 Step1
+        # metrics / 诊断定位 LLM 产出结构异常，禁止静默吞。
+        if _dropped_nondict:
+            self.add_thinking("细分",
+                f"_to_split_intents 丢弃 {_dropped_nondict} 个非 dict 元素"
+                f"（LLM JSON 数组含非对象项，结构异常）")
         return intents, dropped_stems
 
     def _filter_intents(self, intents: list, candidates: list[CandidateTable],

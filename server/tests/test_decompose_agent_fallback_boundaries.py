@@ -41,7 +41,11 @@ class _KvtCli:
         return self._schemas[(path.stem, sheet)][1]
 
 
-def test_key_value_type_baseline_routes_by_unquoted_intent_text():
+def test_key_value_type_baseline_routes_by_unquoted_intent_text(monkeypatch):
+    # §去硬模板：_key_value_type_baseline 默认关闭（见 decompose_agent.py
+    # _splitter_baseline），本测试显式重新开启以验证该硬编码规则函数自身仍
+    # 正确（函数未删除，只是默认不再介入主链路）。
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
     text = (
         "帮我把几条游戏内提示文案配一下。"
         "第一条：'帮派资金不足，无法升级该建筑'，key 用 TID_TIPS_GUILD_FUNDS_LACK，类型 tips；"
@@ -67,7 +71,10 @@ def test_key_value_type_baseline_routes_by_unquoted_intent_text():
     assert intents[1].fields["type"] == "tips"
 
 
-def test_splitter_baseline_does_not_append_empty_candidate_shells_after_template():
+def test_splitter_baseline_does_not_append_empty_candidate_shells_after_template(monkeypatch):
+    # §去硬模板：cross_table_splitter 11 模板默认关闭，本测试显式重新开启验证
+    # 该模板函数自身逻辑仍正确（模板未删除，只是默认不再介入主链路）。
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
     text = (
         "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，"
         "玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，"
@@ -174,7 +181,9 @@ def test_splitter_baseline_adds_explicit_table_name_missed_by_locator():
     assert by_table["spawn_world_entity"].sheet_hint == "SpawnWorldEntity"
 
 
-def test_splitter_baseline_reward_dialogue_uses_stable_option_3_chain():
+def test_splitter_baseline_reward_dialogue_uses_stable_option_3_chain(monkeypatch):
+    # §去硬模板：同上，显式重新开启验证模板函数自身逻辑仍正确。
+    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
     text = (
         "新增一个道具商人叫'云游商人'，model_id 1021，放在space_id 10001坐标(30,0,40)，"
         "玩家点击后弹出对话'欢迎光临，要不要看看我的货物？'，选项'好的，看看'和'下次再来'，"

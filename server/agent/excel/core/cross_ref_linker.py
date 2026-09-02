@@ -265,10 +265,13 @@ def link_cross_refs(intents: list, llm_call: Optional[LLMCall],
             return intents
 
         changed = 0
-        for cidx, slot in by_consumer.items():
+        # §落地：多消费者的判定 LLM 调用改并发（各消费者互相独立，无共享可变
+        # 状态——prompt 构造/结果回填都只碰各自的 consumer.extras）。原为逐消费者
+        # 串行 30s/个，N 个消费者就是 N×30s 叠加墙钟；改并发后墙钟收窄到最慢的
+        # 一个。调用次数/成本不变，只省串行等待。
+        def _judge_one(cidx: int, slot: dict):
             consumer = intents[cidx]
             cand_cols = slot["cands"]
-            # 去重同名列（同列多关系只判一次）
             seen_cols = set()
             uniq_cands = []
             for c in cand_cols:
@@ -281,7 +284,22 @@ def link_cross_refs(intents: list, llm_call: Optional[LLMCall],
                 raw = llm_call(prompt)
             except Exception:
                 logger.warning("cross_ref_linker LLM 调用异常，跳过", exc_info=True)
-                continue
+                return cidx, uniq_cands, None
+            return cidx, uniq_cands, raw
+
+        _consumer_items = list(by_consumer.items())
+        if len(_consumer_items) <= 1:
+            _judged = [_judge_one(cidx, slot) for cidx, slot in _consumer_items]
+        else:
+            from concurrent.futures import ThreadPoolExecutor as _TPE_XR
+            _xr_workers = min(len(_consumer_items), 4)
+            with _TPE_XR(max_workers=_xr_workers) as _ex:
+                _judged = [f.result() for f in
+                           [_ex.submit(_judge_one, cidx, slot)
+                            for cidx, slot in _consumer_items]]
+
+        for cidx, uniq_cands, raw in _judged:
+            consumer = intents[cidx]
             obj = _extract_json_obj(raw or "")
             if not obj:
                 continue

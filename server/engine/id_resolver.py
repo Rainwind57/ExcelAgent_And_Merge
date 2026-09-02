@@ -50,17 +50,18 @@ def _row_type(row: Any) -> str:
 def _row_to_dict(row: Any) -> dict:
     if isinstance(row, dict):
         rt = row.get("row_type", "")
-        # M7-2: matched/deleted/missing_row 行后续不被重映射修改，共享原 cells 引用免拷贝。
-        # 仅 inserted 行会 split/重映射主键，需深拷贝 cells。10w 行场景 matched 占绝大多数，
-        # 免拷贝省掉 120w 次 dict(c) 分配。
-        if rt != "inserted":
-            d = {"key": row.get("key", ""), "cells": row.get("cells", []) or [], "row_type": rt}
-        else:
-            cells = [dict(c) if isinstance(c, dict) else c for c in row.get("cells", []) or []]
-            d = {"key": row.get("key", ""), "cells": cells, "row_type": rt}
-        if row.get("id_remapped"):
-            d["id_remapped"] = True
-            d["original_pk"] = row.get("original_pk", "")
+        # R25-fix: 之前这里只挑 key/cells/row_type/id_remapped/original_pk 几个
+        # 字段重建行 dict，调用方附加的其它字段（尤其是 presence——前端 split
+        # 视图靠它判断"某分支到底有没有这一行"，是区分"单侧删除"和"单侧改动
+        # 为空值"的唯一线索）会被静默丢弃。且本函数对**所有**行（不只 inserted）
+        # 都会跑一遍 _row_to_dict，等于 presence 在实践中永远传不到前端。
+        # 改成整行浅拷贝：非 inserted 行 cells 仍共享原引用（保留 M7-2 的免拷贝
+        # 性能优化，dict() 浅拷贝不会连带拷贝嵌套的 cells 列表），inserted 行才
+        # 深拷贝 cells（split/重映射要改写单元格，不能共享引用）。
+        d = dict(row)
+        d["row_type"] = rt
+        if rt == "inserted":
+            d["cells"] = [dict(c) if isinstance(c, dict) else c for c in row.get("cells", []) or []]
         return d
     cells = []
     for c in getattr(row, "cells", []) or []:
@@ -71,6 +72,10 @@ def _row_to_dict(row: Any) -> dict:
         else:
             cells.append(c)
     d = {"key": getattr(row, "key", ""), "cells": cells, "row_type": getattr(row, "row_type", "")}
+    # R25-fix: 同上，非 dict（pydantic model 等）行也尽量带出常见附加字段
+    for _extra in ("presence", "source_file", "source_version"):
+        if hasattr(row, _extra):
+            d[_extra] = getattr(row, _extra)
     if getattr(row, "id_remapped", False):
         d["id_remapped"] = True
         d["original_pk"] = getattr(row, "original_pk", "")

@@ -379,21 +379,14 @@ class LocatorAgent(LLMSubAgent):
             if not any(c.stem == stem for c in candidates):
                 candidates.append(CandidateTable(
                     stem=stem, confidence=conf, level=level, matched_term=matched))
-        _spawn_hint = route.get("spawn_hint") if (route and route.get("ok")) else None
-        if _spawn_hint in ("world", "quest", "prefab"):
-            if _spawn_hint == "world":
-                _add_if_missing("spawn_world_entity", 0.8, "spawn_semantic", "llm:world")
-            elif _spawn_hint == "quest":
-                _add_if_missing("spawn_quest_entity", 0.8, "spawn_semantic", "llm:quest")
-            else:
-                _add_if_missing("entity_prefab", 0.8, "entity_semantic", "llm:prefab")
-        else:
-            if re.search(r'刷|刷新', text) and re.search(r'坐标|放在|space_id', text):
-                _add_if_missing("spawn_world_entity", 0.8, "spawn_semantic", "刷新+坐标")
-            if '任务' in text and re.search(r'刷|刷新|prefab', text):
-                _add_if_missing("spawn_quest_entity", 0.8, "spawn_semantic", "任务刷新")
-            if re.search(r'新建一位|点击后展开|点击后弹出', text):
-                _add_if_missing("entity_prefab", 0.8, "entity_semantic", "新建实体")
+        # §去硬模板：spawn_hint 现由 LLM 直接给出具体表 stem（entity_prefab/
+        # spawn_world_entity/spawn_quest_entity 之一），不再走"抽象类别→固定
+        # 表名"映射字典，也不再有纯正则兜底分支——表匹配完全交给 LLM 判断。
+        # route 不可用（LLM 路由分类失败/关闭）时不补候选，交给下游 FK 扩表/
+        # decompose 主链路自行判断，不用正则猜测代替 LLM 决策。
+        _spawn_stem = route.get("spawn_hint") if (route and route.get("ok")) else None
+        if _spawn_stem in ("entity_prefab", "spawn_world_entity", "spawn_quest_entity"):
+            _add_if_missing(_spawn_stem, 0.8, "spawn_semantic", f"llm:{_spawn_stem}")
         # 1b. FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
         #     把 alias 未直接命中但语义相关的表(如 interaction/spawn_world_entity)
         #     纳入候选,而不用 locate_all 全量列名匹配(会引入 40+ 噪声表膨胀 DecomposeAgent 上下文)。
@@ -934,10 +927,11 @@ class LocatorAgent(LLMSubAgent):
    复杂多表形态（true/false）。
 
 4. spawn_hint：指令是否是"在场景里刷怪/生成实体/放置NPC模型"这类生成实体语义？
-   - "world"：刷怪/生成在坐标（战场/场景+坐标，纯战斗实体，无对话）
-   - "quest"：任务相关的刷新实体
-   - "prefab"：新建一个可交互实体（NPC/怪物模型，通常伴随对话）
-   - null：不涉及生成实体语义
+   若是，直接给出应该涉及的具体表 stem（可能是以下之一或多个，也可能不涉及）：
+   - "entity_prefab"：新建一个可交互实体（NPC/怪物模型，通常伴随对话）
+   - "spawn_world_entity"：把实体放置到具体场景坐标（刷怪/放置在 space_id+坐标）
+   - "spawn_quest_entity"：任务专属的刷新实体（跟随任务生成/消失）
+   不涉及生成实体语义则填 null。
 
 5. domain_chain：指令是否命中以下"确定性全链模板"之一？
    - "school_new_chain"：新建门派全链（门派 + 门派编号/类型 + 神通[+灵根映射/
@@ -946,7 +940,7 @@ class LocatorAgent(LLMSubAgent):
 
 ## 输出格式（只输出 JSON，不要 markdown 代码块，不要解释）
 {{"cross_table_type": "npc_dialogue 或其他类型或 null", "action": "add",
- "is_complex": true, "spawn_hint": "prefab 或其他或 null",
+ "is_complex": true, "spawn_hint": "entity_prefab 或其他表名或 null",
  "domain_chain": "school_new_chain 或 null"}}"""
         data = self._call_llm(prompt, timeout=15)
         if not isinstance(data, dict):
@@ -962,7 +956,8 @@ class LocatorAgent(LLMSubAgent):
         if action not in ("get", "set", "add", "delete", "unknown"):
             action = "add" if ct else "unknown"
         spawn_hint = data.get("spawn_hint")
-        spawn_hint = spawn_hint if spawn_hint in ("world", "quest", "prefab") else None
+        spawn_hint = spawn_hint if spawn_hint in (
+            "entity_prefab", "spawn_world_entity", "spawn_quest_entity") else None
         domain_chain = data.get("domain_chain")
         domain_chain = domain_chain if domain_chain in ("school_new_chain",) else None
         route = {
