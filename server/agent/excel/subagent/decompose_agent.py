@@ -541,6 +541,8 @@ class DecomposeAgent(LLMSubAgent):
             locator_result.fk_edges)
         fk_block = self._build_fk_block(locator_result.fk_edges)
         column_signal = getattr(locator_result, "column_signal", None)
+        # §知识增强：同 decompose() 入口，缓存 fk_edges 供逐列 [PK]/[FK→...] 标注。
+        self._last_fk_edges = locator_result.fk_edges
         # 缓存 column_signal 供 _splitter_baseline 零 LLM 兜底用
         self._last_column_signal = column_signal
         self.add_thinking("细分",
@@ -2109,6 +2111,24 @@ class DecomposeAgent(LLMSubAgent):
             for h in getattr(column_signal, "hits", []) or []:
                 sig_sheet_hits.setdefault(
                     (h.stem, h.sheet), set()).add(h.column)
+        # §知识增强：逐列标注 [PK]/[FK→to_stem.to_sheet.to_col]，让 LLM 直接看到
+        # 列间关系而非只看表头字符串（列关系是用户反馈的准确率痛点）。数据源
+        # 全部数据驱动，非本函数硬判业务规则：
+        #   - FK：LocatorAgent 已算好的 fk_edges（table_relations.json 声明式
+        #     覆盖层 + 运行时列名模式推导，见 locator_agent._collect_fk_edges）
+        #   - PK：rules/validate 用户声明的 primary_key（get_primary_key_overlay，
+        #     同 column_aliases.yaml 一样是数据文件，非代码硬编码）
+        def _norm(c) -> str:
+            return str(c or "").split(":")[0].strip().lower()
+        _fk_from_map: dict[tuple[str, str, str], str] = {}
+        for _e in (getattr(self, "_last_fk_edges", None) or []):
+            _k = (_e.from_stem, _e.from_sheet, _norm(_e.from_column))
+            _fk_from_map[_k] = f"{_e.to_stem}.{_e.to_sheet}.{_norm(_e.to_column)}"
+        try:
+            from ..core.rules_loader import get_primary_key_overlay
+            _pk_overlay = get_primary_key_overlay()
+        except Exception:
+            _pk_overlay = {}
         all_tables = {}
         try:
             all_tables = {p.stem: p for p in self._cli.list_tables()}
@@ -2161,18 +2181,29 @@ class DecomposeAgent(LLMSubAgent):
                 cols = []
                 # 列名信号命中的列强制保留（优先级最高，防命中列被 max_cols 截断）
                 sig_cols = sig_sheet_hits.get((cand.stem, sh), set())
-                # (display_name, is_signal) 元组，命中列先排
+                _pk_cols = set(_norm(c) for c in
+                               (_pk_overlay.get(cand.stem.lower(), {}) or {}).get(sh, []) or [])
+                # (display_name, is_signal, is_relation) 三元组，命中列/关系列先排
                 col_tuples = []
                 for h, t in zip(hdrs, trow):
                     if not h:
                         continue
                     name = str(h) + (f"（{t}）" if t and str(t) != str(h) else "")
-                    col_tuples.append((name, str(h) in sig_cols))
-                # 命中列在前，其余按原顺序
-                col_tuples.sort(key=lambda x: (not x[1],))
+                    _hn, _tn = _norm(h), _norm(t)
+                    _is_pk = _hn in _pk_cols or _tn in _pk_cols
+                    _fk_target = (_fk_from_map.get((cand.stem, sh, _hn))
+                                  or _fk_from_map.get((cand.stem, sh, _tn)))
+                    if _is_pk:
+                        name = f"{name}[PK]"
+                    elif _fk_target:
+                        name = f"{name}[FK→{_fk_target}]"
+                    col_tuples.append((name, str(h) in sig_cols, _is_pk or bool(_fk_target)))
+                # 命中列/关系列在前，其余按原顺序（关系列即使无信号命中也优先于
+                # max_cols 截断被砍——列间关系是准确率关键，不能被噪声列挤掉）。
+                col_tuples.sort(key=lambda x: (not x[1], not x[2]))
                 # 命中列必留（即使超 max_cols），其余按 max_cols 上限补齐
-                kept = [name for name, is_sig in col_tuples if is_sig]
-                rest = [name for name, is_sig in col_tuples if not is_sig]
+                kept = [name for name, is_sig, _ in col_tuples if is_sig]
+                rest = [name for name, is_sig, _ in col_tuples if not is_sig]
                 # 命中列占额，剩余补到 max_cols
                 rest_budget = max(0, max_cols - len(kept))
                 cols = kept + rest[:rest_budget]
