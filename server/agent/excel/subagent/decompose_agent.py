@@ -2385,7 +2385,8 @@ class DecomposeAgent(LLMSubAgent):
                     elif _fk_target:
                         name = f"{name}[FK→{_fk_target}]"
                     # §T9 列值域约束前置注入：该列在 value_constraints.yaml 有 min/max
-                    # → 追加 [范围:min~max]，与 [PK]/[FK] 同套机制。数据源 yaml，非硬编码。
+                    # 或 enum/allowed/values 等声明 → 追加 [范围]/[枚举]，与 [PK]/[FK]
+                    # 同套机制。数据源 yaml，非硬编码。
                     try:
                         _vc_sheet = (_vc.get(cand.stem.lower(), {})
                                        .get(sh, {}) or {})
@@ -2402,6 +2403,17 @@ class DecomposeAgent(LLMSubAgent):
                                 _ms = "" if _mn is None else str(_mn)
                                 _xs = "" if _mx is None else str(_mx)
                                 name = f"{name}[范围:{_ms}~{_xs}]"
+                            _enum_vals = None
+                            for _enum_key in ("enum", "values", "allowed",
+                                              "choices", "options"):
+                                _maybe = _vc_col.get(_enum_key)
+                                if isinstance(_maybe, (list, tuple, set)):
+                                    _enum_vals = list(_maybe)
+                                    break
+                            if _enum_vals:
+                                _shown = [str(x) for x in _enum_vals[:12]]
+                                _suffix = "/..." if len(_enum_vals) > 12 else ""
+                                name = f"{name}[枚举:{'/'.join(_shown)}{_suffix}]"
                     except Exception:
                         pass
                     col_tuples.append((name, str(h) in sig_cols, _is_pk or bool(_fk_target)))

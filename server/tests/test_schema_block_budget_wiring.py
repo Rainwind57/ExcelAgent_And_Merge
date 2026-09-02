@@ -87,3 +87,31 @@ def test_small_prompt_under_budget_unchanged():
     default_block = _build(env_budget=None)
     off_block = _build(env_budget="0")
     assert default_block == off_block
+
+
+def test_value_constraints_enum_is_injected(monkeypatch):
+    """T9：value_constraints enum 以前置 schema 标注进入 Step1 prompt。"""
+    from agent.excel.core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_VALUE_CONSTRAINTS", None, raising=False)
+    monkeypatch.setattr(agent_mod, "_load_value_constraints", lambda: {
+        "aaa": {
+            "S": {
+                "columns": {
+                    "名称": {"type": "string"},
+                    "属性列_00": {"type": "int", "enum": [1, 2, 3]},
+                }
+            }
+        }
+    })
+    os.environ["CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET"] = "0"
+    os.environ["CODEMAKER_DECOMPOSE_SCHEMA_COLS"] = "20"
+    os.environ["CODEMAKER_DECOMPOSE_SCHEMA_SHEETS"] = "4"
+    try:
+        da = DecomposeAgent(parser=object(), cli=_WideCli())
+        block = da._build_schema_block(_cands()[:1], text="")
+    finally:
+        os.environ.pop("CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET", None)
+        os.environ.pop("CODEMAKER_DECOMPOSE_SCHEMA_COLS", None)
+        os.environ.pop("CODEMAKER_DECOMPOSE_SCHEMA_SHEETS", None)
+    assert "属性列_00（string）[枚举:1/2/3]" in block

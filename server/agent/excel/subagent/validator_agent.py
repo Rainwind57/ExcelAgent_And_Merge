@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from types import SimpleNamespace
 from typing import Optional
 
 from .base import SubAgent
@@ -2125,26 +2126,81 @@ class ValidatorAgent(LLMSubAgent):
         out: dict = {}
         if not intents:
             return out
-        # 收集本批 add intent 的字面量主键产出：(value, (stem, sheet, col))
-        produced_lits: dict[str, tuple] = {}
+        # 收集本批 add intent 的字面量主键产出：
+        # (target_stem, target_sheet, target_pk_col, value)
+        produced_lits: set[tuple[str, str, str, str]] = set()
+        produced_lits_by_value: dict[str, list[tuple[str, str, str]]] = {}
         # FK 列名集合（按 stem/sheet 维度），供识别"引用侧"
         fk_cols_by_table: dict[tuple, set] = {}
+        fk_edge_by_col: dict[tuple[str, str, str], FKEdge] = {}
+        target_pk_cols: dict[tuple[str, str], set[str]] = {}
         if locator_result is not None:
             for _e in (getattr(locator_result, "fk_edges", None) or []):
                 _fs = getattr(_e, "from_stem", "") or ""
                 _fsh = getattr(_e, "from_sheet", "") or ""
                 _fc = str(getattr(_e, "from_column", "") or "").split(":")[0].strip()
                 if _fs and _fsh and _fc:
-                    fk_cols_by_table.setdefault((_fs.lower(), _fsh.lower()), set()).add(_fc.lower())
+                    _from_key = (_fs.lower(), _fsh.lower())
+                    _fc_l = _fc.lower()
+                    fk_cols_by_table.setdefault(_from_key, set()).add(_fc_l)
+                    fk_edge_by_col[(_from_key[0], _from_key[1], _fc_l)] = _e
+                _ts = getattr(_e, "to_stem", "") or ""
+                _tsh = getattr(_e, "to_sheet", "") or ""
+                _tc = str(getattr(_e, "to_column", "") or "").split(":")[0].strip()
+                if _ts and _tsh and _tc:
+                    target_pk_cols.setdefault(
+                        (_ts.lower(), _tsh.lower()), set()).add(_tc.lower())
 
-        def _is_literal_id(v) -> bool:
-            """值是否纯数字字面量 ID（非占位符、非空、可被外键引用）。"""
+        def _literal_id_str(v) -> Optional[str]:
+            """返回纯数字字面量 ID 字符串；非字面量返回 None。"""
+            if isinstance(v, bool) or v is None:
+                return None
+            if isinstance(v, int):
+                return str(v)
             if not isinstance(v, str):
-                return False
+                return None
             s = v.strip()
             if not s or s.startswith("<") or s == "<auto>":
+                return None
+            return s if s.lstrip("-").isdigit() else None
+
+        def _same_table_sheet(a_stem: str, a_sheet: str, b_stem: str, b_sheet: str) -> bool:
+            return (str(a_stem or "").lower() == str(b_stem or "").lower()
+                    and str(a_sheet or "").lower() == str(b_sheet or "").lower())
+
+        def _target_exists(edge: FKEdge, value: str) -> bool:
+            """查 FK 指向目标表的目标 PK 列是否已有 value。
+
+            复用调用方 data_getter，临时构造 target intent 读取 to_stem/to_sheet 的
+            existing_values；数据源仍是 schema_bundle/真实表数据，不新增业务规则。
+            """
+            if not callable(data_getter) or edge is None:
                 return False
-            return s.lstrip("-").isdigit()
+            _to_stem = getattr(edge, "to_stem", "") or ""
+            _to_sheet = getattr(edge, "to_sheet", "") or ""
+            _to_col = str(getattr(edge, "to_column", "") or "").split(":")[0].strip()
+            if not _to_stem or not _to_sheet or not _to_col:
+                return False
+            try:
+                _target_intent = SimpleNamespace(
+                    action="get", table_hint=_to_stem, sheet_hint=_to_sheet,
+                    extras={"fields": {}})
+                _d = data_getter(_target_intent) or {}
+                _ev = _d.get("existing_values") or {}
+                _to_col_l = _to_col.lower()
+                _vals = None
+                if isinstance(_ev, dict):
+                    _vals = _ev.get(_to_col_l)
+                    if _vals is None:
+                        for _k, _v in _ev.items():
+                            if str(_k or "").lower() == _to_col_l:
+                                _vals = _v
+                                break
+                if isinstance(_vals, (set, list, tuple)):
+                    return str(value).strip() in {str(x).strip() for x in _vals}
+            except Exception:
+                logger.debug("T4 target existing lookup failed", exc_info=True)
+            return False
 
         for _it in intents:
             if getattr(_it, "action", "") != "add":
@@ -2166,8 +2222,15 @@ class ValidatorAgent(LLMSubAgent):
                 continue
             for _c, _v in _fields.items():
                 _c_plain = str(_c or "").split(":")[0].strip()
-                if _c_plain == _pk_col and _is_literal_id(_v):
-                    produced_lits[_v.strip()] = (_stem, _sheet, _pk_col)
+                _lit = _literal_id_str(_v)
+                if not _lit:
+                    continue
+                _c_l = _c_plain.lower()
+                _pk_targets = target_pk_cols.get((_stem, _sheet), set())
+                if _c_plain == _pk_col or _c_l in _pk_targets:
+                    produced_lits.add((_stem, _sheet, _c_l, _lit))
+                    produced_lits_by_value.setdefault(_lit, []).append(
+                        (_stem, _sheet, _c_l))
 
         # 收集本批所有 intent 的字面量 FK 引用：引用值不在产出集 → soft warning
         # data_getter 核实现有表是否存在该值（可选，None 时仅比对本批产出集）
@@ -2180,32 +2243,29 @@ class ValidatorAgent(LLMSubAgent):
                 continue
             _fk_set = fk_cols_by_table.get((_stem, _sheet), set())
             for _c, _v in _fields.items():
-                if not _is_literal_id(_v):
+                _val = _literal_id_str(_v)
+                if not _val:
                     continue
                 _c_plain = str(_c or "").split(":")[0].strip().lower()
                 if not _fk_set or _c_plain not in _fk_set:
                     continue
-                _val = _v.strip()
-                if _val in produced_lits:
-                    continue  # 本批产出集命中
-                # 可选：查现有表是否已存在该值
-                _exists_in_table = False
-                if callable(data_getter):
-                    _ck = (_stem, _sheet, _val)
-                    if _ck in existing_checked:
-                        _exists_in_table = True
-                    else:
-                        try:
-                            _d = data_getter(_it) or {}
-                            _rows = (_d.get("result_rows") or [])
-                            for _r in _rows:
-                                if _val in [str(x).strip() for x in (_r if isinstance(_r, (list, tuple)) else [])]:
-                                    _exists_in_table = True
-                                    break
-                            if _exists_in_table:
-                                existing_checked.add(_ck)
-                        except Exception:
-                            pass
+                _edge = fk_edge_by_col.get((_stem, _sheet, _c_plain))
+                _to_stem = (getattr(_edge, "to_stem", "") or "").lower() if _edge else ""
+                _to_sheet = (getattr(_edge, "to_sheet", "") or "").lower() if _edge else ""
+                _to_col = str(getattr(_edge, "to_column", "") or "").split(":")[0].strip().lower() if _edge else ""
+                if (_to_stem, _to_sheet, _to_col, _val) in produced_lits:
+                    continue  # 本批目标表产出集命中
+                # 兼容无 to_column 的边：同值 produced 若目标表/sheet 相同也视为命中。
+                if any(_same_table_sheet(ps, psh, _to_stem, _to_sheet)
+                       for ps, psh, _pc in produced_lits_by_value.get(_val, [])):
+                    continue
+                # 可选：查 FK target 表是否已存在该值
+                _ck = (_to_stem, _to_sheet, _to_col, _val)
+                _exists_in_table = _ck in existing_checked
+                if not _exists_in_table and _edge is not None:
+                    _exists_in_table = _target_exists(_edge, _val)
+                    if _exists_in_table:
+                        existing_checked.add(_ck)
                 if _exists_in_table:
                     continue
                 sid = id(_it)
