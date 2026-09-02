@@ -195,10 +195,13 @@ class Step4ConcludeSubAgent:
                 summary += f"，{n_pending} 个待确认"
         elif has_incomplete and subtasks:
             # 有子任务执行成功，但存在意图被丢/漏解析：如实报"部分完成"，不报干净成功。
+            # §T5 汇总口径修正：头部失败数取 max(n_fail, len(failures))——failures 列表
+            # 非空时反映其规模（问题级，≥子任务级），空时退回子任务级 n_fail 兜底，不漏报。
+            _n_fail_show = max(n_fail, n_problem_failures)
             summary = (f"部分完成：{n_ok} 个子任务已处理，"
                        f"但有 {n_dropped} 处意图未能解析/被丢弃，请检查指令覆盖")
-            if n_fail:
-                summary += f"；{n_fail} 个失败"
+            if _n_fail_show:
+                summary += f"；{_n_fail_show} 项失败未解决"
             if n_pending:
                 summary += f"；{n_pending} 个待确认"
             _fb = render_bucketed_failures(failures)
@@ -206,10 +209,11 @@ class Step4ConcludeSubAgent:
                 summary += "\n" + _fb
         elif subtasks:
             # 现象2 修复：跳过项必须显式上报，不再被并进 n_fail 或被 all_ok 掩盖。
+            _n_fail_show = max(n_fail, n_problem_failures)
             _done_part = f"完成 {n_ok}/{len(subtasks)} 个子任务"
             _bits = []
-            if n_fail:
-                _bits.append(f"{n_fail} 个失败")
+            if _n_fail_show:
+                _bits.append(f"{_n_fail_show} 项失败未解决")
             if n_skipped:
                 _bits.append(f"{n_skipped} 个因 Step2 未解决被跳过写入（请补齐字段后重试）")
             if n_partial:

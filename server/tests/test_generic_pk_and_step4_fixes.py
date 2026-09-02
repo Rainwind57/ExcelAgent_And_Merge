@@ -201,7 +201,8 @@ def test_step4_real_fail_and_skip_separate():
     ])
     r = Step4ConcludeSubAgent().execute(ctx)
     summary = r.artifacts["summary"]
-    assert "1 个失败" in summary, summary
+    # §T5 汇总口径修正：失败数用 len(failures)（问题级），文案为"X 项失败未解决"
+    assert "1 项失败未解决" in summary, summary
     assert "跳过" in summary, summary
     assert r.ok is False
 

@@ -2617,7 +2617,125 @@ class TableAgent:
             print(warn, file=sys.stderr)
         if error:
             print(f"✗ {error}", file=sys.stderr)
+        # §T3 字段类型/形状不匹配时一次性重判定：转换失败 → 触发定向 LLM 重判定，
+        # 把该列所在 sheet 的真实表头片段（前后各2-3列，含列名+类型行）+原始取值+
+        # 失败原因回给 LLM，问"这个值该落到这张表哪一列/哪些列"。只对转换失败
+        # 触发（零成本，不影响成功路径），只重判定1次（避免死循环）。重判定仍失败
+        # 则按现状跳过字段，但保留原始值到 warning，不静默丢弃语义。
+        # 数据来源：真实表头（_read_schema_cached 读 row1/row2），非代码猜规则。
+        if error is not None:
+            _rejudge = getattr(self, "_rejudge_field_shape", None)
+            if callable(_rejudge):
+                rejudged = _rejudge(
+                    stem, sheet, col_name, value, col_type, error)
+                if rejudged is not None:
+                    _col, _val, _warn = rejudged
+                    # 重判成功：目标列或值被 LLM 调整 → 写入调整后的值（_col 仅记入 warning
+                    # 供调用方感知，值以 _val 为准，类型仍由本函数后续保证——这里 _val 已
+                    # 是 LLM 给的可落库的标量，直接返回）。
+                    return _val, (_warn or warn), None
         return value, warn, error
+
+    def _rejudge_field_shape(self, stem: str, sheet: str, col_name: str,
+                             raw_value, col_type: str, fail_reason: str):
+        """§T3 转换失败定向 LLM 重判定：看真实表头片段判定值该落哪列。
+
+        Returns (col_name, value, warn) 或 None（重判定失败/未触发）。
+        只在 Step2（execute_no_llm=False）触发，Step3 写盘路径禁发 LLM（D4 硬约束）。
+        重判定结果不跨调用缓存（同列同值场景本就少见，且避免缓存致误判固化）。
+        """
+        if getattr(self, "execute_no_llm", False):
+            return None
+        try:
+            parser = getattr(self, "parser", None)
+            client = getattr(parser, "client", None) if parser else None
+            if client is None:
+                return None
+            sid = None
+            if hasattr(parser, "_ensure_session"):
+                try:
+                    sid = parser._ensure_session()
+                except Exception:
+                    sid = None
+            if sid is None:
+                return None
+            model = getattr(parser, "model", None)
+            if not stem or not sheet or not col_name:
+                return None
+            p = None
+            for _t in (self.cli.list_tables() if hasattr(self, "cli", "list_tables") else []):
+                if getattr(_t, "stem", None) == stem or str(_t).endswith(f"/{stem}.xlsx") or str(_t).endswith(f"\\{stem}.xlsx"):
+                    p = getattr(_t, "path", _t)
+                    break
+            if p is None:
+                return None
+            hdrs, trow = self._read_schema_cached(p, stem, sheet)
+            if not hdrs:
+                return None
+            # 定位目标列在表头中的索引，取前后各2-3列的真实表头片段（含类型行）
+            target_plain = str(col_name).split(":")[0].strip()
+            tgt_idx = None
+            for i, h in enumerate(hdrs):
+                if h and str(h).split(":")[0].strip() == target_plain:
+                    tgt_idx = i
+                    break
+            if tgt_idx is None:
+                return None
+            lo = max(0, tgt_idx - 2)
+            hi = min(len(hdrs), tgt_idx + 3)
+            frag_names = []
+            frag_types = []
+            for i in range(lo, hi):
+                h = hdrs[i] if i < len(hdrs) else ""
+                t = trow[i] if i < len(trow) else ""
+                mark = " <-- 当前列" if i == tgt_idx else ""
+                frag_names.append(f"{i}: {h}{mark}")
+                frag_types.append(f"{i}: {t}")
+            frag = "\n列名行:\n" + "\n".join(frag_names) + "\n类型行:\n" + "\n".join(frag_types)
+            prompt = (
+                "你是 Excel 配置数据校验助手。下面这个值在写入该表当前列时类型转换失败。\n"
+                "请根据该列所在 sheet 的真实表头片段（列名行+类型行），判断这个值应该\n"
+                "落到这张表的哪一列/哪些列，或值本身该怎样规整才能落库。\n\n"
+                f"表: {stem}  sheet: {sheet}\n"
+                f"当前列: {col_name}  声明类型: {col_type}\n"
+                f"原始取值: {raw_value!r}\n"
+                f"转换失败原因: {fail_reason}\n\n"
+                f"表头片段:\n{frag}\n\n"
+                "只返回 JSON，格式：{\"target_col\": \"列名(列名行的原始字符串)\", "
+                "\"value\": \"可落库的标量值\", \"reason\": \"一句话依据\"}。\n"
+                "若该值确实无法落库（无任何合理列），返回 {\"target_col\": \"\", \"value\": \"\", \"reason\": \"\"}。\n"
+                "禁止凭空发明表头里没有的列名。"
+            )
+            resp = client.prompt(sid, prompt, model=model,
+                                 cancel_event=getattr(self, "_cancel_event", None))
+            raw = getattr(resp, "response_text", "") or ""
+            if not raw:
+                return None
+            import json as _json
+            try:
+                data = _json.loads(raw)
+            except Exception:
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start < 0 or end < 0:
+                    return None
+                data = _json.loads(raw[start:end + 1])
+            tgt = str(data.get("target_col", "") or "").strip()
+            val = data.get("value", None)
+            reason = str(data.get("reason", "") or "").strip()
+            if val is None or val == "":
+                return None
+            # LLM 指明目标列且与当前列不同 → 只记 warning（调用方仍按原列写入，
+            # 但语义不再静默丢弃）；值规整后回传，按规整值落库。
+            warn = f"字段形状重判定：原列[{col_name}]值'{raw_value}' → 落库值'{val}'"
+            if tgt and str(tgt).split(":")[0].strip() != target_plain:
+                warn += f"（LLM 建议落列[{tgt}]，请人工核对）"
+            if reason:
+                warn += f"  依据：{reason}"
+            return (tgt or col_name), val, warn
+        except Exception:
+            logger.debug("T3 _rejudge_field_shape failed", exc_info=True)
+            return None
 
     def _precoerce_enum_value(self, col_name: str, val, stem: str, sheet: str):
         """D10: 单值写前枚举预转换。

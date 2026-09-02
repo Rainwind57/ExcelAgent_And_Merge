@@ -2104,6 +2104,122 @@ class ValidatorAgent(LLMSubAgent):
                 produced.add(_norm_name(_s))
         return produced
 
+    def _validate_literal_id_refs(self, intents: list,
+                                 locator_result=None,
+                                 data_getter=None) -> dict:
+        """§T4 字面量引用一致性校验（治根因5）。
+
+        收集本批次所有子任务将要产出的字面量主键值（add intent 主键列的纯数字值，
+        非占位符），与本批次所有子任务引用的字面量外键值（FK 列的纯数字值）做
+        集合比对——引用值不在"本批产出集合"里、也不确认在目标表已存在（可选调
+        data_getter 核实）→ 报 soft warning "引用的 ID 在本批次和现有表中均未找到
+        对应记录，确认是否预期"。
+
+        这是集合比对，不是硬编码业务规则（不绑表名/列名专用 if）：
+          - 主键列识别：取每表 schema 首列（_get_schema 读真实表头，非代码猜）
+          - FK 列识别：locator_result.fk_edges（声明式 json + 运行时列名推导）
+          - 字面量识别：值是纯数字字符串（非占位符 <...>），即可被外键引用的 ID
+        只产 soft warning（issue_type 用 FORWARD_REF_BROKEN 但 is_hard=False 语义），
+        不阻断 Step3 写盘，让用户看到"引用断裂"的直接结论。
+        """
+        out: dict = {}
+        if not intents:
+            return out
+        # 收集本批 add intent 的字面量主键产出：(value, (stem, sheet, col))
+        produced_lits: dict[str, tuple] = {}
+        # FK 列名集合（按 stem/sheet 维度），供识别"引用侧"
+        fk_cols_by_table: dict[tuple, set] = {}
+        if locator_result is not None:
+            for _e in (getattr(locator_result, "fk_edges", None) or []):
+                _fs = getattr(_e, "from_stem", "") or ""
+                _fsh = getattr(_e, "from_sheet", "") or ""
+                _fc = str(getattr(_e, "from_column", "") or "").split(":")[0].strip()
+                if _fs and _fsh and _fc:
+                    fk_cols_by_table.setdefault((_fs.lower(), _fsh.lower()), set()).add(_fc.lower())
+
+        def _is_literal_id(v) -> bool:
+            """值是否纯数字字面量 ID（非占位符、非空、可被外键引用）。"""
+            if not isinstance(v, str):
+                return False
+            s = v.strip()
+            if not s or s.startswith("<") or s == "<auto>":
+                return False
+            return s.lstrip("-").isdigit()
+
+        for _it in intents:
+            if getattr(_it, "action", "") != "add":
+                continue
+            _stem = (getattr(_it, "table_hint", "") or "").lower()
+            _sheet = (getattr(_it, "sheet_hint", "") or "").lower()
+            _fields = (getattr(_it, "extras", None) or {}).get("fields") or {}
+            if not _fields:
+                continue
+            # 主键列 = schema 首列（真实表头，非代码猜）
+            try:
+                _hdrs, _ = self._get_schema(_it, None)
+            except Exception:
+                _hdrs = []
+            _pk_col = ""
+            if _hdrs:
+                _pk_col = str(_hdrs[0] or "").split(":")[0].strip()
+            if not _pk_col:
+                continue
+            for _c, _v in _fields.items():
+                _c_plain = str(_c or "").split(":")[0].strip()
+                if _c_plain == _pk_col and _is_literal_id(_v):
+                    produced_lits[_v.strip()] = (_stem, _sheet, _pk_col)
+
+        # 收集本批所有 intent 的字面量 FK 引用：引用值不在产出集 → soft warning
+        # data_getter 核实现有表是否存在该值（可选，None 时仅比对本批产出集）
+        existing_checked: set = set()  # (stem, sheet, value) 已核过的，避免重复查表
+        for _it in intents:
+            _stem = (getattr(_it, "table_hint", "") or "").lower()
+            _sheet = (getattr(_it, "sheet_hint", "") or "").lower()
+            _fields = (getattr(_it, "extras", None) or {}).get("fields") or {}
+            if not _fields:
+                continue
+            _fk_set = fk_cols_by_table.get((_stem, _sheet), set())
+            for _c, _v in _fields.items():
+                if not _is_literal_id(_v):
+                    continue
+                _c_plain = str(_c or "").split(":")[0].strip().lower()
+                if not _fk_set or _c_plain not in _fk_set:
+                    continue
+                _val = _v.strip()
+                if _val in produced_lits:
+                    continue  # 本批产出集命中
+                # 可选：查现有表是否已存在该值
+                _exists_in_table = False
+                if callable(data_getter):
+                    _ck = (_stem, _sheet, _val)
+                    if _ck in existing_checked:
+                        _exists_in_table = True
+                    else:
+                        try:
+                            _d = data_getter(_it) or {}
+                            _rows = (_d.get("result_rows") or [])
+                            for _r in _rows:
+                                if _val in [str(x).strip() for x in (_r if isinstance(_r, (list, tuple)) else [])]:
+                                    _exists_in_table = True
+                                    break
+                            if _exists_in_table:
+                                existing_checked.add(_ck)
+                        except Exception:
+                            pass
+                if _exists_in_table:
+                    continue
+                sid = id(_it)
+                out.setdefault(sid, []).append(Issue(
+                    col=_c, issue_type=IssueType.FORWARD_REF_BROKEN.value,
+                    expected=f"本批次产出或现有表中存在对应记录 {_val}",
+                    suggestion=(
+                        f"列「{_c}」引用的字面量 ID「{_val}」在本批次产出集合和"
+                        f"现有表中均未找到对应记录，请确认该引用是否预期"
+                        f"（可能前序产出被漏解析/丢弃，或 ID 拼写有误）"),
+                    value=_v,
+                ))
+        return out
+
     @staticmethod
     def _collect_unresolved_placeholder_issues(intent, produced_labels=None) -> list:
         """单条 intent 的悬空占位符检测（抽成独立方法，供编辑回写后重校验复用）。
@@ -2232,6 +2348,16 @@ class ValidatorAgent(LLMSubAgent):
                 _it, _produced_labels)
             if _ph_issues:
                 merged.setdefault(id(_it), []).extend(_ph_issues)
+        # §T4 字面量引用一致性校验（治根因5）：本批产出字面量 PK 集合 vs 本批引用
+        # 字面量 FK 集合，引用断裂 → soft warning，让用户看到"引用断裂"直接结论。
+        try:
+            _lit_issues = self._validate_literal_id_refs(
+                intents, locator_result=locator_result, data_getter=data_getter)
+            for _sid, _issues in _lit_issues.items():
+                if _issues:
+                    merged.setdefault(_sid, []).extend(_issues)
+        except Exception:
+            logger.debug("T4 字面量引用校验失败(降级)", exc_info=True)
         # 核心4:PK 冲突(UNIQUE_VIOLATION)前移到 validate 阶段阻断 + ask 用户
         # 原 O3 全软失败 → PK 冲突漏到 Step3 写盘才抓 + 误分类 unknown
         # 现对 UNIQUE_VIOLATION 预算建议 ID(max+1) → ask 接受/输入 → 改 intent

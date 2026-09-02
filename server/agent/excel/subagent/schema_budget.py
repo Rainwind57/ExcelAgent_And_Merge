@@ -101,4 +101,83 @@ def apply_schema_budget(records: list[dict], groups: Optional[dict],
     return out, True
 
 
-__all__ = ["apply_schema_budget", "render_full", "render_summary", "total_chars"]
+def apply_greedy_char_budget(records: list[dict], char_budget: int,
+                             *, pk_cols_by_table: Optional[dict] = None,
+                             fk_cols_by_table: Optional[dict] = None) -> tuple[list[str], bool]:
+    """§T6 贪心按字符预算填充（内容重要性驱动，非候选数分桶）。
+
+    优先级序：column_signal 命中列 > PK 列 > FK 列 > 其它列。
+    从高优先级开始逐列累加渲染后的字符数，达到 char_budget 即停，不再看候选表数量。
+    关系列（PK/FK）不再因"候选数多"被机械砍掉，边界完全由内容重要性决定。
+
+    Args:
+        records: [{stem, sheet, cols:[...], sig_cols:set}]，按注入顺序。cols 已含
+                 渲染后列名（含 [PK]/[FK→...] 标注）；sig_cols 是 column_signal 命中列名集合。
+        char_budget: 字符预算；<=0 表示不启用（原样返回完整渲染）。
+        pk_cols_by_table: {(stem_lower, sheet_lower): set(列名)} 用户声明的 PK 列，
+                          供识别 PK 列优先级（可选，None 时仅按 sig + FK 标注判）。
+        fk_cols_by_table: {(stem_lower, sheet_lower): set(列名)} FK 列集合（可选）。
+
+    Returns:
+        (lines, applied)。applied=False 表示未裁剪（未启用或完整渲染未超预算）。
+        安全兜底：每个 sheet 至少保留命中列 + 主键（首列），绝不裁到空。
+    """
+    full_lines = [render_full(r) for r in records]
+    if char_budget <= 0 or total_chars(full_lines) <= char_budget:
+        return full_lines, False
+
+    def _col_priority(rec: dict, col: str) -> int:
+        """列优先级：0=命中(sig) > 1=PK > 2=FK > 3=其它。数字小优先。"""
+        key = (str(rec.get("stem", "")).lower(), str(rec.get("sheet", "")).lower())
+        # 命中列：sig_cols 存的是渲染前列名（如 "名称"），需与渲染后列名做前缀匹配
+        sig = rec.get("sig_cols") or set()
+        col_plain = str(col).split("（", 1)[0].split("(", 1)[0].split("[", 1)[0].strip()
+        if any(col_plain == str(s).split("（")[0].split("(")[0].strip() for s in sig):
+            return 0
+        if "[PK]" in col or (pk_cols_by_table and col_plain.lower()
+                             in (pk_cols_by_table.get(key) or set())):
+            return 1
+        if "[FK" in col or (fk_cols_by_table and col_plain.lower()
+                            in (fk_cols_by_table.get(key) or set())):
+            return 2
+        return 3
+
+    out: list[str] = []
+    used = 0
+    for r in records:
+        stem = str(r.get("stem", ""))
+        sheet = str(r.get("sheet", ""))
+        cols = r.get("cols", []) or []
+        if not cols:
+            continue
+        # 按优先级排序（稳定：同优先级保持原顺序）
+        ordered = sorted(enumerate(cols), key=lambda x: (_col_priority(r, x[1]), x[0]))
+        picked: list[str] = []
+        # 兜底：主键（首列）必留，命中列必留（即使超预算，否则 LLM 无从判表）
+        must_keep: set = set()
+        # 命中列必留
+        sig = r.get("sig_cols") or set()
+        for idx, c in enumerate(cols):
+            cp = str(c).split("（", 1)[0].split("(", 1)[0].split("[", 1)[0].strip()
+            if any(cp == str(s).split("（")[0].split("(")[0].strip() for s in sig):
+                must_keep.add(idx)
+        # 主键（首列）必留
+        if cols:
+            must_keep.add(0)
+        for idx, c in ordered:
+            if idx in must_keep or used + len(c) + 3 <= char_budget:
+                picked.append(c)
+                used += len(c) + 3  # 3 = " | " 分隔 + 余量
+                if used >= char_budget and not must_keep:
+                    # 预算用尽且无必留列强制 → 停止本表后续列
+                    pass
+        if picked:
+            out.append(f"- {stem}/{sheet}: " + " | ".join(picked))
+    # 极端兜底：全被裁空 → 退回完整
+    if not out:
+        return full_lines, False
+    return out, True
+
+
+__all__ = ["apply_schema_budget", "apply_greedy_char_budget",
+           "render_full", "render_summary", "total_chars"]

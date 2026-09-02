@@ -242,6 +242,24 @@ class DecomposeAgent(LLMSubAgent):
         # 建议2：重置本次 Step1 LLM 预算（≤3 次，超则跳过补洞走 partial）
         self._init_step1_budget()
 
+        # §T10 重置本次链路已声明 produces_label 累积表（供分组 prompt 注入复用）
+        self._declared_produces_vars = []
+        # §T11 加载本次会话已归纳反模式（pending_review，同 session 内才注入，
+        # 不跨 session 固化为规则库）作为"本次会话已知易错点"注入后续 Step1 prompt。
+        # 数据源是 skill_updater 已有的结构化 dict（induce_anti_patterns 产出）。
+        self._session_anti_patterns = []
+        try:
+            from ..core.skill_updater import get_skill_updater
+            _su = get_skill_updater()
+            for _ap in _su.load_pending_anti_patterns():
+                _tp = getattr(_ap, "trigger_pattern", "") or ""
+                _ra = getattr(_ap, "rationale", "") or ""
+                if _tp:
+                    self._session_anti_patterns.append(
+                        {"trigger": _tp, "rationale": _ra})
+        except Exception:
+            logger.debug("T11 加载会话反模式失败(降级)", exc_info=True)
+
         # §去硬模板：领域链型确定性展开默认关闭（同 parse_agent.py 入口，理由一致）。
         # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=0 显式重新开启。
         if _os.environ.get("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "1") != "1":
@@ -340,6 +358,14 @@ class DecomposeAgent(LLMSubAgent):
                     _res, _drp = _out or [], []
                 if _res:
                     all_intents.extend(_res)
+                    # §T10 累积本组产出的 produces_label，供下一组 prompt 注入复用
+                    for _it in _res:
+                        _pl = (getattr(_it, "produces_label", None)
+                               or (getattr(_it, "extras", None) or {}).get("produces"))
+                        if _pl and str(_pl).strip():
+                            _pls = str(_pl).strip()
+                            if _pls not in self._declared_produces_vars:
+                                self._declared_produces_vars.append(_pls)
                 if _drp:
                     for _s in _drp:
                         if _s not in all_dropped:
@@ -1527,13 +1553,44 @@ class DecomposeAgent(LLMSubAgent):
                 if raw:
                     arr = self._parse_json_array(raw)
                     if arr:
+                        # §T8 失败重试携带定向线索（opt-in）：
+                        # CODEMAKER_DECOMPOSE_RETRY_HINT=1 时，首次产出非空但候选表的
+                        # FK 列未被任何输出引用 → 构造定向线索拼入 prompt 重试一次。
+                        # 线索内容来自 fk_edges/candidates 结构比对（代码算好的事实），
+                        # 不是新写的业务判断规则。零 LLM 额外成本（仅可疑时触发）。
+                        if (os.environ.get("CODEMAKER_DECOMPOSE_RETRY_HINT", "0") == "1"
+                                and _attempt < _RETRY_MAX):
+                            _hint = self._build_retry_hint(arr, candidates)
+                            if _hint:
+                                self.add_thinking("细分",
+                                    f"§T8 定向线索重试：{_hint[:60]}...")
+                                _hinted_prompt = prompt + "\n\n## 上一轮可能遗漏\n" + _hint
+                                try:
+                                    _sid2 = self._ensure_session()
+                                    if _sid2:
+                                        from .llm_gate import llm_throttle
+                                        with llm_throttle():
+                                            _resp2 = client.prompt(
+                                                _sid2, _hinted_prompt, timeout=per_to,
+                                                model=getattr(self.parser, "model", ""),
+                                                cancel_event=_ce)
+                                        self._bump_llm("decompose")
+                                        _raw2 = getattr(_resp2, "response_text", "") or ""
+                                        if _raw2:
+                                            _arr2 = self._parse_json_array(_raw2)
+                                            if _arr2 and len(_arr2) >= len(arr):
+                                                arr = _arr2
+                                                raw = _raw2
+                                                break
+                                except Exception:
+                                    logger.debug("T8 定向重试失败(降级)", exc_info=True)
                         break  # 成功且非空 → 出循环
             except Exception as e:  # noqa: BLE001
                 _resp_err = f"{type(e).__name__}: {e}"
                 if _attempt >= _RETRY_MAX:
                     self.add_thinking("细分",
                         f"DecomposeAgent 单 prompt 调用失败({_resp_err})")
-                    return []
+                    return [], []
             # 可疑空结果（空响应 或 合法但空数组）：超时不重试，其余重采样一次
             if _attempt < _RETRY_MAX:
                 _is_timeout = any(_x in _resp_err.lower()
@@ -1554,6 +1611,78 @@ class DecomposeAgent(LLMSubAgent):
                         f"（防单次采样偶然判定为空）")
                 _time_retry.sleep(1.5)  # 短退避 1.5s 待 serve 抖动恢复
                 continue
+        # §T7 双路并行采样 + 结构比对择优（对抗式自校验，opt-in）：
+        # CODEMAKER_DECOMPOSE_DUAL_SAMPLE=1 时，首路成功后再并发采一路（同 prompt
+        # 利用 LLM 自身非确定性），做结构一致性比对（表集合 + 字段集合）：
+        #   - 一致 → 直接采用首路，零额外延迟感（并发耗时 ≈ 单路）
+        #   - 不一致 → 取并集（两路都有的表/字段保留，仅一路有的也保留交后续 Step2
+        #     校验判定，不在此处新写"谁对谁错"的业务规则）
+        # 全程复用已有结构比对（表/字段集合），不新写业务判断逻辑。
+        _DUAL = os.environ.get("CODEMAKER_DECOMPOSE_DUAL_SAMPLE", "0") == "1"
+        if _DUAL and arr:
+            try:
+                import threading as _td
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                _second = {"arr": None, "raw": ""}
+                def _sample_second():
+                    try:
+                        _sid = self._ensure_session()
+                        if not _sid:
+                            return
+                        from .llm_gate import llm_throttle
+                        with llm_throttle():
+                            _resp = client.prompt(_sid, prompt, timeout=per_to,
+                                                  model=getattr(self.parser, "model", ""),
+                                                  cancel_event=_ce)
+                        _second["raw"] = getattr(_resp, "response_text", "") or ""
+                        if _second["raw"]:
+                            _second["arr"] = self._parse_json_array(_second["raw"])
+                    except Exception:
+                        _second["arr"] = None
+                # 首路成功后并发采第二路（同 prompt 独立调用）
+                with _TPE(max_workers=1) as _ex:
+                    _fut = _ex.submit(_sample_second)
+                    try:
+                        _fut.result(timeout=per_to + 5)
+                    except Exception:
+                        pass
+                self._bump_llm("decompose")
+                _arr2 = _second["arr"]
+                if _arr2:
+                    _set1 = {(str(x.get("table", "")).lower(),
+                              str(x.get("sheet", "")).lower())
+                             for x in arr if isinstance(x, dict)}
+                    _set2 = {(str(x.get("table", "")).lower(),
+                              str(x.get("sheet", "")).lower())
+                             for x in _arr2 if isinstance(x, dict)}
+                    _fields1 = {f"{str(x.get('table','')).lower()}/{str(x.get('sheet','')).lower()}:{sorted((x.get('fields') or {}).keys())}"
+                                for x in arr if isinstance(x, dict) and isinstance(x.get("fields"), dict)}
+                    _fields2 = {f"{str(x.get('table','')).lower()}/{str(x.get('sheet','')).lower()}:{sorted((x.get('fields') or {}).keys())}"
+                                for x in _arr2 if isinstance(x, dict) and isinstance(x.get("fields"), dict)}
+                    if _set1 == _set2 and _fields1 == _fields2:
+                        self.add_thinking("细分",
+                            f"§T7 双采样结构一致（{len(arr)} 条），直接采用首路")
+                    else:
+                        # 不一致 → 取并集（按 table/sheet 去重保留两路产出，交后续 Step2 校验）
+                        _seen = set()
+                        _merged = []
+                        for _x in (arr + _arr2):
+                            if not isinstance(_x, dict):
+                                continue
+                            _k = (str(_x.get("table", "")).lower(),
+                                  str(_x.get("sheet", "")).lower(),
+                                  str(_x.get("action", "")).lower())
+                            if _k in _seen:
+                                continue
+                            _seen.add(_k)
+                            _merged.append(_x)
+                        self.add_thinking("细分",
+                            f"§T7 双采样结构不一致（首路 {len(arr)} / 二路 {len(_arr2)}"
+                            f"表集差异 {_set1 ^ _set2 or '无'}），取并集 {len(_merged)} 条"
+                            f"交后续 Step2 校验")
+                        arr = _merged
+            except Exception:
+                logger.debug("T7 双采样失败(降级单路)", exc_info=True)
         # §观测C：落 prompt/raw IO（env 开），定位 LLM 实际产出与退化。
         _dump_llm_io("single_prompt", prompt, raw, stems=_stems,
                       extra={"text_bytes": len(text or ""),
@@ -1605,6 +1734,57 @@ class DecomposeAgent(LLMSubAgent):
             "dropped_narr": list(dropped),
             "verdict": "ok"})
         return filtered, dropped
+
+    def _build_retry_hint(self, arr: list, candidates: list[CandidateTable]) -> str:
+        """§T8 构造定向重试线索：基于已有结构化信息（fk_edges/candidates/arr）比对。
+
+        线索内容来自代码算好的事实，不是新写业务判断规则：
+          - 候选表的 FK 列未被任何输出引用 → "上一轮候选表 X 的 FK 列 Y 未被任何
+            输出引用，检查是否遗漏该表的写入"
+          - 候选表完全未出现在输出 → "候选表 X 完全未出现在输出，若指令涉及该表请补充"
+        无缺漏返回空串（不触发重试）。
+        """
+        if not arr or not candidates:
+            return ""
+        # 收集本路输出已引用的表/字段集合
+        out_tables: set = set()
+        out_cols: set = set()
+        for x in arr:
+            if not isinstance(x, dict):
+                continue
+            _t = str(x.get("table", "")).lower()
+            _s = str(x.get("sheet", "")).lower()
+            if _t:
+                out_tables.add(_t)
+            _fields = x.get("fields") or {}
+            if isinstance(_fields, dict):
+                for k in _fields:
+                    out_cols.add((_t, _s, str(k).split(":")[0].strip().lower()))
+        hints: list[str] = []
+        # FK 列未被引用线索
+        for _e in (getattr(self, "_last_fk_edges", None) or []):
+            _fs = str(getattr(_e, "from_stem", "") or "").lower()
+            _fsh = str(getattr(_e, "from_sheet", "") or "").lower()
+            _fc = str(getattr(_e, "from_column", "") or "").split(":")[0].strip().lower()
+            if not _fs or not _fc:
+                continue
+            if _fs not in out_tables:
+                continue
+            if (_fs, _fsh, _fc) not in out_cols:
+                hints.append(
+                    f"候选表 {_fs}/{_fsh} 的 FK 列 {_fc}（指向 "
+                    f"{getattr(_e, 'to_stem', '')}）未被任何输出引用，"
+                    f"检查是否遗漏该表的写入")
+        # 候选表完全未出现线索（仅报候选中真实相关的，不报 context 噪声表）
+        _drop = set(getattr(self, "_context_drop_stems", None) or set())
+        for c in candidates:
+            _cs = str(getattr(c, "stem", "") or "").lower()
+            if not _cs or _cs in _drop:
+                continue
+            if _cs not in out_tables:
+                hints.append(
+                    f"候选表 {_cs} 完全未出现在输出，若指令涉及该表请补充对应写入")
+        return "\n".join(hints[:3])  # 最多3条，避免 prompt 膨胀
 
     def _decompose_parallel(self, text: str, candidates: list[CandidateTable],
                              fk_block: str, per_to: int,
@@ -2095,14 +2275,14 @@ class DecomposeAgent(LLMSubAgent):
         if self._cli is None:
             return ""
         import os as _os
-        # §P1-2.5 schema 瘦身：按候选数动态调 sheets/cols。候选少（≤3）给 4 sheet
-        # 保覆盖，候选多（>5）压 2 sheet 防 prompt 膨胀致超时。cols 同理。
-        # §激进提速：>5 候选 cols 8→6、3~5 候选 12→10（命中列强制保留，仅砍非命中
-        # 噪声列，见下方 kept 逻辑）——"召回宽、决策窄"，LLM 看更少噪声列、prompt 更短。
-        # 可回退：显式设 CODEMAKER_DECOMPOSE_SCHEMA_COLS / _SHEETS 覆盖。
-        _n_cands = len(candidates)
-        _default_sheets = "4" if _n_cands <= 3 else ("2" if _n_cands > 5 else "3")
-        _default_cols = "16" if _n_cands <= 3 else ("6" if _n_cands > 5 else "10")
+        # §T6 Schema 裁剪从"候选数固定阈值"改成"内容重要性驱动的动态预算"：
+        # 去掉候选数分桶（≤3/3-5/>5 → 固定 4/3/2 sheets、16/10/6 cols），改为贪心
+        # 按字符预算填充（column_signal 命中列 > PK > FK > 其它，逐列累加到
+        # CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET 即停）。关系列不再因候选数多被机械砍掉。
+        # 可回退：显式设 CODEMAKER_DECOMPOSE_SCHEMA_SHEETS / _COLS 仍可强制上限
+        # （默认大值=不裁，交贪心预算管；设小值则回退旧固定阈值行为）。
+        _default_sheets = "32"   # 不限 sheet（贪心预算管边界）
+        _default_cols = "64"     # 不限 cols（贪心预算管边界）
         max_sheets = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_SHEETS", _default_sheets)))
         max_cols = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_COLS", _default_cols)))
         # 列名信号：构建 (stem, sheet) -> 命中列名集合，供 sheet 排序加权
@@ -2129,6 +2309,13 @@ class DecomposeAgent(LLMSubAgent):
             _pk_overlay = get_primary_key_overlay()
         except Exception:
             _pk_overlay = {}
+        # §T9 列值域约束前置注入：加载 value_constraints.yaml（L1 派生 + rules/validate
+        # 用户规则深合并），供列标注 [范围:min~max]。数据源已是现成 yaml，不新增硬编码判断。
+        try:
+            from ..core.agent import _load_value_constraints
+            _vc = _load_value_constraints()
+        except Exception:
+            _vc = {}
         all_tables = {}
         try:
             all_tables = {p.stem: p for p in self._cli.list_tables()}
@@ -2197,6 +2384,26 @@ class DecomposeAgent(LLMSubAgent):
                         name = f"{name}[PK]"
                     elif _fk_target:
                         name = f"{name}[FK→{_fk_target}]"
+                    # §T9 列值域约束前置注入：该列在 value_constraints.yaml 有 min/max
+                    # → 追加 [范围:min~max]，与 [PK]/[FK] 同套机制。数据源 yaml，非硬编码。
+                    try:
+                        _vc_sheet = (_vc.get(cand.stem.lower(), {})
+                                       .get(sh, {}) or {})
+                        _vc_cols = _vc_sheet.get("columns") or {}
+                        _vc_col = None
+                        for _k, _v in _vc_cols.items():
+                            if _norm(_k) == _hn or _norm(_k) == _tn:
+                                _vc_col = _v
+                                break
+                        if _vc_col and isinstance(_vc_col, dict):
+                            _mn = _vc_col.get("min")
+                            _mx = _vc_col.get("max")
+                            if _mn is not None or _mx is not None:
+                                _ms = "" if _mn is None else str(_mn)
+                                _xs = "" if _mx is None else str(_mx)
+                                name = f"{name}[范围:{_ms}~{_xs}]"
+                    except Exception:
+                        pass
                     col_tuples.append((name, str(h) in sig_cols, _is_pk or bool(_fk_target)))
                 # 命中列/关系列在前，其余按原顺序（关系列即使无信号命中也优先于
                 # max_cols 截断被砍——列间关系是准确率关键，不能被噪声列挤掉）。
@@ -2239,6 +2446,29 @@ class DecomposeAgent(LLMSubAgent):
             _budget = 1500
         if _budget > 0 and _records:
             try:
+                # §T6 优先走贪心字符预算（内容重要性驱动，非候选数分桶）。
+                # 构建 pk_cols_by_table / fk_cols_by_table 供贪心判优先级。
+                _pk_cols_by_table: dict[tuple, set] = {}
+                for _k_stem, _sheets_map in (_pk_overlay or {}).items():
+                    for _sh, _cols_list in (_sheets_map or {}).items():
+                        _pk_cols_by_table[(_k_stem.lower(), str(_sh).lower())] = set(
+                            _norm(_c) for _c in (_cols_list or []))
+                _fk_cols_by_table: dict[tuple, set] = {}
+                for _e in (getattr(self, "_last_fk_edges", None) or []):
+                    _key = (_e.from_stem.lower(), _e.from_sheet.lower())
+                    _fk_cols_by_table.setdefault(_key, set()).add(_norm(_e.from_column))
+                from .schema_budget import apply_greedy_char_budget
+                _budget_lines, _applied = apply_greedy_char_budget(
+                    _records, _budget,
+                    pk_cols_by_table=_pk_cols_by_table,
+                    fk_cols_by_table=_fk_cols_by_table)
+                if _applied:
+                    self.add_thinking(
+                        "解析",
+                        f"schema 贪心预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
+                        f"（超 {_budget} 字符，命中列/PK/FK 优先，其它列按预算截断）")
+                    return "\n".join(_budget_lines)
+                # 贪心未触发（未超预算）→ 回退分层裁剪兜底
                 from .schema_budget import apply_schema_budget
                 from ..locator.candidate_grouping import classify_candidates
                 _groups = classify_candidates(candidates)
@@ -2467,6 +2697,32 @@ class DecomposeAgent(LLMSubAgent):
                 "表示用户提到的列名在这些表/sheet 出现。优先从信号命中的表选目标表，"
                 "但要结合 schema 与指令语义判断——若信号表与指令意图不符，按指令为准。\n\n"
             )
+        # §T10 produces/consumes 跨表变量声明表随链路累积注入：把当前链路已声明
+        # 的 produces_label 列表（代码已有的结构化数据，非新写规则）作为"本次链
+        # 已声明变量表"注入，供 LLM 复用已有命名而非重新发明，避免长链断裂。
+        declared_section = ""
+        _declared = list(getattr(self, "_declared_produces_vars", []) or [])
+        if _declared:
+            declared_section = (
+                "## 本次链路已声明变量（复用同名 produces label，勿重新发明）\n"
+                + "\n".join(f"- <{lbl}>" for lbl in _declared)
+                + "\n\n引用本链已产出的 ID 时，consumes 用同名 label，字段值填 <同名label>。\n\n"
+            )
+        # §T11 反模式回灌：本次会话已归纳易错点（pending_review，同 session 内注入，
+        # 不跨 session 固化）作为"已知易错点"提示 LLM 规避。
+        anti_pattern_section = ""
+        _aps = list(getattr(self, "_session_anti_patterns", []) or [])
+        if _aps:
+            _ap_lines = []
+            for _ap in _aps[:5]:  # 最多5条，避免 prompt 膨胀
+                _t = str(_ap.get("trigger", "") or "")[:80]
+                _r = str(_ap.get("rationale", "") or "")[:80]
+                _ap_lines.append(f"- 触发：{_t}" + (f"（{_r}）" if _r else ""))
+            if _ap_lines:
+                anti_pattern_section = (
+                    "## 本次会话已知易错点（已归纳反模式，请规避）\n"
+                    + "\n".join(_ap_lines) + "\n\n"
+                )
         few_shot = self._build_few_shot_block(text, schema_block)
         few_shot_section = f"{few_shot}\n\n" if few_shot else ""
         # 填表规则注入：rules/fill/*.md 用户手打知识（强约束，拼进 prompt）
@@ -2526,6 +2782,8 @@ class DecomposeAgent(LLMSubAgent):
                 + compact_rules
                 + f"## schema\n{schema_block}\n\n"
                 + (signal_section if signal_section else "")
+                + (declared_section if declared_section else "")
+                + (anti_pattern_section if anti_pattern_section else "")
                 + f"## FK\n{fk_block}\n\n"
                 + f"## 指令\n{text}\n"
             )
@@ -2537,6 +2795,8 @@ class DecomposeAgent(LLMSubAgent):
             "请分解为每张表一个原子操作,用真实表头列名。\n\n"
             f"## 候选表 schema(row1 显示名,row2 规范名)\n{schema_block}\n\n"
             + signal_section +
+            (declared_section if declared_section else "") +
+            (anti_pattern_section if anti_pattern_section else "") +
             f"## 外键关联(决定 produces/consumes)\n{fk_block}\n\n"
             f"## 指令\n{text}\n\n"
             "## 输出 fenced JSON 数组,每元素一个原子操作:\n"
