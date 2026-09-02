@@ -619,6 +619,19 @@ class ParseAgent:
             infer_produces_consumes(intents)
         except Exception:
             logger.warning("ParseAgent produces_inference 失败,保留原 intent", exc_info=True)
+        # 跨记录引用 LLM 判定层（LLM 优先）：对被漏掉/歧义的跨表外键，交 LLM 判定
+        # 「哪列引用本批新增实体」再注占位符。无 parser/LLM 时自动降级为不改动。
+        try:
+            from .core.cross_ref_linker import link_cross_refs
+            _da = self._decompose_agent
+            _xref_llm = ((lambda p: _da._call_llm_raw(p, timeout=30))
+                         if _da is not None and self._parser is not None else None)
+            link_cross_refs(
+                intents, _xref_llm,
+                thinking=((lambda ph, d: self._thinking_sink(ph, d))
+                          if self._thinking_sink else None))
+        except Exception:
+            logger.warning("ParseAgent cross_ref_linker 失败,保留原 intent", exc_info=True)
         for it in intents:
             prod = it.extras.get("produces") if it.extras else None
             if prod and not it.produces_label:

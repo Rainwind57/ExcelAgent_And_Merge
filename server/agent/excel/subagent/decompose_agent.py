@@ -515,12 +515,29 @@ class DecomposeAgent(LLMSubAgent):
                         f"段级单表重拆 {_rs} 仍产空/叙述灌值，未能补救")
         # §零 LLM 兜底：段分解产空时走 _splitter_baseline（与主流程一致），
         # 保段级覆盖（多段指令某段 LLM 产空不漏）。
-        if not intents:
+        # §分支叙事例外：npc_dialogue/npc_composite（对话树+多选项分支）结构
+        # 因指令而异（选项数量/每个选项跳转目标各不相同），splitter_baseline
+        # 走的是固定形状模板，套不上任意分支形状——实测会拼出结构错乱的假数据
+        # （如把整段奖励叙述塞进选项文字字段、丢主对话），比"留空"更危险（留空
+        # 至少能被下方逐表重拆/全局对账发现并补，假数据会静默走完 Step2/3）。
+        # 这类段跳过模板兜底，直接落到下方逐表重拆（真 LLM，单表小 schema 更
+        # 容易在短超时内成功，出的是真结构而非套模板）。
+        _is_branching_dialog = False
+        try:
+            from ..core.cross_table_splitter import detect_cross_table_action as _dct
+            _is_branching_dialog = _dct(seg) in ("npc_dialogue", "npc_composite")
+        except Exception:
+            pass
+        if not intents and not _is_branching_dialog:
             fb = self._splitter_baseline(seg, candidates, locator_result.fk_edges)
             if fb:
                 self.add_thinking("细分",
                     f"DecomposeAgent 段分解产空,零 LLM 兜底产 {len(fb)} 条")
                 intents = fb
+        elif not intents and _is_branching_dialog:
+            self.add_thinking("细分",
+                "DecomposeAgent 段分解产空(分支对话结构),跳过零 LLM 兜底模板"
+                "(固定形状套不上任意分支,改走下方逐表重拆求真结构)")
         # §框架级：段级大候选池单 prompt 超时产空（如 school 段 5 表 schema 过大），
         # splitter 模板又不覆盖新链型 → 该段整段漏产。这里对裁剪后候选逐表单表
         # 重拆（单表小 schema 不易超时），把每张真实动作主语表拆出来。仅产空时
@@ -563,6 +580,53 @@ class DecomposeAgent(LLMSubAgent):
         # 各段产出汇合后用全局 candidates 做一次 expected/produced 对账，缺表一次性
         # 重拆补漏（vs 段级每段对各自窄候选重拆，重复+串行）。零回归：缺表补充由全局兜。
         return intents
+
+    def _llm_rank_segment_candidates(self, seg: str, candidates: list) -> Optional[list]:
+        """LLM 复核段内候选表，筛出"本段真正要产出数据"的表子集（供替代 _strength 规则排序）。
+
+        §匹配层判定门修复：候选 >5 时原直接走 _strength 规则打分选 top N，
+        规则打分对多分支叙事（对话树+多选项等）容易挑错组合——通用列/间接
+        FK 共享把噪声表（reward/item/player_common 等）打到高分挤掉真正需要
+        的完整链路表，组合过杂致 schema 过大超时。改为先问 LLM 哪些表本段
+        真正需要产出数据，规则仅当 LLM 不可用/失败/结果不合法时兜底。
+
+        Returns:
+            LLM 判定相关的 CandidateTable 子列表（按 LLM 给出顺序，最多 8 个）；
+            LLM 不可用/失败/结果为空/不合法 → None（调用方原样按 _strength 兜底）。
+        """
+        if not self.parser or not candidates:
+            return None
+        desc = "\n".join(
+            f"- {getattr(c, 'stem', '')}（匹配到「{getattr(c, 'matched_term', '')}」，"
+            f"来源:{getattr(c, 'level', '')}，置信度:{getattr(c, 'confidence', 0.0):.2f}）"
+            for c in candidates)
+        prompt = f"""你是配表指令的候选表筛选员。下面是这一段指令的候选表，里面混有
+"本段真正要产出/写入数据的表"和"仅因同名列/间接外键关联被误召回的噪声表"。
+
+## 本段指令
+{seg}
+
+## 候选表列表
+{desc}
+
+## 任务
+判断哪些表是本段真正需要产出数据的表。若本段涉及多分支结构（如对话树+多个
+选项、任务链多阶段等），链路上的每一张表都要列出，不要漏；确实无关的噪声表
+（仅同名列/间接FK带出）不要列。
+
+## 输出格式（只输出 JSON，不要 markdown 代码块，不要解释）
+{{"relevant_stems": ["stem1", "stem2", ...]}}
+按重要性排序，最多列出 8 个。"""
+        data = self._call_llm(prompt, timeout=25)
+        if not isinstance(data, dict):
+            return None
+        stems = data.get("relevant_stems")
+        if not isinstance(stems, list) or not stems:
+            return None
+        by_stem = {getattr(c, "stem", ""): c for c in candidates}
+        picked = [by_stem[s] for s in stems
+                  if isinstance(s, str) and s in by_stem]
+        return picked[:8] if picked else None
 
     def _prune_segment_candidates(self, seg: str, candidates: list,
                                    column_signal, fk_edges: list) -> list:
@@ -656,6 +720,20 @@ class DecomposeAgent(LLMSubAgent):
             return list(candidates)
         # §P0 候选超量裁剪：>5 表按命中强度取 top N + FK 依赖表全保
         if len(candidates) > 5:
+            # §匹配层判定门修复：先问 LLM 哪些表本段真正需要产出数据，只在
+            # LLM 不可用/失败/结果空时才退回下方 _strength 规则排序（不回归
+            # 现有行为）。根因：纯规则打分对多分支叙事（对话树+多选项等）
+            # 容易挑错组合——噪声表（reward/item 等）挤掉真正需要的完整链路
+            # 表（如 interaction 覆盖对话+选项多个 sheet），组合过杂致 schema
+            # 超时，超时后摔进不懂语义的零 LLM 兜底模板拼错分支结构（实测：
+            # 把整段奖励叙述塞进选项文字字段）。LLM 直接读段文本判断，比规则
+            # 打分更贴合语义，且通常挑出更精简组合（缩小 schema，降低超时率）。
+            _llm_picked = self._llm_rank_segment_candidates(seg, candidates)
+            if _llm_picked:
+                self.add_thinking("细分",
+                    f"LLM 候选筛选(段级)：{len(candidates)}→{len(_llm_picked)}"
+                    f"，替代规则 _strength 排序挑选真正需要的表")
+                return _llm_picked
             # 排序策略（框架级，不绑业务词）：
             #   - 语义命中（alias 级 conf≥0.8）> 列名信号命中 > FK 一跳目标 > 其他
             #   - 语义命中里按候选原始置信度排序（action 主语最相关）
@@ -1711,6 +1789,7 @@ class DecomposeAgent(LLMSubAgent):
         except Exception:
             return ""
         lines: list[str] = []
+        _records: list[dict] = []  # schema_budget 用（stem/sheet/cols/sig_cols）
         for cand in candidates:
             p = all_tables.get(cand.stem)
             if p is None:
@@ -1763,6 +1842,30 @@ class DecomposeAgent(LLMSubAgent):
                 cols = kept + rest[:rest_budget]
                 if cols:
                     lines.append(f"- {cand.stem}/{sh}: " + " | ".join(cols))
+                    _records.append({"stem": cand.stem, "sheet": sh,
+                                     "cols": cols, "sig_cols": set(kept)})
+        # schema_budget（MVP #4，默认 OFF）：CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET>0
+        # 且完整 schema 超预算时，按候选分层降注入粒度（required 完整 / dependency
+        # 摘要 / context 不注入），缩短 prompt 而非拉长 timeout。关闭时字节级不变。
+        _budget = 0
+        try:
+            _budget = int(_os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET", "0"))
+        except (TypeError, ValueError):
+            _budget = 0
+        if _budget > 0 and _records:
+            try:
+                from .schema_budget import apply_schema_budget
+                from ..locator.candidate_grouping import classify_candidates
+                _groups = classify_candidates(candidates)
+                _budget_lines, _applied = apply_schema_budget(_records, _groups, _budget)
+                if _applied:
+                    self.add_thinking(
+                        "解析",
+                        f"schema 预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
+                        f"（超 {_budget} 字符，dependency 转摘要/context 省略）")
+                    return "\n".join(_budget_lines)
+            except Exception:
+                pass
         return "\n".join(lines) if lines else ""
 
     def _build_fk_block(self, fk_edges: list[FKEdge]) -> str:
@@ -2071,6 +2174,12 @@ class DecomposeAgent(LLMSubAgent):
             " \"<produces_label>\" 占位符（如 \"<new_item_id>\"），**绝不能留空字符串 \"\"**。"
             "系统会按拓扑序先产出真实主键值后自动回填该占位符。留空会导致主键列写空值失败。\n"
             "- 引用他表新产出的 ID → 该字段值用 \"<produces_label>\" 占位符,并在 consumes 标注\n"
+            "- ⚠【来源/前置引用】当本批新增的实体在另一张表里作为「来源/前置/进化前/升级前/"
+            "父级/所属」被引用时（如「新增X…X进化成Y」——进化表的『进化前/源』外键列指的就是 X），"
+            "该外键列必须填 X 那条 add 的 \"<produces_label>\" 占位符并在 consumes 标注；"
+            "若该表还有对应的『来源名称』文本列，也应填 X 的名称。不要因为原文未再次点名而漏填"
+            "这条来源外键——它靠上下文语义（同一实体在两表出现）确定，而非字面重复。"
+            "注意区分：同表里指向「结果/进化后」的另一条外键若原文已显式给了具体 ID，则保留该 ID，不要混填。\n"
             "- ⚠【produces/consumes 标签一致】消费方 consumes 里的 label **必须与被引用那条 add 的 "
             "produces 字面完全一致**，系统靠标签字面回填产出值，对不上则占位符悬空→下游整条失败。"
             "跨表引用整体走 `new_<stem>_id`（如引用 school_talent 新增行 → produces=\"new_school_talent_id\"，"
@@ -2373,7 +2482,45 @@ class DecomposeAgent(LLMSubAgent):
             return [], []
         return self._read_schema_cached(path, stem, sheet)
 
+    def _extract_balanced_json(self, raw: str, open_ch: str, close_ch: str) -> Optional[str]:
+        """从 raw 找第一个 open_ch 起、真正括号配对(跳过字符串内转义)闭合的子串。
+
+        §得到json 稳健性修复：原贪婪正则 (\\[.*\\]) 遇 raw 夹杂解释文字里的
+        无关括号（如"字段说明：见[备注]，数据如下 [{...}]"）会贪婪跨到错误的
+        最后一个 ]，拼出"格式对但内容错"的假 JSON——比直接返回空更危险
+        （空会走 LLM 修复兜底，错误内容会静默通过校验直接写错）。按字符正确
+        计深度定位真正闭合的那一个，不存在则返回 None（交后续 LLM 修复兜底）。
+        """
+        start = raw.find(open_ch)
+        if start < 0:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return raw[start:i + 1]
+        return None
+
     def _parse_json_array(self, raw: str) -> list:
+        """从 LLM 返回解析 JSON 数组。容忍 fenced code block、裸 JSON、多数组、单 dict。"""
+        if not raw:
+            return self._llm_repair_json(raw)
         mf = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
         if mf:
             body = mf.group(1).strip()
@@ -2382,32 +2529,59 @@ class DecomposeAgent(LLMSubAgent):
                     return self._normalise_json_payload(json.loads(body))
                 except ValueError:
                     pass
-        """从 LLM 返回解析 JSON 数组。容忍 fenced code block、裸 JSON、多数组、单 dict。"""
-        # 1) fenced ```json [ ... ]```（显式组1）
+        # 1) 裸 JSON（整体已是合法数组/对象）
         body = str(raw or "").strip()
         if body.startswith("{") or body.startswith("["):
             try:
                 return self._normalise_json_payload(json.loads(body))
             except ValueError:
                 pass
-        m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
-        if not m:
-            # 2) 裸 JSON 数组（也带组1，避免 m.group(1) 在无组正则上报 IndexError）
-            m = re.search(r"(\[\s*\{.*\}\s*\])", raw, re.DOTALL)
-        if m:
+        # 2) 括号配对扫描抓数组体（替代贪婪正则，见 _extract_balanced_json 注释）
+        arr_body = self._extract_balanced_json(raw, "[", "]")
+        if arr_body:
             try:
-                return self._normalise_json_payload(json.loads(m.group(1)))
+                return self._normalise_json_payload(json.loads(arr_body))
             except ValueError:
                 pass
         # 3) 单 dict（LLM 未包数组，仅产一个 op）→ 包装成 [dict] 接收，避免单 op 输出被丢弃
-        md = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL) or \
-            re.search(r"(\{.*\})", raw, re.DOTALL)
-        if md:
+        obj_body = self._extract_balanced_json(raw, "{", "}")
+        if obj_body:
             try:
-                return self._normalise_json_payload(json.loads(md.group(1)))
+                return self._normalise_json_payload(json.loads(obj_body))
             except ValueError:
                 pass
-        return []
+        # §得到json 判定门修复：规则清洗全部失败时原为静默 return []（有效数据
+        # 整段丢弃，无兜底）。改为一次性 LLM 修复兜底——正则救不了的场景通常是
+        # 单引号/尾逗号/散文夹带/截断等，LLM 看得懂上下文能修，规则只会更死板。
+        # 只试一次（不重试链），失败/关闭仍 [] 兜底，不回归现有行为。
+        return self._llm_repair_json(raw)
+
+    def _llm_repair_json(self, raw: str) -> list:
+        """规则清洗全部失败时的 LLM 兜底：修复非法/截断 JSON（仅一次）。"""
+        if not raw or not raw.strip() or not self.parser:
+            return []
+        prompt = (
+            "以下文本本应是合法 JSON 数组，但格式有问题（可能夹杂解释文字、"
+            "用了单引号、多了尾逗号、代码块未闭合、被截断等）。请只输出修复后的"
+            "合法 JSON 数组本身，不要解释、不要 markdown 代码块。若内容本身根本"
+            "不含可提取的结构化数据，输出 []。\n\n## 原始文本\n" + raw[:4000]
+        )
+        try:
+            fixed_raw = self._call_llm_raw(prompt, timeout=20)
+        except Exception:  # noqa: BLE001
+            return []
+        if not fixed_raw:
+            return []
+        m = re.search(r"(\[.*\])", fixed_raw, re.DOTALL)
+        if not m:
+            return []
+        try:
+            result = self._normalise_json_payload(json.loads(m.group(1)))
+        except ValueError:
+            return []
+        if result:
+            self.add_thinking("细分", "DecomposeAgent JSON 解析失败,LLM 修复兜底成功")
+        return result
 
     def _to_split_intents(self, arr: list, text: str) -> tuple:
         """LLM JSON 数组 → (SplitIntent 列表, 丢弃 stem 列表)。

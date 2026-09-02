@@ -189,6 +189,30 @@ class SubAgent:
         except Exception:
             pass
 
+    def _observe_llm(self, site: str, *, dur_ms: int = 0, prompt_chars: int = 0,
+                     resp_chars: int = 0, timeout: bool = False,
+                     error: bool = False) -> None:
+        """记录本次 LLM 往返的可观测性指标（耗时/prompt 体量/响应/超时/错误）。
+
+        StepTrace §P0：与 _bump_llm 的计次分离，往返结束后调用，不改任何决策逻辑，
+        仅为「证明慢在哪」提供数据（decompose 常因 schema prompt 过长而慢）。
+        """
+        c = getattr(self.parser, "_llm_counter", None) if self.parser else None
+        if c is None or not hasattr(c, "observe"):
+            return
+        try:
+            c.observe(site, dur_ms=dur_ms, prompt_chars=prompt_chars,
+                      resp_chars=resp_chars, timeout=timeout, error=error)
+            c.merge_to_instance()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_timeout_err(err: object) -> bool:
+        """粗判响应错误是否为超时（供 StepTrace timeout 归因）。"""
+        s = str(err or "").lower()
+        return "timeout" in s or "timed out" in s or "超时" in str(err or "")
+
     def _call_llm(self, prompt: str, timeout: int = 90) -> Optional[dict]:
         """复用 CodemakerNLParser HTTP 通道调 LLM,返回解析后 JSON dict。
 
@@ -203,10 +227,18 @@ class SubAgent:
             return None
         self._bump_llm(self.name or "subagent")
         from .llm_gate import llm_throttle
+        _t0 = time.time()
         with llm_throttle():
             resp = self.parser.client.prompt(sid, prompt, timeout=timeout,
                                               model=getattr(self.parser, "model", ""),
                                               cancel_event=getattr(self.parser, "_cancel_event", None))
+        self._observe_llm(
+            self.name or "subagent",
+            dur_ms=int((time.time() - _t0) * 1000),
+            prompt_chars=len(prompt or ""),
+            resp_chars=len(getattr(resp, "response_text", "") or "") if resp and resp.ok else 0,
+            timeout=(not resp.ok) and self._is_timeout_err(getattr(resp, "error", "")),
+            error=not resp.ok)
         if not resp.ok:
             self.add_thinking(self._default_phase, f"LLM 调用失败: {resp.error}")
             return None
@@ -230,13 +262,23 @@ class SubAgent:
         self._bump_llm(self.name or "subagent")
         try:
             from .llm_gate import llm_throttle
+            _t0 = time.time()
             with llm_throttle():
                 resp = self.parser.client.prompt(sid, prompt, timeout=timeout,
                                                   model=getattr(self.parser, "model", ""),
                                                   cancel_event=getattr(self.parser, "_cancel_event", None))
         except Exception as e:
+            self._observe_llm(self.name or "subagent", error=True,
+                              prompt_chars=len(prompt or ""))
             self.add_thinking(self._default_phase, f"LLM 调用异常: {e}")
             return None
+        self._observe_llm(
+            self.name or "subagent",
+            dur_ms=int((time.time() - _t0) * 1000),
+            prompt_chars=len(prompt or ""),
+            resp_chars=len(getattr(resp, "response_text", "") or "") if resp and resp.ok else 0,
+            timeout=(not resp.ok) and self._is_timeout_err(getattr(resp, "error", "")),
+            error=not resp.ok)
         if not resp.ok:
             self.add_thinking(self._default_phase, f"LLM 调用失败: {resp.error}")
             return None

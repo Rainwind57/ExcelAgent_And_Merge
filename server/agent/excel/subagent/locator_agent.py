@@ -86,6 +86,9 @@ class LocatorResult:
     fk_edges: list[FKEdge] = field(default_factory=list)
     ambiguous: bool = False
     column_signal: Any = None
+    # 候选分层（附加观测，MVP #3）：{"required":[...],"dependency":[...],"context":[...]}。
+    # 不改 candidates 语义与注入逻辑；供 metrics/audit 与后续 schema_budget 消费。
+    candidate_groups: dict = field(default_factory=dict)
 
     @property
     def is_cross_table(self) -> bool:
@@ -486,8 +489,17 @@ class LocatorAgent(LLMSubAgent):
                           f"LocatorAgent 产出 {len(candidates)} 候选表, "
                           f"{len(fk_edges)} FK 边, cross={bool(fk_edges)}"
                           + (" (复杂输入汇集)" if complex_input else ""))
+        # 候选分层（附加观测，0 LLM，不改注入逻辑）：把候选按语义角色分三级，
+        # 供 Step1 metrics/audit 与后续 schema_budget 消费。失败降级为空 dict。
+        _groups: dict = {}
+        try:
+            from ..locator.candidate_grouping import classify_candidates
+            _groups = classify_candidates(candidates, fk_edges, _llm_relevant)
+        except Exception:
+            _groups = {}
         return LocatorResult(candidates=candidates, fk_edges=fk_edges,
-                             ambiguous=ambiguous, column_signal=column_signal)
+                             ambiguous=ambiguous, column_signal=column_signal,
+                             candidate_groups=_groups)
 
     # ── 内部 ───────────────────────────────────────────────────
 
@@ -847,7 +859,10 @@ class LocatorAgent(LLMSubAgent):
 ## 输出格式（只输出 JSON，不要 markdown 代码块，不要解释）
 {{"relevant_stems": ["stem1", "stem2", ...]}}
 只列出你确认真正涉及的表 stem，不确定的不列（宁可漏列，不可错列噪声表）。"""
-        data = self._call_llm(prompt, timeout=15)
+        # §实测：复杂输入候选多(12张)时该复核 prompt 常在 15s 内超时（描述文本
+        # 变长），白耗一次调用却拿不到结果。适度放宽到 25s（仍远小于 decompose
+        # 的 120s），换取真正拿到复核结果、降权更准，而不是靠碰运气。
+        data = self._call_llm(prompt, timeout=25)
         if not isinstance(data, dict):
             return None
         stems = data.get("relevant_stems")

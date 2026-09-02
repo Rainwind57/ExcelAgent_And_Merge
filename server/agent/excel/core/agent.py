@@ -1248,6 +1248,28 @@ class TableAgent:
                                 if best is None or score > best[0]:
                                     best = (score, tp, s.name)
             if best is not None:
+                # §匹配层判定门修复：行索引最高分与 table_hint 精确 stem 命中若
+                # 指向不同表——这是两个"精确"信号打架（数据侧真实命中 vs LLM
+                # 早先判断），原逻辑不问缘由直接信行索引，table_hint 判对时也
+                # 被隐性覆盖，静默错配写错表。仅在冲突时才问 LLM（把双方指标
+                # 摆出来做参考），双方一致或无 table_hint 可比时行为不变、不加
+                # 调用（精确命中优先，不确定才用 LLM，符合口径，不拖慢常规路径）。
+                _hint = (intent.table_hint or "").strip()
+                if _hint and _hint != best[1].stem:
+                    _hint_hit = any(p.stem == _hint for p in tables)
+                    if _hint_hit:
+                        _reply = self._llm_disambiguate(
+                            f"用户表格操作指令：「{intent.raw}」\n"
+                            f"定位值：{intent.locator_value}\n"
+                            f"候选A（LLM 语义判断的表名 table_hint）：{_hint}\n"
+                            f"候选B（数据行索引精确命中定位值「{intent.locator_value}」"
+                            f"的表，命中分数 {best[0]:.1f}）：{best[1].stem}\n"
+                            f"请判断该指令实际要操作的是哪张表，只回答候选A或候选B的表名，"
+                            f"不要其他文字。")
+                        if _reply and _hint in _reply and best[1].stem not in _reply:
+                            for p in tables:
+                                if p.stem == _hint:
+                                    return p, intent.sheet_hint
                 return best[1], best[2]
 
         # 策略0a：显式 table_hint **精确 stem** 命中——LLM 明确给出合法表名，
@@ -6108,6 +6130,21 @@ class TableAgent:
         # 让 Step2 校验时依赖序已知,Step3 执行直接按序写不重排。
         from .produces_inference import infer_produces_consumes
         infer_produces_consumes(intents)
+        # 跨记录引用 LLM 判定层（LLM 优先）：produces_inference 只回填「已存在且空」
+        # 的外键；对被 DecomposeAgent 漏掉的外键列、或多条外键指向同一 producer 表的
+        # 歧义，交 LLM 判定「哪列引用本批新增实体」，判 true 才注占位符。仅在有缺失/
+        # 空白跨表外键时才调 LLM；LLM 不可用/异常 → 不改动，零回归。
+        try:
+            from .cross_ref_linker import link_cross_refs
+            link_cross_refs(
+                intents,
+                (lambda p: self._llm_call(p, site="xref_link"))
+                if self.parser is not None and not getattr(self, "execute_no_llm", False)
+                else None,
+                thinking=(lambda ph, d: _stream_res.add_thinking(ph, d)),
+            )
+        except Exception:
+            logger.warning("cross_ref_linker 调用失败，保留原 intent", exc_info=True)
         ordered_idx = OperationOrchestrator._topo_order(intents)
         # 子任务数供 verify-repair 自适应轮数（_adaptive_rounds）引用
         self._n_subtasks = len(ordered_idx)
@@ -8364,8 +8401,23 @@ class TableAgent:
                 self.parser._session_id = sess
             if not client.health_check():
                 return ""
+            import time as _time
+            _t0 = _time.time()
             resp = client.prompt(sess, prompt, model=getattr(self.parser, "model", "") or "",
                                  cancel_event=getattr(self, "_cancel_event", None))
+            # StepTrace §P0：记录本次往返可观测性指标（耗时/prompt 体量/响应/超时/错误）
+            try:
+                if self._llm_counter is not None and hasattr(self._llm_counter, "observe"):
+                    _err = getattr(resp, "error", "")
+                    _to = (not resp.ok) and ("timeout" in str(_err).lower() or "超时" in str(_err))
+                    self._llm_counter.observe(
+                        site, dur_ms=int((_time.time() - _t0) * 1000),
+                        prompt_chars=len(prompt or ""),
+                        resp_chars=len(getattr(resp, "response_text", "") or "") if resp.ok else 0,
+                        timeout=bool(_to), error=not resp.ok)
+                    self._llm_counter.merge_to_instance()
+            except Exception:
+                pass
             if not resp.ok:
                 return ""
             return resp.response_text or ""

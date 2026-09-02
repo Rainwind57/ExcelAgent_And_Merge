@@ -26,6 +26,35 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger("aitable.codemaker")
 
+# R: serve/SDK 侧偶发把原始 JS 异常堆栈（AI_NoOutputGeneratedError、
+# vercel.ai.error、多行 "at xxx (...)" 调用栈等）原封不动塞进 info.error.message
+# 或 HTTP 错误体，若不做归一化会被 resp.error 一路带到前端 thinking/step
+# detail 里，把技术堆栈直接展示给终端用户。这里做特征识别 + 归一化，
+# 完整原文仍写日志（供排障），只把简短友好提示返回给上层。
+_STACK_TRACE_MARKERS = (
+    "vercel.ai.error", "ai_nooutputgeneratederror", "no output generated",
+    "at flush (", "at finalize (", "cause: undefined",
+)
+
+
+def _sanitize_provider_error(detail: str, *, max_len: int = 200) -> str:
+    """把疑似原始堆栈/多行异常文本归一化为简短友好提示。
+
+    普通短错误（如 "timed out"）原样返回；命中堆栈特征或过长/多行的
+    文本才替换为通用提示，避免把 JS 调用栈糊给用户。
+    """
+    text = str(detail or "").strip()
+    if not text:
+        return "模型调用异常"
+    lowered = text.lower()
+    is_stacky = ("\n" in text and len(text) > max_len) or any(
+        m in lowered for m in _STACK_TRACE_MARKERS)
+    if is_stacky:
+        return "模型调用异常（服务端未返回有效结果），请重试"
+    if len(text) > max_len:
+        return text[:max_len] + "…"
+    return text
+
 _CODEMAKER_SERVER_URL = os.environ.get("CODEMAKER_SERVER_URL", "http://127.0.0.1:8666")
 _CODEMAKER_USERNAME = os.environ.get("CODEMAKER_USERNAME", "")
 _CODEMAKER_PASSWORD = os.environ.get("CODEMAKER_PASSWORD", "")
@@ -505,7 +534,7 @@ class CodemakerClient:
                            session_id, elapsed, detail)
             return PromptResult(ok=False, session_id=session_id,
                                 error_type=CodemakerError.PROVIDER_ERROR,
-                                error=f"底层 LLM 调用失败：{detail}")
+                                error=f"底层 LLM 调用失败：{_sanitize_provider_error(detail)}")
 
         response_text = self._extract_message_text(data)
         if not response_text:
@@ -560,7 +589,8 @@ class CodemakerClient:
             detail = e.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        return f"codemaker serve 返回 {e.code}: {detail or str(e)}"
+        logger.warning("← codemaker HTTP 错误 code=%s detail=%s", e.code, detail or str(e))
+        return f"codemaker serve 返回 {e.code}: {_sanitize_provider_error(detail or str(e))}"
 
     def get_messages(self, session_id: str) -> list[dict]:
         """获取会话的所有消息。

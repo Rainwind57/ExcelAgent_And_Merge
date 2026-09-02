@@ -2197,13 +2197,13 @@ class AgentService:
                 if phase in _sid_map:
                     return _sid_map[phase]
                 if phase in ("意图分类", "问题分析", "解析", "路由",
-                             "定位", "跨表探索", "计划", "分区"):
+                             "定位", "跨表探索", "计划", "分区", "细分"):
                     return "step1_parse"
                 if phase == "校验":
                     return "step2_validate"
                 if phase == "执行":
                     return "step3_execute"
-                if phase == "汇总":
+                if phase in ("汇总", "归纳"):
                     return "step4_conclude"
                 return None
             # 6 步流程：detail 前缀显式标记所属步

@@ -752,6 +752,10 @@ def _build_step1_audit(intents: list,
     cand_stems: list[str] = []
     _seen: set = set()
     per_segment: list[dict] = []
+    # 候选分层（MVP #3）：跨段合并 required/dependency/context（0 LLM，附加观测）。
+    _grp_required: set = set()
+    _grp_dependency: set = set()
+    _grp_context: set = set()
     for i, lr in enumerate(locator_results or [], start=1):
         stems: list[str] = []
         for c in (getattr(lr, "candidates", None) or []):
@@ -761,8 +765,15 @@ def _build_step1_audit(intents: list,
                 if s not in _seen:
                     _seen.add(s)
                     cand_stems.append(s)
+        _g = getattr(lr, "candidate_groups", None) or {}
+        _grp_required.update(_g.get("required", []) or [])
+        _grp_dependency.update(_g.get("dependency", []) or [])
+        _grp_context.update(_g.get("context", []) or [])
         per_segment.append({"segment_idx": i, "candidates": stems,
                             "candidate_count": len(stems)})
+    # required 优先归属：一个 stem 若在任一段被判 required，则不再计入 dep/context。
+    _grp_dependency -= _grp_required
+    _grp_context -= (_grp_required | _grp_dependency)
 
     # 问题分布（quality + semantic_compile 双源聚合）。
     issue_dist: dict[str, dict] = {}
@@ -806,6 +817,14 @@ def _build_step1_audit(intents: list,
         "segments": per_segment,
         "candidates": cand_stems,
         "candidate_count": len(cand_stems),
+        "candidate_groups": {
+            "required": sorted(_grp_required),
+            "dependency": sorted(_grp_dependency),
+            "context": sorted(_grp_context),
+        },
+        "candidate_required_count": len(_grp_required),
+        "candidate_dependency_count": len(_grp_dependency),
+        "candidate_context_count": len(_grp_context),
         "intents": intent_rows,
         "intent_count": len(intents or []),
         "metrics": {
@@ -922,6 +941,12 @@ class Step1ParseSubAgent:
             _cnt_before = int(_cnt.peek_total()) if _cnt else 0
         except Exception:
             _cnt_before = 0
+        # StepTrace §P0：本步 LLM 可观测性（耗时/prompt 体量/超时）差值快照。
+        _trace_before: dict = {}
+        try:
+            _trace_before = _cnt.as_dict() if _cnt else {}
+        except Exception:
+            _trace_before = {}
 
         try:
             # §split 复用：parse 内部已调 split_multi_intent 并缓存到 _last_segments，
@@ -1067,6 +1092,18 @@ class Step1ParseSubAgent:
             _llm_calls = max(0, int(_cnt.peek_total()) - _cnt_before) if _cnt else 0
         except Exception:
             _llm_calls = 0
+        # StepTrace §P0：本步 LLM 可观测性差值（耗时/prompt 体量/响应/超时/错误）。
+        _trace_after: dict = {}
+        try:
+            _trace_after = _cnt.as_dict() if _cnt else {}
+        except Exception:
+            _trace_after = {}
+
+        def _trace_delta(key: str) -> int:
+            try:
+                return max(0, int(_trace_after.get(key, 0)) - int(_trace_before.get(key, 0)))
+            except Exception:
+                return 0
         # Step1 结束：打印意图清单（对齐文本表格），便于后续 Step2 校验对照
         if intents:
             _table = _format_intents_table(intents)
@@ -1114,6 +1151,15 @@ class Step1ParseSubAgent:
                 "segments": len(segments),
                 "intents": len(intents),
                 "llm_calls": _llm_calls,
+                "step1_llm_dur_ms": _trace_delta("total_dur_ms"),
+                "step1_llm_prompt_chars": _trace_delta("total_prompt_chars"),
+                "step1_llm_resp_chars": _trace_delta("total_resp_chars"),
+                "step1_llm_timeouts": _trace_delta("total_timeouts"),
+                "step1_llm_errors": _trace_delta("total_errors"),
+                "candidate_count": audit.get("candidate_count", 0),
+                "candidate_required_count": audit.get("candidate_required_count", 0),
+                "candidate_dependency_count": audit.get("candidate_dependency_count", 0),
+                "candidate_context_count": audit.get("candidate_context_count", 0),
                 "step1_quality_hard": quality.get("hard_count", 0),
                 "step1_quality_issues": quality.get("issue_count", 0),
                 "step1_plan_nodes": plan_graph.get("node_count", 0),
