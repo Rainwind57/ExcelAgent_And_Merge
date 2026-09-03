@@ -1,0 +1,12 @@
+[
+  {
+    "_meta": {
+      "name": "兽潮来袭·三环世界任务链（跨表 add 全链路）",
+      "complexity": "高（任务链3环 + 3战斗配置 + 3奖励包 + 解锁链）",
+      "expect_subtasks": 9,
+      "design_target": "exercises ParseAgent schema-driven DecomposeAgent 拆任务链3环+战斗+奖励包；produces_inference 推断 reward→combat→task_chain 解锁拓扑序"
+    },
+    "input": "新增世界任务链「兽潮来袭」任务组 830（主线类型），三环：第一环 250830「击退前锋」目标 Combat 打赢战斗 25083001，奖励包 100830，解锁 250831；第二环 250831「捣毁巢穴」目标 Combat 打赢战斗 25083002，奖励包 100831，解锁 250832；第三环 250832「讨伐兽王」目标 Combat 打赢战斗 25083003，奖励包 100832。三场战斗都在战场 10050：25083001 坐标 (300,0,200) 刷「兽潮前锋」model_id 1120、技能 9020/9021、AI aggressive_ai；25083002 坐标 (310,0,210) 刷「兽潮首领」model_id 1121、技能 9022/9023、AI boss_ai；25083003 坐标 (320,0,220) 刷「兽王」model_id 1122、技能 9024/9025、AI boss_ai，三场打赢分别给 100830/100831/100832。",
+    "expected_answer": []
+  }
+]

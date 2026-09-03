@@ -128,6 +128,12 @@ class DecomposeAgent(LLMSubAgent):
         # 同 session 内主路径+兜底+段级重跑重复读同表头，缓存省 60-70% I/O。
         # 失效靠进程重启（配表 xlsx 结构静态，单进程内不变）。
         self._schema_cache: dict[tuple[str, str], tuple[list, list]] = {}
+        # §schema block 本 run 缓存：同一 (candidates 签名 + column_signal 命中列集 +
+        # budget 配置) 本 run 内只构一次，不重复读表/拼装/裁剪/打 thinking 日志。
+        # 治"schema 贪心预算裁剪"日志反复刷屏（主路径+并发+段级+coverage+backfill
+        # 多次调用同一 _build_schema_block，结果不变但每次都打印 → 用户看到 59 条同
+        # 质裁剪日志，墙钟也浪费在重复拼装上）。schema 静态，跨 run 复用也安全。
+        self._schema_block_cache: dict[tuple, str] = {}
         # §session 复用：主线程（串行路径）复用 self._sid；并行工作线程
         # 用 threading.local 独立 session，避免同 session 并发请求冲突。
         # 单条指令多次 decompose（主路径+重试+单表重拆）不再每次 create_session，
@@ -135,12 +141,17 @@ class DecomposeAgent(LLMSubAgent):
         self._tls = threading.local()
         # §P0 任务链分组跨组熔断：连续 N 组单 prompt 超时后短路剩余组 + 兜底链
         # 各级 LLM 调用，直接走 _splitter_baseline 零 LLM 兜底（治"一堆 timed out"）。
-        # N=env CODEMAKER_DECOMPOSE_CHAIN_CIRCUIT（默认 1），0 关闭熔断。
+        # §跑通优先：N=env（默认 0 关闭熔断）。原默认 1 在 serve 慢时连环超时
+        # 触发熔断后剩余组全跳 LLM 走零 LLM baseline，12 表任务链必产残缺。
+        # 关熔断让每组都尝试，慢就慢，保产出完整性。
+        # §跑通优先：N=env（默认 0 关闭熔断）。原默认 1 在 serve 慢时连环超时
+        # 触发熔断后剩余组全跳 LLM 走零 LLM baseline，12 表任务链必产残缺。
+        # 关熔断让每组都尝试，慢就慢，保产出完整性。
         try:
             self._chain_timeout_circuit = max(
-                0, int(os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_CIRCUIT", "1")))
+                0, int(os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_CIRCUIT", "0")))
         except (TypeError, ValueError):
-            self._chain_timeout_circuit = 1
+            self._chain_timeout_circuit = 0
         self._chain_timeout_streak = 0
 
     def _chain_circuit_open(self) -> bool:
@@ -197,14 +208,20 @@ class DecomposeAgent(LLMSubAgent):
     # ── 建议2：Step1 LLM 调用硬预算（默认 3，可回退 env=大数/0 关闭） ──
     def _init_step1_budget(self) -> None:
         """每次 Step1 decompose 入口重置 LLM 预算。CODEMAKER_STEP1_LLM_BUDGET 控制，
-        默认 3（主拆分 1 次 + 至多 2 次可选补洞）。超预算后 _call_llm* 短路返 None，
-        调用方走 baseline/partial，不再串行补洞。"""
+        默认 5（主拆分不经 gate；辅助 LLM：候选筛选/outline/表覆盖/dropped 重拆，单段
+        最坏 outline1+表覆盖1+重拆后再 outline1 = 3-4 次，5 留余量防抖动）。超预算后
+        _call_llm* 短路返 None，调用方走 baseline/partial，不再串行补洞。
+
+        §多意图自适应：原默认 3 太紧，单段 dropped 重拆 + 兜底链 outline/表覆盖易触顶
+        → 走 partial 致漏字段（效果差根因之一）。提到 5，覆盖单段最坏路径。env 仍可
+        显式覆盖。主拆分 _decompose_single_prompt 直接调 client.prompt 不经 gate，
+        预算只拦辅助/补洞 LLM。"""
         import os as _os
         from ..core.pipeline.llm_budget import LLMBudget
         try:
-            _lim = int(_os.environ.get("CODEMAKER_STEP1_LLM_BUDGET", "3"))
+            _lim = int(_os.environ.get("CODEMAKER_STEP1_LLM_BUDGET", "5"))
         except (TypeError, ValueError):
-            _lim = 3
+            _lim = 5
         self._step1_budget = LLMBudget(_lim)
         self._budget_partial = False
 
@@ -311,7 +328,9 @@ class DecomposeAgent(LLMSubAgent):
 
         # §放宽：40→75，服务端真实响应普遍偏慢，40s 太紧一直 timeout；
         # 需要更松可再调大 env，或用 CODEMAKER_LLM_TIMEOUT_SCALE 全局按比例放宽。
-        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
+        # §跑通优先：75→120。12 表全 schema 单 prompt serve 生成长 JSON 普遍
+        # >75s，75s 必超时产空触发熔断。120s 覆盖 serve 实测响应分布。
+        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "120"))
         candidates = locator_result.candidates
         # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：把 context 级噪声表
         # 从 schema 注入剔除，缩短 prompt。required/dependency 完整保留（不伤多表写入）。
@@ -375,7 +394,9 @@ class DecomposeAgent(LLMSubAgent):
             # 不能按 (table,sheet) 去重（会把对话树多句坍缩成一句）。
             # 注意 _decompose_single_prompt 返回类型不一致：失败返回 []（空列表），
             # 成功返回 (filtered, dropped) 二元组——需按类型分派（与 _merge 同口径）。
-            _max_groups = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP_MAX", "2")))
+            # §跑通优先：2→4。原 2 组截断太早，12 表只跑 6 表就停产残缺。
+            # 4 组覆盖 12 表全链，配合 timeout 120 每组有充足响应时间。
+            _max_groups = max(1, int(_os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_GROUP_MAX", "4")))
             _groups_run = 0
             for _gi in range(0, len(candidates), _chain_group):
                 if _groups_run >= _max_groups:
@@ -439,7 +460,11 @@ class DecomposeAgent(LLMSubAgent):
             def _retry_dropped_one(_rs: str):
                 _rc = cand_by_stem.get(_rs)
                 if _rc is None:
-                    # 候选外 stem，构造单表候选（sheet 留空让 schema 读全部业务 sheet）
+                    # 候选外 stem，构造单表候选。sheet 留空让 schema 读全部业务 sheet。
+                    # 注意：这会把该 stem 全 sheet（含对话/选项等无关 sheet）拉进 prompt，
+                    # LLM 看到无关 sheet schema 易幻觉产指令未提的意图（如任务链案例
+                    # 误产对话树）。仅在原 candidates 未覆盖该 stem 时兜底，正常路径
+                    # 走 cand_by_stem 命中带具体 sheet 的候选，schema 只读该 sheet。
                     _rc = CandidateTable(stem=_rs, sheet="", confidence=0.5,
                                           level="retry_single", matched_term="")
                 try:
@@ -708,7 +733,9 @@ class DecomposeAgent(LLMSubAgent):
         # 段级 schema 小(单段+剪枝后候选表少)，不需整句级长 timeout。默认与
         # decompose 整句入口对齐（§放宽：40→75，服务端偏慢，避免一直 timeout）；
         # runner/env 可经 CODEMAKER_DECOMPOSE_TIMEOUT 进一步调整。
-        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
+        # §跑通优先：75→120。12 表全 schema 单 prompt serve 生成长 JSON 普遍
+        # >75s，75s 必超时产空触发熔断。120s 覆盖 serve 实测响应分布。
+        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "120"))
         # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：剔除 context 级噪声表 schema。
         self._context_drop_stems = self._context_drop_set(locator_result)
         candidates = self._prune_segment_candidates(
@@ -2068,16 +2095,29 @@ class DecomposeAgent(LLMSubAgent):
         else:
             with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as ex:
                 futures = [ex.submit(_run_one, j) for j in jobs]
-                first_two = [f.result() or ([], []) for f in futures[:2]]
-                _collect(first_two[0])
-                _collect(first_two[1])
-                if not first_two[0][0] and not first_two[1][0]:
-                    _local_ce.set()
+                # §不 fail-fast：前 2 候选均空时不再 _local_ce.set() 取消剩余。
+                # serve 端 LLM 时延波动大（同输入时快时慢），前 2 表 timeout 不代表
+                # 后 3 表也会 timeout——并发同时跑时，后表可能正好赶上 serve 恢复。
+                # 立即 cancel 会丢掉这些本可能成功的表 → 5 表全空 → 熔断 → baseline
+                # → 0 产出。改为等全部跑完，保住部分成功意图（"允许失败，成功照常
+                # 操作表格"），全空再降级兜底。代价：墙钟 = max(per_to)≈最慢一个，
+                # 但比"快速 cancel + 0 产出"更符合用户预期。
+                _early_empty = 0
+                for f in futures:
+                    try:
+                        _r = f.result() or ([], [])
+                    except Exception:  # noqa: BLE001
+                        _r = ([], [])
+                    _collect(_r)
+                    if not _r[0]:
+                        _early_empty += 1
+                    else:
+                        _early_empty = 0  # 重置连续空计数（serve 恢复了）
+                _total_empty = _early_empty == len(futures)
+                if _total_empty:
                     self.add_thinking("细分",
-                        "DecomposeAgent 前 2 候选均空响应，取消剩余并发候选，降级兜底")
-                else:
-                    for f in futures[2:]:
-                        _collect(f.result() or ([], []))
+                        f"DecomposeAgent 并发 {len(futures)} 表全空响应"
+                        f"（serve 超时/不稳），降级兜底")
         return all_intents, all_dropped
 
     # ── schema 构建 ─────────────────────────────────────────────
@@ -2189,12 +2229,12 @@ class DecomposeAgent(LLMSubAgent):
         # row1=中文显示名（"对话内容"），row2=规范名:类型（"prompt_text:string" 或
         # "options[0]:int"）。LLM 产出的字段键可能是 row1 或 row2 规范名，两路都查。
         # 类型取 row2 冒号后半段（"int"/"string"）；无冒号退回整串。
-        col_clean = (col or "").split(":")[0].strip().lower()
+        col_clean = str(col or "").split(":")[0].strip().lower()
         for h, t in zip(hdrs, trow):
             if not h:
                 continue
-            h_clean = (h or "").split(":")[0].strip().lower()
-            t_clean = (t or "").split(":")[0].strip().lower()
+            h_clean = str(h or "").split(":")[0].strip().lower()
+            t_clean = str(t or "").split(":")[0].strip().lower()
             if h_clean == col_clean or t_clean == col_clean:
                 # 类型取 row2 冒号后半段；无冒号退回整串
                 _tv = str(t or "")
@@ -2218,8 +2258,8 @@ class DecomposeAgent(LLMSubAgent):
             for h, t in zip(_ah, _at):
                 if not h:
                     continue
-                h_clean = (h or "").split(":")[0].strip().lower()
-                t_clean = (t or "").split(":")[0].strip().lower()
+                h_clean = str(h or "").split(":")[0].strip().lower()
+                t_clean = str(t or "").split(":")[0].strip().lower()
                 if h_clean == col_clean or t_clean == col_clean:
                     _tv = str(t or "")
                     if ":" in _tv:
@@ -2456,6 +2496,29 @@ class DecomposeAgent(LLMSubAgent):
         if self._cli is None:
             return ""
         import os as _os
+        # §schema block 本 run 缓存：同一 (candidates 签名 + column_signal 命中列集
+        # + budget/sheets/cols 配置) 只构一次，命中直接返回，不重复读表/拼装/裁剪
+        # /打 thinking 日志。治"schema 贪心预算裁剪"日志反复刷屏 + 主路径+并发+段级
+        # +coverage+backfill 多处重复拼装同一样 block 的墙钟浪费。
+        try:
+            _sig_hits = frozenset(
+                (h.stem, h.sheet, h.column)
+                for h in (getattr(column_signal, "hits", []) or []))
+            _cand_sig = tuple(sorted(
+                (c.stem, c.sheet or "", c.level or "")
+                for c in candidates if getattr(c, "stem", "")))
+            _budget_cfg = (
+                _os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_CHAR_BUDGET", "1500"),
+                _os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_SHEETS", "32"),
+                _os.environ.get("CODEMAKER_DECOMPOSE_SCHEMA_COLS", "64"),
+            )
+            _cache_key = (_cand_sig, _sig_hits, _budget_cfg,
+                          frozenset(getattr(self, "_context_drop_stems", None) or set()))
+            _cached = self._schema_block_cache.get(_cache_key)
+            if _cached is not None:
+                return _cached
+        except Exception:  # noqa: BLE001
+            _cache_key = None
         # §T6 Schema 裁剪从"候选数固定阈值"改成"内容重要性驱动的动态预算"：
         # 去掉候选数分桶（≤3/3-5/>5 → 固定 4/3/2 sheets、16/10/6 cols），改为贪心
         # 按字符预算填充（column_signal 命中列 > PK > FK > 其它，逐列累加到
@@ -2530,6 +2593,14 @@ class DecomposeAgent(LLMSubAgent):
             except Exception:
                 continue
             biz = [s for s in sheets if s and "说明" not in s and "CONFIG" not in s]
+            # §防诱导：若候选已带具体 sheet（locator/column_signal 已锚定目标 sheet），
+            # 只读该 sheet，不拉全表业务 sheet。读全 sheet 会把无关 sheet（如任务链
+            # 案例误把 interaction 的 InteractionConv/ConvOption 也注入）塞进 prompt，
+            # LLM 看到无关 sheet schema 易幻觉产指令未提的意图（如指令没对话却产对话树）。
+            # 仅当 cand.sheet 为空（粗筛候选/重拆兜底）时才读全 sheet 供 LLM 选。
+            if getattr(cand, "sheet", ""):
+                _want = cand.sheet
+                biz = [s for s in biz if s == _want] or biz
             # sheet 命中排序：读每 sheet 表头，列名/显示名在 text 中出现 → 命中数高优先
             # §列名信号：column_signal 反查命中的 sheet 额外加 hits 数权重
             if text or sig_sheet_hits:
@@ -2667,7 +2738,10 @@ class DecomposeAgent(LLMSubAgent):
                         "解析",
                         f"schema 贪心预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
                         f"（超 {_budget} 字符，命中列/PK/FK 优先，其它列按预算截断）")
-                    return "\n".join(self._annotate_schema_role(_budget_lines, _groups))
+                    _out = "\n".join(self._annotate_schema_role(_budget_lines, _groups))
+                    if _cache_key is not None:
+                        self._schema_block_cache[_cache_key] = _out
+                    return _out
                 # 贪心未触发（未超预算）→ 回退分层裁剪兜底
                 from .schema_budget import apply_schema_budget
                 _budget_lines, _applied = apply_schema_budget(_records, _groups, _budget)
@@ -2676,10 +2750,16 @@ class DecomposeAgent(LLMSubAgent):
                         "解析",
                         f"schema 预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
                         f"（超 {_budget} 字符，dependency 转摘要/context 省略）")
-                    return "\n".join(self._annotate_schema_role(_budget_lines, _groups))
+                    _out = "\n".join(self._annotate_schema_role(_budget_lines, _groups))
+                    if _cache_key is not None:
+                        self._schema_block_cache[_cache_key] = _out
+                    return _out
             except Exception:
                 pass
-        return "\n".join(self._annotate_schema_role(lines, _groups)) if lines else ""
+        _out = "\n".join(self._annotate_schema_role(lines, _groups)) if lines else ""
+        if _cache_key is not None and _out:
+            self._schema_block_cache[_cache_key] = _out
+        return _out
 
     def _build_fk_block(self, fk_edges: list[FKEdge]) -> str:
         """构 FK 块:每条边 from.column → to.column。"""
@@ -2965,10 +3045,19 @@ class DecomposeAgent(LLMSubAgent):
                 "2) 每个明确新增/修改/删除/查询动作都要产一条；枚举项、选项、等级、奖励日等要逐行展开；"
                 "3) 新增主键未给具体值时，主键列填 <produces_label>，并设置 produces；"
                 "4) 引用本批新行时字段值填 <同名produces_label>，consumes 必须同名；"
-                "5) 同一 sheet 多行互引用必须使用唯一标签，如 conv_root_id/opt_go_id；"
-                "6) set/delete 必须给 locator_field/locator_value；modify 等同 set；"
+                "5) 同一 sheet 多行互引用必须使用唯一标签（按实体语义命名，如 <new_<stem>_id>_<序号>）；"
+                "6) set/delete 必须给 locator_field/locator_value（标定位行）；modify 等同 set。"
+                "⚠set 的 locator_field 是「用哪列找这行」（如 name=测试法宝3），"
+                "fields 是「改哪列改什么值」（如 法宝描述=测试描述修改）——"
+                "定位列绝不塞进 fields，只放修改列。若只改1列且该列非主键，"
+                "可用 target_field+value 直接标该列，不写 fields。\n"
                 "7) 除 row2 类型为 dict/map/json 的真实列外，禁止把对象塞进字段值；"
                 "Quest.target.data:dict 可填对象；list 类型可填数组。\n"
+                "8) ⚠【幻觉硬约束】只产指令明确提到的动作和实体，禁止产出指令未提的表/sheet。"
+                "如指令只讲任务链+战斗+奖励包，则禁止产对话树（InteractionConv/ConvOption）、"
+                "禁止产 NPC 引导、禁止产交互 Interaction（除非指令明确说配交互/对话/点击）"
+                "。schema 里出现的 sheet 只是候选，不代表都要产意图——只产指令语义直接对应的。"
+                "不确定某表是否要写时，宁可不产（留给 Step2 询问）也不要臆造写入。\n"
             )
             if fill_rules:
                 fill_rules_section = fill_rules[:1200] + "\n\n"

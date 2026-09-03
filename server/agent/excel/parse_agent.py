@@ -158,10 +158,22 @@ class ParseAgent:
         self._last_column_extraction = None
         # §P1-2.1 Step1 全局 deadline：超时立即冻结当前产出 + 走 _splitter_baseline，
         # 不再叠 LLM。默认 60s（env CODEMAKER_STEP1_DEADLINE_S 可调）。
+        # §多意图自适应：deadline 固定 60s 对慢 LLM 太短，多意图并发也压不进 60s
+        # → deadline 触发返空 → 后续段漏覆盖（效果差根因）。改为按段数放宽：
+        # 基线 60s + 每段 30s 余量（单段并发后墙钟约 35s，3 段并发≈35s，留余量防抖）。
+        # env 仍可显式覆盖（CODEMAKER_STEP1_DEADLINE_S>0 用固定值，0 关闭 deadline）。
         import time as _time_p
         import os as _os_p
-        _dl = int(_os_p.getenv("CODEMAKER_STEP1_DEADLINE_S", "60"))
-        self._step1_deadline = _time_p.monotonic() + _dl
+        _dl_env = _os_p.getenv("CODEMAKER_STEP1_DEADLINE_S", "0")
+        try:
+            _dl_fixed = int(_dl_env)
+        except (TypeError, ValueError):
+            _dl_fixed = 0
+        # 段数此刻未切（split_multi_intent 在下方），先用输入句子数粗估（分号/句号/逗号分隔）
+        _est_segs = max(1, len([s for s in text.split('；') if s.strip()])
+                        + len([s for s in text.split('。') if s.strip()]))
+        _dl = _dl_fixed if _dl_fixed > 0 else max(60, 60 + 30 * _est_segs)
+        self._step1_deadline = _time_p.monotonic() + _dl if _dl > 0 else None
         # §系统性重构 Phase1/TierA：整句先跑一次 LLM 路由分类（cross_table_type/
         # action/is_complex/spawn_hint/domain_chain），产出结果透传给
         # _try_domain_chain/split_multi_intent/locate，替代下游多处硬编码正则主判

@@ -719,6 +719,12 @@ class StubCodeMakerCLI(CodeMakerCLI):
         splitter 产出的点分规范名（option_function.data.1.conv_id）需对 row2 整名匹配，
         否则末段"conv_id"对中文表头"1:新对话ID"匹配失败（原则9）。
         返回行与 read_header 列对齐；无类型行返回空列表。
+
+        §统一 str 化：row2 单元格可能是纯数字（如 pet 表类型行的枚举示例值 1/2/3，
+        或 fabao 某些 sheet 第 2 行直接是数字）。_normalize_calamine 把整数单元格归一为
+        int；下游 decompose/validator 多处对 row2 元素直接 .split(":")（不加 str() 包裹）
+        → 'int' object has no attribute 'split' → Step1 解析崩溃。这里统一 str 化返回值，
+        与 read_header 的 str(resolved) 对齐，根治 int.split AttributeError。
         """
         # 无公式表：calamine 读前 2 行取类型行，绕过 openpyxl load（大表 ~22s → ~1.4s）
         if not self._sheet_has_formula(path):
@@ -729,7 +735,9 @@ class StubCodeMakerCLI(CodeMakerCLI):
                 if first is None:
                     return []
                 type_row = second if second is not None else []
-                return [self._normalize_calamine(v) for v in type_row]
+                # str 化：None 保留（空单元格语义），非 None str()（防 int 崩 .split）
+                return [self._cell_to_str(self._normalize_calamine(v))
+                        for v in type_row]
             except BaseException:
                 # calamine 内部 Rust panic（PanicException 继承 BaseException）→ 回退 openpyxl
                 pass
@@ -738,7 +746,21 @@ class StubCodeMakerCLI(CodeMakerCLI):
         if type_row_idx is None:
             return []
         max_col = ws.max_column or 0
-        return [ws.cell(type_row_idx, c).value for c in range(1, max_col + 1)]
+        return [self._cell_to_str(ws.cell(type_row_idx, c).value)
+                for c in range(1, max_col + 1)]
+
+    @staticmethod
+    def _cell_to_str(v):
+        """单元格值统一 str 化：None 保留（空单元格语义），非 None str()。
+
+        与 read_header 的 str(resolved) 对齐。根因：calamine/openpyxl 把纯数字单元格
+        归一为 int，下游对类型行元素直接 .split(":") 会抛 AttributeError（int 无 split）。
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v
+        return str(v)
 
     def read_sheet(self, path: Path, sheet: str,
                    offset: int = 0, limit: int | None = None) -> list[list]:

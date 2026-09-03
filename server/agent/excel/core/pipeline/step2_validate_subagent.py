@@ -72,11 +72,33 @@ class Step2ValidateSubAgent:
                 if action == "set":
                     has_target = bool(getattr(it, "target_field", None))
                     has_fields = isinstance(fields, dict) and bool(fields)
+                    # §报错定位：定位列(name)是"找哪行",修改列(描述)是"改什么值"。
+                    # LLM 常把两者混进 fields → fields≥2 且无 target_field → 判 missing。
+                    # 把 fields 的键拼进 message 让用户看到 LLM 实际产了哪些列,定位
+                    # 是"漏 target_field"还是"定位列混进 fields"。
+                    _fields_keys = list(fields.keys()) if isinstance(fields, dict) else []
+                    _loc = (getattr(it, "locator_field", None)
+                            or getattr(it, "extras", {}).get("locator_field"))
                     if not has_target and not has_fields:
                         errors.append(StepError(
                             step_id=STEP2_VALIDATE,
                             error_type="set_target_missing",
-                            message=f"Intent {idx + 1} set operation has no target field or fields",
+                            message=(f"Intent {idx + 1} [{table or '?'}/{sheet or '?'}] "
+                                     f"set 操作既无 target_field 又无 fields。"
+                                     f"set 必须显式区分:locator_field+locator_value 标定位行,"
+                                     f"fields 标改哪列改什么值。LLM 产出 locator={_loc!r}"),
+                            table=table, sheet=sheet, is_hard=True))
+                    elif not has_target and len(_fields_keys) > 1:
+                        # §混进定位列:fields 多列且无 target_field,多半把定位列
+                        # (如 name=测试法宝3)也塞进 fields。提示用户检查 fields 是否混入定位列。
+                        errors.append(StepError(
+                            step_id=STEP2_VALIDATE,
+                            error_type="set_target_missing",
+                            message=(f"Intent {idx + 1} [{table or '?'}/{sheet or '?'}] "
+                                     f"set 有 {len(_fields_keys)} 个 fields={_fields_keys} "
+                                     f"但无 target_field。可能把定位列混进了 fields——"
+                                     f"定位列(name={_loc!r})应放 locator_field,只留修改列"
+                                     f"(如 法宝描述)在 fields。"),
                             table=table, sheet=sheet, is_hard=True))
         return errors
 

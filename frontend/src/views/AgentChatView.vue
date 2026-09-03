@@ -975,15 +975,31 @@ onMounted(() => {
                   <div class="think-intent-title">已解析 {{ ts.jsonData.total }} 个任务</div>
                   <table class="think-intent-table">
                     <thead>
-                      <tr><th>#</th><th>操作</th><th>表/Sheet</th><th>定位</th><th>关键信息</th></tr>
+                      <tr><th>#</th><th>操作</th><th>表/Sheet</th><th>定位</th><th>关键信息</th><th>字段明细</th></tr>
                     </thead>
                     <tbody>
-                      <tr v-for="(r, ri) in ts.jsonData.rows" :key="ri">
+                      <tr v-for="(r, ri) in ts.jsonData.rows" :key="ri" class="ti-row" :class="{ 'ti-has-fields': r.fields && r.fields.length }">
                         <td class="ti-idx">{{ r.idx }}</td>
                         <td class="ti-act">{{ r.action }}</td>
                         <td class="ti-loc">{{ r.loc }}</td>
                         <td class="ti-locate">{{ r.locate }}</td>
                         <td class="ti-info">{{ r.info }}</td>
+                        <td class="ti-fields">
+                          <div v-if="r.fields && r.fields.length" class="ti-fields-subtbl-wrap">
+                            <table class="ti-fields-subtbl">
+                              <thead><tr><th>字段名</th><th>值</th></tr></thead>
+                              <tbody>
+                                <tr v-for="(f, fi) in r.fields" :key="fi">
+                                  <td class="ti-f-col">{{ f.col }}</td>
+                                  <td class="ti-f-val" :class="{ 'ti-f-ph': isPlaceholder(f.value) }">{{ f.value }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                            <div v-if="r.produces" class="ti-f-produces">产出 <span class="ti-f-label">{{ r.produces }}</span></div>
+                            <div v-if="r.consumes && r.consumes.length" class="ti-f-consumes">消费 <span class="ti-f-label" v-for="c in r.consumes" :key="c">{{ c }}</span></div>
+                          </div>
+                          <span v-else class="ti-no-fields">—</span>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -1851,6 +1867,11 @@ export default {
       if (v === null || v === undefined || v === '') return '(空)'
       return String(v)
     },
+    // Step1 intent_list 字段值是否为占位符（<xxx> 形式，跨表引用未解析值）
+    isPlaceholder(v) {
+      const s = String(v || '')
+      return s.startsWith('<') && s.endsWith('>')
+    },
   },
 }
 </script>
@@ -2320,6 +2341,20 @@ export default {
 .think-intent-table td.ti-act { width: 56px; font-weight: 600; color: var(--primary, #2563eb); }
 .think-intent-table td.ti-loc { width: 22%; }
 .think-intent-table td.ti-locate { width: 22%; }
+.think-intent-table td.ti-fields { width: 30%; }
+.think-intent-table td.ti-fields .ti-fields-subtbl-wrap { font-size: 0.7rem; }
+.ti-fields-subtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ti-fields-subtbl th { background: var(--bg-secondary, #f3f4f6); color: var(--text-secondary, #374151); font-size: 0.68rem; font-weight: 600; text-align: left; padding: 2px 5px; border: 1px solid var(--border, #e5e7eb); }
+.ti-fields-subtbl td { border: 1px solid var(--border, #e5e7eb); padding: 2px 5px; vertical-align: top; word-break: break-all; }
+.ti-fields-subtbl td.ti-f-col { width: 40%; background: var(--bg-secondary, #f3f4f6); font-weight: 600; color: var(--text-secondary, #374151); }
+.ti-fields-subtbl td.ti-f-val { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.ti-fields-subtbl td.ti-f-val.ti-f-ph { color: var(--warning, #d97706); font-style: italic; }
+.ti-f-produces, .ti-f-consumes { font-size: 0.66rem; margin-top: 3px; color: var(--text-secondary, #6b7280); }
+.ti-f-produces .ti-f-label, .ti-f-consumes .ti-f-label { display: inline-block; background: var(--bg-secondary, #f3f4f6); border-radius: 3px; padding: 1px 4px; margin: 0 2px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.ti-f-produces .ti-f-label { color: var(--success, #16a34a); }
+.ti-f-consumes .ti-f-label { color: var(--warning, #d97706); }
+.ti-no-fields { color: var(--text-muted, #9ca3af); }
+.think-intent-table tr.ti-has-fields:hover { background: var(--bg-hover, #f9fafb); }
 .think-fields-wrap { margin-top: 6px; border-top: 1px dashed var(--border, #e5e7eb); padding-top: 6px; }
 .think-fields-title { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary, #374151); margin-bottom: 4px; }
 .think-fields-group { margin: 4px 0; }

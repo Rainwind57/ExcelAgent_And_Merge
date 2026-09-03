@@ -21,6 +21,13 @@ os.environ.setdefault("CODEMAKER_STEP5_TRACE", "1")
 os.environ.setdefault("CODEMAKER_VERIFY_REPAIR_MAX_ROUNDS", "1")
 os.environ.setdefault("TABLE_CASE_EVAL_RUNNING", "1")
 os.environ.setdefault("CODEMAKER_PARSE_MULTI_TIMEOUT", "120")
+# §deepseek 直连：在 import 任何 agent 模块前装 compat，把 CodemakerClient
+# 的 LLM 方法替换为 DeepSeekClient，此后全栈 LLM 走 deepseek 官方 API。
+# 由 .env DEEPSEEK_API_KEY/BASE_URL/MODEL 配置，不经 codemaker serve。
+os.environ.setdefault("CODEMAKER_DECOMPOSE_TRACE", "1")
+_dump_dir = os.environ.get("CODEMAKER_DECOMPOSE_DUMP_DIR", "")
+if _dump_dir:
+    os.makedirs(_dump_dir, exist_ok=True)
 
 # §加载 .env：CodemakerClient 模块级读 CODEMAKER_USERNAME/PASSWORD（import 时固化），
 # 必须在 import agent 之前加载 .env，否则 401。
@@ -39,6 +46,18 @@ if _env_file.exists():
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# §deepseek compat 装载：必须在 import agent* 之前替换 CodemakerClient 方法。
+# run_deepseek.py._install_deepseek_compat 已封装此逻辑，复用避免重复实现。
+try:
+    SERVER_DIR = Path(__file__).resolve().parents[1]
+    if str(SERVER_DIR) not in sys.path:
+        sys.path.insert(0, str(SERVER_DIR))
+    from run_deepseek import _install_deepseek_compat
+    _install_deepseek_compat()
+except Exception as _e_ds:
+    print(f"[warn] deepseek compat 装载失败，回退 codemaker serve: {_e_ds}",
+          flush=True)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
