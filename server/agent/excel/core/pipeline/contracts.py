@@ -33,14 +33,18 @@ from typing import Any, Optional
 
 # ── step_id 常量（唯一、稳定，前端按此路由） ──────────────────
 STEP1_PARSE = "step1_parse"
+STEP1_5_CONTRACT = "step1_5_contract"
 STEP2_VALIDATE = "step2_validate"
 STEP3_EXECUTE = "step3_execute"
 STEP4_CONCLUDE = "step4_conclude"
 
-STEP_ORDER: list[str] = [STEP1_PARSE, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE]
+STEP_ORDER: list[str] = [
+    STEP1_PARSE, STEP1_5_CONTRACT, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
+]
 
 STEP_TITLES: dict[str, str] = {
     STEP1_PARSE: "Step1 解析",
+    STEP1_5_CONTRACT: "Step1.5 契约校验",
     STEP2_VALIDATE: "Step2 校验",
     STEP3_EXECUTE: "Step3 执行",
     STEP4_CONCLUDE: "Step4 汇总",
@@ -261,7 +265,7 @@ class SSE:
 
 
 __all__ = [
-    "STEP1_PARSE", "STEP2_VALIDATE", "STEP3_EXECUTE", "STEP4_CONCLUDE",
+    "STEP1_PARSE", "STEP1_5_CONTRACT", "STEP2_VALIDATE", "STEP3_EXECUTE", "STEP4_CONCLUDE",
     "STEP_ORDER", "STEP_TITLES",
     "StepError", "StepResult", "StepHardError", "StepContext", "SSE",
 ]

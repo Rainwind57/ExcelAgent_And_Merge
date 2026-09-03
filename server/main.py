@@ -6,7 +6,9 @@
   - Table Browser (/api/tables, ...)
   - Workflow     (/api/workflow/snapshot, ...)
 
-启动：python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+启动：python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+（默认监听 0.0.0.0，支持本机 localhost 与局域网 IP 访问；
+  仅本机访问可设环境变量 BACKEND_HOST=127.0.0.1）
 """
 
 import logging
@@ -55,9 +57,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("aitable")
 
-HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
+# 默认 0.0.0.0 监听所有网卡：支持本机 localhost + 局域网 IP 访问；
+# 仅本机访问可设 BACKEND_HOST=127.0.0.1
+HOST = os.environ.get("BACKEND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("BACKEND_PORT", "8000"))
 SERVE_URL = os.environ.get("CODEMAKER_SERVER_URL", "http://127.0.0.1:8666")
+
+
+def _lan_ips() -> list[str]:
+    """枚举本机局域网 IPv4 地址（供打印 IP 访问入口）。"""
+    import socket
+    ips: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except Exception:
+        pass
+    if not ips:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ips.add(s.getsockname()[0])
+            s.close()
+        except Exception:
+            pass
+    return sorted(ips)
 
 
 def create_app() -> FastAPI:
@@ -186,20 +212,24 @@ async def startup():
     except Exception as e:
         logger.debug("合并目录预热跳过（非致命）：%s", e)
 
-    ui_url = f"http://{HOST}:{PORT}"
+    ui_url = f"http://127.0.0.1:{PORT}"
     docs_url = f"{ui_url}/docs"
     logger.info("=" * 56)
     logger.info("  AI 配表助手已就绪，可以开始使用")
-    logger.info("  操作界面 : %s", ui_url)
+    logger.info("  本机访问 : %s", ui_url)
+    for ip in _lan_ips():
+        logger.info("  IP 访问 : http://%s:%d", ip, PORT)
     logger.info("  API 文档 : %s", docs_url)
     logger.info("  LLM 后端 : %s  (codemaker serve)", SERVE_URL)
     logger.info("  配表模式 : 在 CodeMaker 输入 “进入配表模式” 即可使用")
     logger.info("=" * 56)
 
-    # 自动打开浏览器（延迟 1.5s 确保服务已开始监听；可用 AITABLE_NO_BROWSER=1 关闭）
+    # 自动打开浏览器（延迟 1.5s 确保服务已开始监听；可用 AITABLE_NO_BROWSER=1 关闭）。
+    # 绑定 0.0.0.0 时浏览器打开本机地址（127.0.0.1），IP 访问由局域网用户自行输入。
+    browser_url = ui_url if HOST not in ("0.0.0.0", "127.0.0.1") else f"http://127.0.0.1:{PORT}"
     if os.environ.get("AITABLE_NO_BROWSER") != "1":
-        threading.Timer(1.5, lambda: webbrowser.open(ui_url)).start()
-        logger.info("已尝试自动打开浏览器：%s", ui_url)
+        threading.Timer(1.5, lambda: webbrowser.open(browser_url)).start()
+        logger.info("已尝试自动打开浏览器：%s", browser_url)
 
 
 if __name__ == "__main__":

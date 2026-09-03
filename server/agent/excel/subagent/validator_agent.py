@@ -924,7 +924,7 @@ class ValidatorAgent(LLMSubAgent):
         #    O2：写前默认不调（串行 LLM 卡死 + 与写后 ref_integrity 重叠,design D2
         #    写前零 LLM）。docstring「默认 off」此前与 code（默认 "1"）矛盾,现对齐。
         #    仅 A/B 对比时显式 CODEMAKER_VALIDATOR_LLM_FORWARD_REFS=1 开启。
-        if (os.getenv("CODEMAKER_VALIDATOR_LLM_FORWARD_REFS", "0") == "1"
+        if (os.getenv("CODEMAKER_VALIDATOR_LLM_FORWARD_REFS", "1") == "1"
                 and locator_result and locator_result.fk_edges):
             fr_issues = self._validate_forward_refs_llm(intents, locator_result)
             issues.extend(fr_issues)
@@ -1097,7 +1097,7 @@ class ValidatorAgent(LLMSubAgent):
                         # 只有 LLM 消歧开启 且 置信度达标才自动改；置信度不够（歧义/
                         # 低置信）即使开关打开也留给用户确认，不由规则替业务下判断。
                         from .column_resolution_agent import MIN_CONFIDENCE as _COL_MIN_CONF
-                        if (os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") == "1"
+                        if (os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "1") == "1"
                                 and _col_conf >= _COL_MIN_CONF):
                             _resolved = _guess
                             _renames[col] = _guess
@@ -1792,10 +1792,11 @@ class ValidatorAgent(LLMSubAgent):
         表头白名单拦掉)。confidence/reason 供调用方判断是否需要人工确认，
         而不是本方法替业务下判断。
 
-        opt-in：env CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG=1 开启（默认 off，
-        与 forward_ref 同风格，避免 CI/无 LLM 环境意外产生额外调用）。
+        opt-in：env CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG=0 关闭（默认 on，
+        与 forward_ref 同风格）。DeepSeek 直连路径下 LLM 可用，默认启用列名消歧，
+        降低 Step2 COL_NOT_FOUND 错误率。
         """
-        if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") != "1":
+        if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "1") != "1":
             return "", 0.0, ""
         if not col or not headers:
             return "", 0.0, ""
@@ -1998,6 +1999,7 @@ class ValidatorAgent(LLMSubAgent):
         # (target_stem, target_sheet, target_pk_col, value)
         produced_lits: set[tuple[str, str, str, str]] = set()
         produced_lits_by_value: dict[str, list[tuple[str, str, str]]] = {}
+        all_produced_values: set[str] = set()
         # FK 列名集合（按 stem/sheet 维度），供识别"引用侧"
         fk_cols_by_table: dict[tuple, set] = {}
         fk_edge_by_col: dict[tuple[str, str, str], FKEdge] = {}
@@ -2099,6 +2101,11 @@ class ValidatorAgent(LLMSubAgent):
                     produced_lits.add((_stem, _sheet, _c_l, _lit))
                     produced_lits_by_value.setdefault(_lit, []).append(
                         (_stem, _sheet, _c_l))
+                    all_produced_values.add(_lit)
+                else:
+                    _cl = _c_plain.lower()
+                    if (_cl.endswith("id") or "编号" in _c_plain) and _lit:
+                        all_produced_values.add(_lit)
 
         # 收集本批所有 intent 的字面量 FK 引用：引用值不在产出集 → soft warning
         # data_getter 核实现有表是否存在该值（可选，None 时仅比对本批产出集）
@@ -2113,6 +2120,8 @@ class ValidatorAgent(LLMSubAgent):
             for _c, _v in _fields.items():
                 _val = _literal_id_str(_v)
                 if not _val:
+                    continue
+                if _val in all_produced_values:
                     continue
                 _c_plain = str(_c or "").split(":")[0].strip().lower()
                 if not _fk_set or _c_plain not in _fk_set:

@@ -20,7 +20,7 @@ anti_patterns:
   first_seen: '2026-08-04T17:21:33+08:00'
   last_seen: '2026-08-04T17:21:33+08:00'
   action: block_dry_run
-  status: active
+  status: dormant
 - id: ap_amb_pet_Pet_名称
   type: ambiguous_column
   table_stem: pet
@@ -1879,9 +1879,9 @@ anti_patterns:
   sheet: Activity
   operation: delete_row
   trigger: confirm_abandoned
-  occurrences: 12
+  occurrences: 18
   first_seen: '2026-08-31T09:35:43+08:00'
-  last_seen: '2026-09-01T17:51:19+08:00'
+  last_seen: '2026-09-03T15:16:03+08:00'
   action: require_confirm
   status: active
   source: rule
@@ -1903,3 +1903,35 @@ anti_patterns:
     [x] 已存在'，说明新增操作未先做主键查重，重复写入直接失败；同类操作重复发生，命中时应暂停让用户确认更换ID或改走自增分配，避免盲目重试同一ID。
   fix:
     auto_assign_pk: id
+- id: ap_ind__global__any_0d03e0fe
+  type: semantic_pattern
+  table_stem: ''
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-09-03T14:49:55+08:00'
+  last_seen: '2026-09-03T17:28:27+08:00'
+  action: require_confirm
+  status: active
+  source: ai_induction
+  trigger_pattern: ID,已存在,更换ID,重试
+  rationale: 当输入中明确要求使用某个ID但该ID已存在于目标表中时，直接报错并终止操作，避免反复尝试相同ID导致失败循环。此类错误常见于手工指定主键但未检查唯一性，应强制要求先查询可用ID或改用自增。;
+    当写入操作因主键/唯一ID冲突失败时，说明数据源中ID分配逻辑与目标表冲突（如手工指定ID但目标表已有该ID）。此类冲突会重复出现，应阻断写入并提示用户检查ID分配策略，而非盲目重试。;
+    多条失败均因新增记录时主键ID冲突（510001/510002重复出现），属于可复用的主键分配反模式：未检查ID自增或未查询最大ID，导致重复插入。触发特征为错误详情含'已存在'且涉及ID字段。
+  fix:
+    auto_assign_pk: ID
+- id: ap_ind_item/Fabao__any_6742b676
+  type: semantic_pattern
+  table_stem: item/Fabao
+  sheet: ''
+  trigger: ai_induced
+  occurrences: 3
+  first_seen: '2026-09-03T17:26:18+08:00'
+  last_seen: '2026-09-03T21:09:38+08:00'
+  action: require_confirm
+  status: active
+  source: ai_induction
+  trigger_pattern: row_not_found_needs_confirm,未找到,定位列,名字（不导表）,status=pending
+  rationale: 当输入值在指定表/列中找不到时，系统进入待确认状态而非直接失败。此类错误常因用户输入了尚未导入的新增实体（如测试法宝3），或定位列本身不参与导表导致数据缺失。模式可复用：任何'row_not_found_needs_confirm'错误都表明存在未匹配的引用，需人工确认而非自动阻断。;
+    当按不导表列（如名字）查找行失败时，系统进入待确认状态。此类失败常因用户输入了尚未在表中登记的新名称，或名称存在细微差异（空格、全半角）。模式可复用：任何按非主键列（尤其是不导表列）查找失败时，都应要求用户确认而非自动阻断，因为可能是合法新增数据或输入偏差。;
+    当按不导表列（如名字）查找行失败时，系统进入待确认状态。此类失败常因用户输入了尚未在表中登记的新名称，或名称存在细微差异（空格、全半角）。需人工确认而非自动阻断，因为可能是合法新增数据。

@@ -89,18 +89,99 @@ class Step2ValidateSubAgent:
                                      f"fields 标改哪列改什么值。LLM 产出 locator={_loc!r}"),
                             table=table, sheet=sheet, is_hard=True))
                     elif not has_target and len(_fields_keys) > 1:
-                        # §混进定位列:fields 多列且无 target_field,多半把定位列
-                        # (如 name=测试法宝3)也塞进 fields。提示用户检查 fields 是否混入定位列。
-                        errors.append(StepError(
-                            step_id=STEP2_VALIDATE,
-                            error_type="set_target_missing",
-                            message=(f"Intent {idx + 1} [{table or '?'}/{sheet or '?'}] "
-                                     f"set 有 {len(_fields_keys)} 个 fields={_fields_keys} "
-                                     f"但无 target_field。可能把定位列混进了 fields——"
-                                     f"定位列(name={_loc!r})应放 locator_field,只留修改列"
-                                     f"(如 法宝描述)在 fields。"),
-                            table=table, sheet=sheet, is_hard=True))
+                        # §回填修复：fields 多列且无 target_field，尝试把 PK/定位列
+                        # 移到 locator_field，剩字段留 fields。移成功则降级 soft 不阻断；
+                        # 无 PK 列可移仍报 hard（真混了多修改列无定位）。
+                        moved = Step2ValidateSubAgent._backfill_locator_from_fields(
+                            it, table, sheet, fields)
+                        if not moved:
+                            errors.append(StepError(
+                                step_id=STEP2_VALIDATE,
+                                error_type="set_target_missing",
+                                message=(f"Intent {idx + 1} [{table or '?'}/{sheet or '?'}] "
+                                         f"set 有 {len(_fields_keys)} 个 fields={_fields_keys} "
+                                         f"但无 target_field。可能把定位列混进了 fields——"
+                                         f"定位列(name={_loc!r})应放 locator_field,只留修改列"
+                                         f"(如 法宝描述)在 fields。"),
+                                table=table, sheet=sheet, is_hard=True))
         return errors
+
+    @staticmethod
+    def _backfill_locator_from_fields(it, table, sheet, fields) -> bool:
+        """set intent 无 target_field 但 fields 含定位列时，把定位列移到
+        locator_field/locator_value，剩修改列留 fields。
+
+        trace：LLM decompose set 时把定位列（如 interaction_id、name=xxx）也塞进
+        fields 而非 locator_field → fields≥2 无 target_field → set_target_missing hard。
+        本层在报 hard 前尝试回填：查 rules primary_key overlay 或列名含 id/编号 的
+        字段当定位列，移到 locator_field+locator_value，剩字段留 fields。
+        移成功 → 不报 hard（降级由 Step3 执行期 schema 校验兜底）。
+
+        返回 True=成功回填，False=无可识别定位列（仍报 hard）。
+        """
+        if not isinstance(fields, dict) or not fields:
+            return False
+        try:
+            from ..rules_loader import get_primary_key_overlay
+            overlay = get_primary_key_overlay() or {}
+        except Exception:
+            overlay = {}
+        pk_cols_norm: set[str] = set()
+        stem = (str(table or "").rsplit("/", 1)[-1] or "").lower()
+        sheet_s = str(sheet or "")
+        # 声明式 PK（精确 sheet + 通配）
+        for pk_stem, pk_sheets in overlay.items():
+            if pk_stem != "*" and pk_stem != stem:
+                continue
+            for pk_sheet, cols in (pk_sheets or {}).items():
+                if pk_sheet in ("*", sheet_s):
+                    for c in cols or []:
+                        cn = str(c).split(":")[0].strip().lower()
+                        if cn:
+                            pk_cols_norm.add(cn)
+        # 列名归一（与 rules_loader._norm_col 对齐：去类型后缀+小写）
+        def _norm(c: str) -> str:
+            return str(c or "").split(":")[0].strip().lower()
+        # 找 fields 中的定位列：优先声明 PK 列，回退列名含 id/编号 的字段
+        loc_key = None
+        loc_val = None
+        for fk in list(fields.keys()):
+            fn = _norm(fk).split(".")[-1]  # 点分键取末段
+            if pk_cols_norm and fn in pk_cols_norm:
+                loc_key, loc_val = fk, fields[fk]
+                break
+        if loc_key is None:
+            # 启发式回退：列名末段含 id/编号 且有值 → 当定位列
+            for fk in list(fields.keys()):
+                fn = _norm(fk).split(".")[-1].replace("_", "")
+                if (fn.endswith("id") or "编号" in _norm(fk)) and fields[fk] not in (None, ""):
+                    loc_key, loc_val = fk, fields[fk]
+                    break
+        if loc_key is None:
+            return False
+        # 写入 locator_field/locator_value（intent 顶层 + extras 双写兜底）
+        try:
+            it.locator_field = loc_key
+            it.locator_value = loc_val
+        except Exception:
+            pass
+        extras = getattr(it, "extras", None)
+        if isinstance(extras, dict):
+            extras["locator_field"] = loc_key
+            extras["locator_value"] = loc_val
+        # 从 fields 移除定位列（只留修改列）
+        remaining = {k: v for k, v in fields.items() if k != loc_key}
+        fields.clear()
+        fields.update(remaining)
+        # 移完后 fields 空 → 单列 set 转纯定位，标 target_field 让后续校验通过
+        if not fields and getattr(it, "action", "") == "set":
+            try:
+                it.target_field = loc_key
+            except Exception:
+                pass
+            if isinstance(extras, dict):
+                extras["target_field"] = loc_key
+        return True
 
     @staticmethod
     def _step1_quality_errors(step1_quality: dict | None) -> list[StepError]:
@@ -114,10 +195,14 @@ class Step2ValidateSubAgent:
             if issue.get("severity") != "hard":
                 continue
             issue_type = str(issue.get("type") or "step1_quality").strip()
+            # §报错可读：若 issue 带 detail（如占位符格式预检的具体说明），用它做 message，
+            # 让用户直接看到根因（vs 写死句"structurally unsafe"不定位问题）。
+            _detail = issue.get("detail") or ""
+            _msg = _detail if _detail else "Step1 produced structurally unsafe intent JSON"
             errors.append(StepError(
                 step_id=STEP2_VALIDATE,
                 error_type=f"step1_{issue_type}",
-                message="Step1 produced structurally unsafe intent JSON",
+                message=_msg,
                 root_cause=str(issue),
                 table=issue.get("table"),
                 sheet=issue.get("sheet"),
@@ -204,7 +289,12 @@ class Step2ValidateSubAgent:
         errors: list[StepError] = []
         warnings: list[str] = []
         s1 = ctx.get_result("step1_parse")
-        intents = (s1.artifacts.get("intents") if s1 and s1.ok else None) or []
+        # §Step1.5：契约校验层若产出修正后的 intents，优先采用，否则回退 Step1。
+        s1_5 = ctx.get_result("step1_5_contract")
+        if s1_5 and s1_5.ok:
+            intents = (s1_5.artifacts.get("intents") if s1_5 else None) or []
+        else:
+            intents = (s1.artifacts.get("intents") if s1 and s1.ok else None) or []
         _HARD_TYPES: set[str] = {
             "unique_violation",
             "type_mismatch",

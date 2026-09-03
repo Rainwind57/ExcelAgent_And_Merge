@@ -63,7 +63,7 @@ onMounted(() => {
   <footer class="app-footer">
     <span>资源目录：resources/</span>
     <span class="footer-right">
-      <a href="http://127.0.0.1:8000/docs" target="_blank">API 文档</a>
+      <a href="/docs" target="_blank">API 文档</a>
     </span>
   </footer>
 </div>

@@ -5823,7 +5823,7 @@ class TableAgent:
             AgentResult（聚合 V2 StepResult[]，兼容旧下游）。
         """
         from .pipeline import (
-            ExcelAgentPipeline, ExcelAgentServices,
+            ExcelAgentPipeline, ExcelAgentServices, ContractGate,
             Step1ParseSubAgent, Step2ValidateSubAgent,
             Step3ExecuteSubAgent, Step4ConcludeSubAgent,
             StepContext, SSE, STEP1_PARSE, STEP3_EXECUTE, STEP4_CONCLUDE,
@@ -5885,8 +5885,49 @@ class TableAgent:
             parser=self.parser, thinking_sink=self._agent_thinking_sink,
             cli=self.cli, locator_agent=self._locator_agent,
             decompose_agent=self._decompose_agent)
+
+        # Step1.5 契约校验层：schema_getter 从 cli 读表头，call_llm_raw 复用 parser 通道。
+        _contract_cli = self.cli
+        def _contract_schema_getter(stem, sheet):
+            if _contract_cli is None:
+                return [], []
+            try:
+                idx = getattr(self, "_table_index", None)
+                if idx is None:
+                    idx = {p.stem: p for p in _contract_cli.list_tables()}
+                    self._table_index = idx
+                p = idx.get(stem) or idx.get((stem or "").lower())
+                if p is None:
+                    return [], []
+                hdrs = _contract_cli.read_header(p, sheet) or []
+                trow = _contract_cli.read_type_row(p, sheet) or []
+                return list(hdrs), list(trow)
+            except Exception:
+                return [], []
+        _contract_call_llm = None
+        _parser_for_contract = self.parser
+        if _parser_for_contract is not None and getattr(_parser_for_contract, "client", None) is not None:
+            _contract_client = _parser_for_contract.client
+            _contract_dir = getattr(_parser_for_contract, "directory", "") or ""
+            _contract_model = getattr(_parser_for_contract, "model", "") or ""
+            def _contract_call_llm(prompt, timeout=30):
+                try:
+                    sr = _contract_client.create_session(_contract_dir, _contract_model)
+                    if not getattr(sr, "ok", False):
+                        return None
+                    pr = _contract_client.prompt(getattr(sr, "session_id", ""),
+                                                  prompt, timeout=timeout,
+                                                  model=_contract_model)
+                    return getattr(pr, "response_text", "") or None
+                except Exception:
+                    return None
+        step1_5 = ContractGate(
+            schema_getter=_contract_schema_getter,
+            call_llm_raw=_contract_call_llm,
+            cli=_contract_cli)
         pipeline = ExcelAgentPipeline(
-            step1=step1, step2=Step2ValidateSubAgent(services=services),
+            step1=step1, step1_5=step1_5,
+            step2=Step2ValidateSubAgent(services=services),
             step3=Step3ExecuteSubAgent(services=services),
             step4=Step4ConcludeSubAgent(services=services))
 

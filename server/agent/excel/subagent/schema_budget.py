@@ -103,7 +103,9 @@ def apply_schema_budget(records: list[dict], groups: Optional[dict],
 
 def apply_greedy_char_budget(records: list[dict], char_budget: int,
                              *, pk_cols_by_table: Optional[dict] = None,
-                             fk_cols_by_table: Optional[dict] = None) -> tuple[list[str], bool]:
+                             fk_cols_by_table: Optional[dict] = None,
+                             groups: Optional[dict] = None,
+                             summary_max_cols: int = 6) -> tuple[list[str], bool]:
     """§T6 贪心按字符预算填充（内容重要性驱动，非候选数分桶）。
 
     优先级序：column_signal 命中列 > PK 列 > FK 列 > 其它列。
@@ -117,14 +119,23 @@ def apply_greedy_char_budget(records: list[dict], char_budget: int,
         pk_cols_by_table: {(stem_lower, sheet_lower): set(列名)} 用户声明的 PK 列，
                           供识别 PK 列优先级（可选，None 时仅按 sig + FK 标注判）。
         fk_cols_by_table: {(stem_lower, sheet_lower): set(列名)} FK 列集合（可选）。
+        groups: candidate_grouping.classify_candidates 结果。dependency 表默认只给摘要，
+                context 默认不注入，required 参与贪心完整裁剪。
+        summary_max_cols: dependency 摘要最多列数。
 
     Returns:
         (lines, applied)。applied=False 表示未裁剪（未启用或完整渲染未超预算）。
-        安全兜底：每个 sheet 至少保留命中列 + 主键（首列），绝不裁到空。
+        安全兜底：每个 required sheet 至少保留命中列 + 主键（首列），绝不裁到空。
     """
     full_lines = [render_full(r) for r in records]
     if char_budget <= 0 or total_chars(full_lines) <= char_budget:
         return full_lines, False
+
+    tier_of: dict[str, str] = {}
+    if groups:
+        for tier in ("required", "dependency", "context"):
+            for stem in groups.get(tier, []) or []:
+                tier_of.setdefault(stem, tier)
 
     def _col_priority(rec: dict, col: str) -> int:
         """列优先级：0=命中(sig) > 1=PK > 2=FK > 3=其它。数字小优先。"""
@@ -147,6 +158,12 @@ def apply_greedy_char_budget(records: list[dict], char_budget: int,
     for r in records:
         stem = str(r.get("stem", ""))
         sheet = str(r.get("sheet", ""))
+        tier = tier_of.get(stem, "required")
+        if tier == "context":
+            continue
+        if tier == "dependency":
+            out.append(render_summary(r, max_cols=summary_max_cols))
+            continue
         cols = r.get("cols", []) or []
         if not cols:
             continue

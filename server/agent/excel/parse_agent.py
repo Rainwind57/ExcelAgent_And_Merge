@@ -27,19 +27,29 @@ cli.read_header（非 HTTP），schema 拉取内嵌于 _build_schema_block。HTT
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 from typing import Optional
 
 from .core.produces_inference import infer_produces_consumes
-from .parser.multi_intent_splitter import split_multi_intent
+from .parser.multi_intent_splitter import SplitSegment
 from .parser.nl_parser import NLIntent
 from .subagent.decompose_agent import DecomposeAgent
 from .subagent.locator_agent import CandidateTable, FKEdge, LocatorAgent, LocatorResult
 from .subagent.column_extractor import ColumnExtractor
 
 logger = logging.getLogger(__name__)
+
+
+def _route_action(route: Optional[dict]) -> str:
+    """从 LLM 路由分类结果取 action，非法/缺失返回 unknown。"""
+    if route and route.get("ok"):
+        act = route.get("action")
+        if act in ("get", "set", "add", "delete", "unknown"):
+            return act
+    return "unknown"
 
 
 class ParseAgent:
@@ -129,11 +139,11 @@ class ParseAgent:
     def parse(self, text: str) -> list[NLIntent]:
         """主入口：text → list[NLIntent]（SubTask 超集）。
 
-        §优化①：入口先规则分段（split_multi_intent，0 LLM）。单段走原 single-prompt
-        路径；多段每段独立 locate + decompose_segment（段内文本短/候选少/schema 小，
-        LLM 不漏且快）。段间默认串行，CODEMAKER_PARSE_SEGMENT_CONCURRENCY=1 开并发。
-        段级覆盖：每段产出与原段列表对账，某段 0 条 → 仅对该段重跑（便宜），
-        而非整句重跑 parse_multi（贵）。
+        §去规则分段：分段 + 跨段指代消解全部由 LLM 一次完成（_ai_plan_segments），
+        不再用规则 split_multi_intent + enrich_segments。LLM 分段失败/单段 → 整句
+        走 _parse_whole 整段 single-prompt（不回退规则分段）。多段每段独立 locate +
+        decompose_segment（段内文本短/候选少/schema 小，LLM 不漏且快）。段间默认并发。
+        段级覆盖：某段 0 条 → 仅对该段重跑（便宜），而非整句重跑。
 
         §Step1 列名提取前置（LLM 主导，规则信号为辅）：parse 入口先跑
         ColumnExtractor（0 LLM），从用户输入提取列名 token → 反向索引 topK 反查，
@@ -143,7 +153,7 @@ class ParseAgent:
 
         流程（§3.1 step 2-6，分段化）：
           0. ColumnExtractor.extract(text) → 列名信号（新增，0 LLM，供 LLM 参考）
-          1. split_multi_intent(text) → N 段（单指令 N=1）
+          1. _ai_plan_segments(text) → LLM 产 N 段（含指代消解，单指令 N=1）
           2. 每段：粗路由（LocatorAgent.locate）+ schema-driven LLM 拆分
              （decompose_segment，段内单 prompt 主路径）
           3. produces 推断 + NLIntent 组装
@@ -169,17 +179,15 @@ class ParseAgent:
             _dl_fixed = int(_dl_env)
         except (TypeError, ValueError):
             _dl_fixed = 0
-        # 段数此刻未切（split_multi_intent 在下方），先用输入句子数粗估（分号/句号/逗号分隔）
-        _est_segs = max(1, len([s for s in text.split('；') if s.strip()])
-                        + len([s for s in text.split('。') if s.strip()]))
-        _dl = _dl_fixed if _dl_fixed > 0 else max(60, 60 + 30 * _est_segs)
-        self._step1_deadline = _time_p.monotonic() + _dl if _dl > 0 else None
-        # §系统性重构 Phase1/TierA：整句先跑一次 LLM 路由分类（cross_table_type/
-        # action/is_complex/spawn_hint/domain_chain），产出结果透传给
-        # _try_domain_chain/split_multi_intent/locate，替代下游多处硬编码正则主判
-        # （规则逻辑保留兜底，分类失败原样走原正则）。提到 _try_domain_chain 之前算，
-        # 让门派链等确定性展开器的判定门也能采信 LLM（原判定门=纯正则,同义词覆盖
-        # 不全时静默漏判/误判，整链路径跑偏不可逆）。
+        self._step1_deadline = None
+
+        def _set_step1_deadline(segment_count: int) -> None:
+            # 用真实分段数计算预算，避免粗估过小导致后续段冻结漏解析。
+            _n = max(1, int(segment_count or 1))
+            _dl = _dl_fixed if _dl_fixed > 0 else max(60, 60 + 30 * _n)
+            self._step1_deadline = _time_p.monotonic() + _dl if _dl > 0 else None
+        # §路由分类：整句先跑一次 LLM 路由分类（action/is_complex），
+        # 产出结果透传给 split_multi_intent/locate，辅助分段与复杂度判断。
         # 可用 CODEMAKER_INTENT_ROUTER_DISABLE=1 关闭（回退纯规则判定，供对照/降级）。
         route = None
         if _os_p.getenv("CODEMAKER_INTENT_ROUTER_DISABLE", "") != "1":
@@ -189,73 +197,146 @@ class ParseAgent:
                 logger.warning("ParseAgent LLM 路由分类失败,回退规则判定",
                                exc_info=True)
                 route = None
-        # §去硬模板：领域链型确定性展开（正则抽字段，跳过 LLM decompose）默认关闭
-        # ——判定门/字段抽取均为硬编码规则，不代表 agent 真实解码能力，已改为默认
-        # 不介入主链路（一律走 LLM decompose，让表/sheet/列匹配全部由 LLM 完成）。
-        # 仍保留代码 + 单测（school_chain_expander 自身单测不走本入口，不受影响），
-        # 可用 CODEMAKER_DECOMPOSE_DISABLE_DOMAIN=0 显式重新开启（供对照/紧急回退）。
-        if os.getenv("CODEMAKER_DECOMPOSE_DISABLE_DOMAIN", "1") != "1":
-            try:
-                _dom = self._try_domain_chain(text, route=route)
-            except Exception:  # noqa: BLE001
-                logger.warning("ParseAgent 领域链型展开失败（回退分段/LLM）",
-                               exc_info=True)
-                _dom = None
-            if _dom:
-                self._think(
-                    f"ParseAgent 领域链型确定性展开命中，产 {len(_dom)} 条 NLIntent"
-                    f"（跳过分段/LLM decompose，根治超时/漏意图）")
-                return _dom
-        # §优化①：入口先分段（0 LLM）。segments 存到实例属性供 Step1 复用（消除
-        # Step1 重复调 split_multi_intent 的冗余——同函数同 text 结果一致）。
-        try:
-            segs = split_multi_intent(text, route=route)
-            self._last_segments = segs
-        except Exception:
-            logger.warning("ParseAgent 分段失败,走整段路径", exc_info=True)
-            segs = []
-            self._last_segments = []
-        if not segs or len(segs) <= 1:
-            # 单指令走原整段 single-prompt 路径
-            return self._parse_whole(text, route=route)
-        # 多段：每段独立 locate + decompose_segment
-        return self._parse_segments(segs, text)
+        # §去规则分段：分段 + 指代消解全部由 LLM 一次完成（_ai_plan_segments 的
+        # prompt 已含"它/该/这个等指代改写成明确实体标识"指令）。不再调规则
+        # split_multi_intent / enrich_segments——规则切分靠分隔符正则 + 动作词白名单，
+        # 同义词覆盖不全（"放/摆/搁"等口语词漏判）+ 跨段指代靠回指词正则瞎猜实体，
+        # 复杂输入必漏。LLM 失败时整句当单段走 _parse_whole（整段单 prompt decompose），
+        # 不回退规则分段（serve 抽风时宁可让 LLM decompose 自己处理整句，也不让
+        # 规则把多动作句切碎成残段灌进 decompose_segment 触发退化）。
+        # env CODEMAKER_STEP1_LLM_SPLIT=0 可关 LLM 分段回退旧行为（调试/对照用）。
+        _llm_split_on = _os_p.getenv("CODEMAKER_STEP1_LLM_SPLIT", "1") == "1"
+        ai_segs: list = []
+        if _llm_split_on:
+            ai_segs = self._ai_plan_segments(text, route=route)
+        if len(ai_segs) > 1:
+            self._last_segments = ai_segs
+            _set_step1_deadline(len(ai_segs))
+            self._think(f"LLM 分段+指代消解切分 {len(ai_segs)} 段")
+            return self._parse_segments(ai_segs, text)
+        # LLM 分段失败/空返/单段：整句当单段走整段 single-prompt 路径（不回退规则分段）
+        self._last_segments = [SplitSegment(text=text, action=_route_action(route))]
+        _set_step1_deadline(1)
+        return self._parse_whole(text, route=route)
 
-    def _try_domain_chain(self, text: str, route: Optional[dict] = None) -> list[NLIntent]:
-        """领域链型确定性展开 → NLIntent[]。非命中返回 []。
+    def _ai_plan_segments(self, text: str, route: Optional[dict] = None) -> list[SplitSegment]:
+        """LLM 分段 + 指代消解（主路径，替代规则 split_multi_intent + enrich_segments）。
 
-        目前覆盖：新建门派全链（school full-chain）。产出 SplitIntent 与
-        LLM/cross_table_splitter 同形（produces + <label> 占位），经 _assemble
-        做 schema grounding + 引用编译，但跳过 LLM 字段补全（fields 已完整）。
-
-        route：ParseAgent.parse 入口算好的 LLM 路由分类结果（含 domain_chain
-        字段），透传给 is_school_new_chain 判定门采信（§系统性重构 Tier A）。
+        一次 LLM 调用同时完成：
+          1. 任务边界划分（按动作/实体切有序原子段）
+          2. 跨段指代消解（它/这个/前一个 → 明确实体标识，prompt 已含该指令）
+          3. 远距离事实回填（同一实体分散属性绑回同一段）
+        不输出表名/sheet/字段（避免硬路由误导），只产文本段。
+        失败/空返/单段 → 调用方走 _parse_whole 整段单 prompt，不回退规则分段。
         """
-        try:
-            from .core.school_chain_expander import build_school_new_chain_intents
-            split_intents = build_school_new_chain_intents(text, route=route)
-        except Exception:  # noqa: BLE001
-            logger.warning("_try_domain_chain 展开失败", exc_info=True)
+        if os.getenv("CODEMAKER_STEP1_AI_PLANNER", "1") == "0":
             return []
-        if not split_intents:
+        # §去 80 字符短路：短文本也可能含多动作（"配NPC，建奖励"9 字 2 动作），
+        # 规则分段漏切。LLM 分段对所有非空输入都跑，让 LLM 判单段 vs 多段。
+        if not text or not text.strip():
             return []
-        # 全文 locate 供引用编译（fk_edges/candidates）。失败也不阻断——
-        # 确定性 intent 已自带 produces/consumes 占位，编排器可解析。
-        locator_result: Optional[LocatorResult] = None
+        parser = self._parser
+        client = getattr(parser, "client", None) if parser is not None else None
+        if client is None:
+            return []
+        prompt = f"""你是 Excel 配表 Step1 的任务规划器。把长自然语言指令切成有序原子任务，供后续逐段定位表和生成 JSON。
+
+你不能输出表名、sheet 名、字段名；只做语义划分和上下文补全，避免硬路由误导。
+
+## 原始指令
+{text}
+
+## 执行步骤（必须按顺序，不许跳过任何一步）
+1. 枚举清单：逐行扫描原文，把每一个明确的新增/修改/删除/查询动作及其对象逐个列出到 action_inventory。每个动作一行，必须带上原文里的稳定标识（id/名称/序号/编号）。遇到多个同类型实体（如7个奖励、4环任务、3只灵兽），必须逐个列出，不许合并、不许跳着选、不许只列部分。遇到"第N到第M天/环"这类范围，展开成 N、N+1、…、M 逐行列出。
+2. 绑定台账：记录实体间的依赖绑定关系（如某任务的目标引用某 combat_id、某战斗的胜利奖励引用某 reward_id）。
+3. 逐项产段：对 action_inventory 里的每一行，产一个 segment，text 必须补齐该动作所需的远距离事实。不得遗漏 action_inventory 里的任何一行。
+4. 数量对账：自检 segments 数量必须等于 action_inventory 行数。不等则补齐。
+
+## 划分原则
+- 先建立“实体台账”：抽取原文中所有带稳定标识的实体（如 id、key、名称、编号、序号、引用标签）及其属性、依赖、后续关系。
+- **平行相似项强制枚举计数**：原文若出现多个同类型实体（如7个奖励、4环任务、3只灵兽），
+  必须数清楚总数，逐个产 segment，不许合并、不许跳着选、不许只产部分。
+  每个相似项独立成段，段 text 里带上它的序号和稳定标识（如 id/名称）。
+- 遇到远距离信息（同一实体的属性分散在不同段落、列表或后文补充说明），必须按稳定标识绑定回同一实体，不能当成无关新任务。
+- 每个输出 segment 的 text 必须补齐该实体执行所需的远距离事实：实体标识、动作、关键属性、依赖对象、引用关系、枚举项、数量/条件/结果等。
+- 每个明确新增/修改/删除/查询动作单独成段。
+- “同时/然后/再/并且/每个/分别/第N个/列表项/奖励/条件/结果”等枚举或步骤要完整保留，不漏项。
+- 同一业务对象的多列属性不要拆碎；同一业务链路中强依赖的连续描述可保留为一个跨表段。
+- 若后文用“它/该/这个/上述/前一个/此任务/该对象”等指代，改写成明确实体标识或名称，保留必要上文。
+- 删除无意义客套话，不新增原文没有的信息。
+- 不确定是否该拆时，宁可少拆；但不能把多个独立动作合并到一个段里。
+
+## 自检
+输出前自检：原文有几个同类型实体？segments 里该类型实体是否每个都有对应 segment？
+若少了，补齐到与原文数量一致。
+
+## 输出 JSON
+{{"action_inventory":["逐行列出原文每个动作+对象+稳定标识", ...], "entity_ledger":"实体依赖绑定关系一句话", "segments":[{{"text":"改写后的单段任务，必须包含远距离绑定回填后的完整事实", "action":"add|set|delete|get|unknown", "evidence":"原文依据短句"}}]}}
+只输出 JSON，不要 markdown，不要解释。segments 数量必须等于 action_inventory 行数。"""
         try:
-            locator_result = self._locate_with_route(text, route)
-        except Exception:  # noqa: BLE001
-            logger.warning("_try_domain_chain locate 失败（继续无 locator）",
-                           exc_info=True)
-        self._last_column_extraction = getattr(locator_result, "column_signal", None)
-        self._last_locator_result = locator_result
-        self._last_locator_results = [locator_result] if locator_result else []
-        # §系统性重构 Tier B：原 skip_llm_complete=True 让门派链跳过 _llm_complete_fields
-        # 自检补漏，与 cross_table_splitter 13 模板（走 _splitter_baseline 时经
-        # _assemble 默认参数会过一次该自检）不一致——同是"命中即0LLM抠字段"的
-        # 确定性模板，门派链反而没有这道漏字段兜底。去掉该参数，统一都过一次
-        # 自检（只补漏不改已有值，风险与其余模板一致）。
-        return self._assemble(split_intents, text, locator_result)
+            sid = None
+            create = getattr(client, "create_session", None)
+            if create:
+                res = create(getattr(parser, "directory", ""), getattr(parser, "model", ""))
+                if getattr(res, "ok", False):
+                    sid = getattr(res, "session_id", None)
+            if not sid:
+                return []
+            resp = client.prompt(sid, prompt, timeout=int(os.getenv("CODEMAKER_STEP1_AI_PLANNER_TIMEOUT", "35")),
+                                 model=getattr(parser, "model", ""))
+            raw = getattr(resp, "response_text", "") or ""
+        except Exception:
+            logger.debug("LLM 分段+指代消解失败,走整段单 prompt", exc_info=True)
+            return []
+        if not raw:
+            return []
+        data = None
+        try:
+            if hasattr(client, "extract_json_from_response"):
+                data = client.extract_json_from_response(raw)
+        except Exception:
+            data = None
+        if not isinstance(data, dict):
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except Exception:
+                    data = None
+        if not isinstance(data, dict):
+            return []
+        items = data.get("segments")
+        if not isinstance(items, list):
+            return []
+        # 数量对账：segments vs action_inventory，少则记 warning（仍用已有 segments）
+        inv = data.get("action_inventory")
+        if isinstance(inv, list) and len(inv) > len(items):
+            logger.warning("AI 任务规划层 action_inventory %d 行但 segments 仅 %d 段，可能漏切",
+                          len(inv), len(items))
+        out: list[SplitSegment] = []
+        seen: set[str] = set()
+        for item in items[:20]:
+            if not isinstance(item, dict):
+                continue
+            seg_text = str(item.get("text") or "").strip()
+            if not seg_text or len(seg_text) < 2:
+                continue
+            seg_text = seg_text.strip("。；;，,")
+            if not seg_text or seg_text in seen:
+                continue
+            if len(seg_text) > len(text) * 1.5:
+                continue
+            action = str(item.get("action") or "unknown").strip().lower()
+            if action not in ("add", "set", "delete", "get", "unknown"):
+                action = "unknown"
+            seen.add(seg_text)
+            out.append(SplitSegment(text=seg_text, action=action))
+        if len(out) <= 1:
+            return []
+        joined_len = sum(len(s.text) for s in out)
+        if joined_len < max(20, int(len(text) * 0.45)):
+            return []
+        return out
 
     def _locate_with_route(self, text: str, route: Optional[dict]):
         """调 locator_agent.locate，兼容不识别新 route 关键字参数的旧签名/测试替身。
@@ -273,7 +354,7 @@ class ParseAgent:
         """原整段路径（单指令或分段失败兜底）。
 
         route：ParseAgent.parse 入口算好的 LLM 路由分类结果，透传给 locate()
-        供 is_complex_input/spawn 语义探测采信（§系统性重构 Phase1）。
+        供 is_complex_input 语义探测采信（§系统性重构 Phase1）。
         """
         locator_result: Optional[LocatorResult] = None
         try:
@@ -285,6 +366,9 @@ class ParseAgent:
         if not locator_result or not locator_result.candidates:
             self._think("ParseAgent 粗路由无候选表,返回空")
             return []
+        self._last_locator_result = locator_result
+        self._last_locator_results = [locator_result]
+        self._last_column_extraction = getattr(locator_result, "column_signal", None)
         # §Step1 timeout 治本：去掉 force_single 强制单 prompt 全候选路径。
         # 原行为：整句被判单条跨表任务链（split_multi_intent 返回单段 cross_table）
         # 时 force_single=True → decompose 无视候选数阈值走单 prompt 拼 4-12 表全
@@ -313,7 +397,7 @@ class ParseAgent:
                 f"({len(locator_result.candidates)} 候选/{len(locator_result.fk_edges)} FK 边)"
                 f",本次无产出")
             return []
-        return self._assemble(split_intents, text, locator_result)
+        return self._assemble(split_intents, text, locator_result, route=route)
 
     def _parse_segments(self, segs: list, text: str) -> list[NLIntent]:
         """多段路径：每段独立 locate + decompose_segment。
@@ -325,28 +409,23 @@ class ParseAgent:
         # 设 CODEMAKER_PARSE_SEGMENT_CONCURRENCY=0 可显式退回串行。
         concurrency = os.getenv("CODEMAKER_PARSE_SEGMENT_CONCURRENCY", "1") == "1"
 
-        # §9.2 跨段引用上下文继承：先对全部段做 0 LLM 指代消解，含回指的后段
-        # 拼「上文实体继承」上下文块（它/这个/前面那个→具体实体名），让段级
-        # decompose 知道指代对象，不再瞎猜。locate 也读增强文本（实体名利于别名命中）。
+        # §去规则指代消解：_ai_plan_segments 的 LLM 已在分段时把"它/这个/前一个"
+        # 等指代改写成明确实体标识（prompt 含该指令），段文本已含明确实体名。
+        # 不再调规则 enrich_segments（回指词正则 + 声明动词正则瞎猜实体，复杂指代
+        # 必漏）。段文本直接用，locate 读到实体名利于别名命中。
         _raw_seg_texts = [
             (getattr(s, "text", s) if not isinstance(s, str) else s)
             for s in segs
         ]
-        try:
-            from .parser.cross_ref_context import enrich_segments as _enrich_segs
-            _enriched_segs = _enrich_segs(_raw_seg_texts)
-        except Exception:
-            logger.warning("ParseAgent 跨段上下文继承失败,降级原段文本", exc_info=True)
-            _enriched_segs = list(_raw_seg_texts)
 
         def _do_one(idx_seg):
             idx, seg = idx_seg
-            seg_text = _enriched_segs[idx] if 0 <= idx < len(_enriched_segs) \
+            seg_text = _raw_seg_texts[idx] if 0 <= idx < len(_raw_seg_texts) \
                 else (getattr(seg, "text", seg) if not isinstance(seg, str) else seg)
             if not seg_text or not seg_text.strip():
                 return []
             try:
-                lr = self._locator_agent.locate(seg_text)
+                lr = self._locate_with_route(seg_text, {"ok": True, "action": getattr(seg, "action", "unknown"), "is_complex": False})
             except Exception:
                 logger.warning("ParseAgent 段粗路由失败(seg=%s)", seg_text[:30],
                                exc_info=True)
@@ -526,12 +605,16 @@ class ParseAgent:
     def _assemble(self, split_intents: list, text: str,
                   locator_result: Optional[LocatorResult],
                   *, do_backfill: bool = False,
-                  skip_llm_complete: bool = False) -> list[NLIntent]:
+                  skip_llm_complete: bool = False,
+                  route: Optional[dict] = None) -> list[NLIntent]:
         """SplitIntent[] → NLIntent[] + produces 推断（公共尾部）。
 
         §速度1：do_backfill=True（多段路径收尾）时做一次全局缺表对账+重拆，
         替代原段级 backfill 串行重拆。单段路径（_parse_whole）默认 False——
         其 split_intents 来自 decompose() 主路径已 backfill（decompose_agent.py:322）。
+
+        route：仅单段路径（_parse_whole）透传给后续引用编译；当前只保留
+        action/is_complex 这类通用路由信号，不再使用表名锚点路由。
         """
         # §速度1 全局 backfill：各段产出汇合后用全局 locator_result.candidates +
         # fk_edges 做一次 expected/produced 对账，缺表一次性单表重拆补漏（vs 段级
@@ -553,9 +636,12 @@ class ParseAgent:
                     # 单段 decompose() 主路径，分段场景完全没跑到——补在这里，用
                     # merge 后的全量候选池 + FK 图，给 LLM 一次"看全局"的机会，
                     # 覆盖跨段遗漏（如复杂多段指令里某段候选裁剪过窄漏表）。
-                    split_intents = _da._llm_verify_table_coverage(
-                        text, split_intents, locator_result.candidates,
-                        locator_result.fk_edges, _per_to)
+                    # §DeepSeek 直连默认启用：自动跳过，不额外叠调用）。
+                    # 默认开；需要关闭时显式 CODEMAKER_DECOMPOSE_TABLE_SELFCHECK=0。
+                    if _os.getenv("CODEMAKER_DECOMPOSE_TABLE_SELFCHECK", "1") == "1":
+                        split_intents = _da._llm_verify_table_coverage(
+                            text, split_intents, locator_result.candidates,
+                            locator_result.fk_edges, _per_to)
             except Exception:  # noqa: BLE001
                 logger.warning("ParseAgent _assemble 全局 backfill 失败", exc_info=True)
         # §3.1 step 6a: SplitIntent → NLIntent 适配（SubTask 超集）
@@ -616,12 +702,43 @@ class ParseAgent:
                 nl_intents = _da2._llm_complete_fields(text, nl_intents, _per_to)
         except Exception:  # noqa: BLE001
             logger.warning("ParseAgent 自检补漏失败,保持原产出", exc_info=True)
-        nl_intents = self._compile_step1_references(nl_intents, text, locator_result)
+        nl_intents = self._compile_step1_references(nl_intents, text, locator_result, route=route)
+        # §孤立空壳 add 二次过滤（strict）：引用编译完成后关系图已完整，此时再
+        # 过滤「挂 produces 但无实值字段且无 consumer」的空壳。第一道（非 strict）
+        # 在引用编译前，produces 豁免防误删真 producer；但 serve 后端 LLM 面对
+        # 大候选池会给每个候选表幻觉产一条 add+produces 占位符空壳（fields 全空
+        # 或残留数字索引键），第一道豁免全放行 → Step3 写 N 个空行污染数据
+        # （月华邮件样例 10 条空壳 add 污染 3 表即此）。strict 过滤只删真孤立
+        # 幻觉行：被本批消费的 producer 保留（consumed 分支），实值字段保留。
+        _kept_s, _dropped_s = self._partition_orphan_empty_adds(nl_intents, strict=True)
+        if _dropped_s:
+            for _d in _dropped_s:
+                _dstem = getattr(_d, "table_hint", "") or "?"
+                _dsheet = getattr(_d, "sheet_hint", "") or "?"
+                self._think(f"Step1 strict 丢弃孤立空壳 add：{_dstem}/{_dsheet}"
+                            f"（引用编译后仍无实值字段且无 consumer；"
+                            f"raw={str(getattr(_d,'raw','') or '')[:40]}）")
+            try:
+                _led = getattr(self, "_dropped_intents", None)
+                if _led is None:
+                    _led = []
+                    self._dropped_intents = _led
+                for _d in _dropped_s:
+                    _led.append({
+                        "reason": "orphan_empty_add_strict",
+                        "table_stem": getattr(_d, "table_hint", "") or "",
+                        "table_sheet": getattr(_d, "sheet_hint", "") or "",
+                        "raw": str(getattr(_d, "raw", "") or "")[:120],
+                    })
+            except Exception:
+                pass
+            nl_intents = _kept_s
         self._think(f"ParseAgent 产出 {len(nl_intents)} 条 NLIntent(source=llm_decompose)")
         return nl_intents
 
     def _compile_step1_references(self, intents: list[NLIntent], text: str,
-                                  locator_result: Optional[LocatorResult]) -> list[NLIntent]:
+                                  locator_result: Optional[LocatorResult],
+                                  route: Optional[dict] = None) -> list[NLIntent]:
         """Normalize Step1 executable references after LLM extraction."""
         if not intents:
             return intents
@@ -629,6 +746,7 @@ class ParseAgent:
         self._normalize_intent_targets(intents)
         self._prune_fields_not_in_schema(intents)
         self._align_placeholder_families(intents)
+        self._repair_self_ref_placeholder_typos(intents)
         self._ensure_produced_primary_fields(intents)
         self._replace_reused_explicit_pks_with_placeholders(intents, fk_edges)
         self._backfill_missing_fk_fields(intents, fk_edges)
@@ -694,7 +812,64 @@ class ParseAgent:
         self._demote_consumed_duplicate_producers(intents)
         self._clean_self_consumes(intents)
         self._clean_dangling_consumes(intents)
+        self._dedupe_near_synonym_sheets(intents)
         return intents
+
+    # 近义 stem 组：同一业务被误拆到多个近义表时，只保留最具体的那个
+    _SYNONYM_GROUPS: list[list[str]] = [
+        ["ability", "school_ability", "assistant_ability", "school_spirit", "spirit"],
+    ]
+
+    def _dedupe_near_synonym_sheets(self, intents: list[NLIntent]) -> int:
+        """同 batch 内近义表的路由歧义收敛（消「神通」误召回 ability/spell 等噪声）。
+
+        规则（结构规则，不绑业务词）：
+        1. 若多个 add 意图的 stem 同属一个近义组（如 ability/school_ability/
+           assistant_ability 都是「技能/神通」近义表），保留 sheet 名最长（最具体）
+           的意图，删掉其余通用近义表意图。
+        2. FK 链保护：若某近义意图被另一条意图 consumes（是链上节点），则保留整链。
+        3. 同 stem 多 sheet（如 school_ability 的 SchoolAbility + SchoolAbilityLevel）
+           不算近义噪声，全部保留。
+        """
+        if not intents:
+            return 0
+        add_idx: list[int] = [
+            i for i, it in enumerate(intents)
+            if (getattr(it, "action", "") or "").lower() in {"add", "create"}
+        ]
+        if len(add_idx) < 2:
+            return 0
+        info = [((getattr(intents[i], "table_hint", "")
+                  or getattr(intents[i], "table", "") or "").strip().lower(),
+                 (getattr(intents[i], "sheet_hint", "")
+                  or getattr(intents[i], "sheet", "") or "").strip(),
+                 (getattr(intents[i], "raw", "") or ""))
+                for i in add_idx]
+        # 计算每条意图的"被消费 label 集合"，用于 FK 链保护
+        consumed: set[str] = set()
+        for i in add_idx:
+            consumed.update(getattr(intents[i], "consumes_labels", None) or [])
+        drop: set[int] = set()
+        for group in self._SYNONYM_GROUPS:
+            grp_set = {s.lower() for s in group}
+            members = [i for i in add_idx
+                       if info[add_idx.index(i)][0] in grp_set and i not in drop]
+            if len(members) < 2:
+                continue
+            # 保留 sheet 名最长的（最具体）；其余若无被消费（非链节点）则删
+            members_sorted = sorted(
+                members, key=lambda i: len(info[add_idx.index(i)][1]), reverse=True)
+            keep = members_sorted[0]
+            for i in members_sorted[1:]:
+                prod = getattr(intents[i], "produces_label", None)
+                # FK 链保护：该意图被其他意图消费（是链上节点）→ 保留
+                if prod and prod in consumed:
+                    continue
+                drop.add(i)
+        if drop:
+            for i in sorted(drop, reverse=True):
+                del intents[i]
+        return len(drop)
 
     def _dedupe_same_sheet_same_explicit_pk(self, intents: list[NLIntent]) -> list[NLIntent]:
         if not intents:
@@ -943,16 +1118,26 @@ class ParseAgent:
     @staticmethod
     def _backfill_missing_fk_fields(intents: list[NLIntent], fk_edges: list) -> int:
         producers: dict[tuple[str, str], list[str]] = {}
+        # 父表主键列的显式实值（无 produces_label 时回退用，供子表直接引用）
+        explicit_pk: dict[tuple[str, str], dict[str, str]] = {}
         for it in intents:
             label = getattr(it, "produces_label", None)
             if not label and getattr(it, "extras", None):
                 label = it.extras.get("produces")
-            if not label:
-                continue
-            producers.setdefault((
-                (getattr(it, "table_hint", "") or "").lower(),
-                (getattr(it, "sheet_hint", "") or "").lower(),
-            ), []).append(str(label))
+            stem = (getattr(it, "table_hint", "") or "").lower()
+            sheet = (getattr(it, "sheet_hint", "") or "").lower()
+            if label:
+                producers.setdefault((stem, sheet), []).append(str(label))
+            # 收集父表 id/编号类列的显式实值（回填时按 to_column 精确匹配）
+            if stem and sheet:
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if isinstance(fields, dict):
+                    for col, value in fields.items():
+                        cn = ParseAgent._field_name_norm(col)
+                        if "id" in cn or "编号" in str(col):
+                            sv = str(value).strip() if isinstance(value, str) else ""
+                            if sv and not (sv.startswith("<") and sv.endswith(">")):
+                                explicit_pk.setdefault((stem, sheet), {})[cn] = sv
         n = 0
         for it in intents:
             fields = (getattr(it, "extras", None) or {}).get("fields") or {}
@@ -969,17 +1154,37 @@ class ParseAgent:
                     (getattr(edge, "to_stem", "") or "").lower(),
                     (getattr(edge, "to_sheet", "") or "").lower(),
                 )
-                labels = producers.get(target_key) or []
-                if len(labels) != 1:
-                    continue
                 col = str(getattr(edge, "from_column", "") or "").split(":")[0].strip()
                 if not col or str(fields.get(col, "")).strip():
                     continue
-                label = labels[0]
-                fields[col] = f"<{label}>"
-                if label not in (getattr(it, "consumes_labels", None) or []):
-                    it.consumes_labels.append(label)
-                n += 1
+                labels = producers.get(target_key) or []
+                if len(labels) == 1:
+                    label = labels[0]
+                    fields[col] = f"<{label}>"
+                    if label not in (getattr(it, "consumes_labels", None) or []):
+                        it.consumes_labels.append(label)
+                    n += 1
+                    continue
+                # 父表主键是显式实值（无 producer 占位符）→ 子表直接引用该实值
+                if len(labels) == 0:
+                    epk = explicit_pk.get(target_key) or {}
+                    to_pk = ParseAgent._field_name_norm(
+                        str(getattr(edge, "to_column", "") or "").split(":")[0].strip()
+                    )
+                    ref = epk.get(to_pk) if to_pk else next(iter(epk.values()), None)
+                    if ref is None:
+                        continue
+                    # 给父表补 produces_label（以显式值作为可控主键来源）
+                    for p_it in intents:
+                        pts = (getattr(p_it, "table_hint", "") or "").lower()
+                        psh = (getattr(p_it, "sheet_hint", "") or "").lower()
+                        if pts != target_key[0] or psh != target_key[1]:
+                            continue
+                        if not getattr(p_it, "produces_label", None) and not (
+                                getattr(p_it, "extras", None) or {}).get("produces"):
+                            p_it.produces_label = f"new_{target_key[0]}_{to_pk}_id"
+                    fields[col] = ref
+                    n += 1
         return n
 
     def _backfill_same_workbook_placeholder_fields(self, intents: list[NLIntent]) -> int:
@@ -1276,8 +1481,16 @@ class ParseAgent:
 
     @staticmethod
     def _partition_orphan_empty_adds(
-            intents: list[NLIntent]) -> tuple[list[NLIntent], list[NLIntent]]:
-        """返回 (保留, 被删) 两组孤立空壳 add 划分（纯函数，供日志/台账用）。"""
+            intents: list[NLIntent], *, strict: bool = False
+    ) -> tuple[list[NLIntent], list[NLIntent]]:
+        """返回 (保留, 被删) 两组孤立空壳 add 划分（纯函数，供日志/台账用）。
+
+        strict=False（引用编译前调用）：已挂 produces 的 producer 占位行豁免——
+        此时 cross_ref_linker/infer_produces_consumes 尚未跑，真 producer 的
+        consumes 关系不可见，需 produces 豁免防误删下游悬空。
+        strict=True（引用编译后调用）：关系图已完整，produces 不再豁免，
+        孤立 produces 空壳（无任何实值字段且无 consumer）判为 LLM 幻觉删。
+        """
         if not intents:
             return list(intents or []), []
         # 仅当本批 >1 条（跨表上下文）才做孤立空壳过滤：单条空 add 可能是
@@ -1285,10 +1498,27 @@ class ParseAgent:
         if len(intents) <= 1:
             return list(intents), []
 
-        def _has_real_value(fields) -> bool:
+        def _has_real_value(it) -> bool:
+            """字段含至少一个非空实值（空串/None/占位符不算）。
+
+            strict=False 时已挂 produces 的 producer 占位行豁免（主键自增、
+            字段全 FK 占位符，运行时 _capture_produced 回填真实 PK）；
+            strict=True 时豁免取消——关系图已完整，孤立 produces 空壳
+            （fields 全空/全占位符且无 consumer）是 LLM 对大候选池幻觉
+            产出的空 add，放行会让 Step3 写空行污染数据（月华邮件样例
+            serve 后端 10 条空壳 add 污染 3 表即此）。
+
+            数字索引键（int 或纯数字 str）不算实值：fields 键约定为列名，
+            纯数字绝非列名（LLM 退化把列号当键，如 {42:'10001'}），无可映射
+            列，任何值都是污染，strict 过滤时视为无实值。"""
+            label = getattr(it, "produces_label", None) or \
+                ((getattr(it, "extras", None) or {}).get("produces"))
+            if not strict and label and str(label).strip():
+                return True
+            fields = (getattr(it, "extras", None) or {}).get("fields")
             if not isinstance(fields, dict):
                 return False
-            for v in fields.values():
+            for k, v in fields.items():
                 if v is None:
                     continue
                 s = str(v).strip()
@@ -1296,6 +1526,9 @@ class ParseAgent:
                     continue
                 if s.startswith("<") and s.endswith(">"):
                     continue  # 占位符 = 待补，不算实值
+                if (isinstance(k, int)
+                        or (isinstance(k, str) and k.strip().isdigit())):
+                    continue  # 数字索引键：LLM 退化把列号当键，无可映射列
                 return True
             return False
 
@@ -1321,7 +1554,7 @@ class ParseAgent:
                 kept.append(it)
                 continue
             fields = (getattr(it, "extras", None) or {}).get("fields")
-            if _has_real_value(fields):
+            if _has_real_value(it):
                 kept.append(it)
                 continue
             label = getattr(it, "produces_label", None) or \
@@ -1603,6 +1836,17 @@ class ParseAgent:
             id_like = valid_norm.endswith("id") or col_n.endswith("id")
             if id_like and (col_n.endswith(valid_norm) or valid_norm.endswith(col_n)):
                 candidates.append(valid_key)
+        if not candidates:
+            # §P1a 字段名污染校正：LLM 常产出带前缀/缩写脏名（如 _desc、pet_type、
+            # spell_id），与真实列名仅差子串关系。若 col_n 与某真实列名互含且唯一
+            # 命中，则模糊映射到真实列名，避免字段被丢弃或保留脏名。
+            for valid_norm, valid_key in key_map.items():
+                if not valid_norm or len(valid_norm) < 3:
+                    continue
+                if valid_norm == "id":
+                    continue
+                if col_n in valid_norm or valid_norm in col_n:
+                    candidates.append(valid_key)
         candidates = sorted(set(candidates))
         return candidates[0] if len(candidates) == 1 else ""
 
@@ -1897,6 +2141,16 @@ class ParseAgent:
                             continue
                         norm[canon_key] = v
                     entries.append((i, norm))
+                # 本分组的主键列（用于区分两条不同记录的守卫）。
+                pk_col = ""
+                stem, sheet_l = key[1], key[2]
+                if stem and sheet_l:
+                    pks = self._primary_field_names(stem, sheet_l)  # 返回 set
+                    _pk = ParseAgent._field_name_norm(next(iter(pks))) if pks else ""
+                    if _pk and canon:
+                        pk_col = canon.get(_pk, _pk)
+                    elif _pk:
+                        pk_col = _pk
                 for ai, (ia, fa) in enumerate(entries):
                     for bi, (ib, fb) in enumerate(entries):
                         if ai == bi or ia in drop or ib in drop:
@@ -1963,6 +2217,29 @@ class ParseAgent:
                         )
                         if not (a_keys < b_keys or same_produces_richer or default_shell_shadow):
                             continue
+                        # 主键守卫：两条记录主键列（本表 produces 对应列）都给了不同
+                        # 实值，代表两份不同数据，绝不可互判为影子（实测 LLM 常把
+                        # 区分值塞进主键列，导致木灵根/水灵根两条真实记录被误删其一）。
+                        a_pk = _real(fa.get(pk_col)) if pk_col else None
+                        b_pk = _real(fb.get(pk_col)) if pk_col else None
+                        if a_pk is not None and b_pk is not None and a_pk != b_pk:
+                            continue
+                        # §P1b 主键守卫兜底：pk_col 经 canon 映射可能失效（主键列名
+                        # 不在 valid_keys 被前序剪枝），这里直接以归一化键 "id"（或
+                        # 任何以 id 结尾的列）做主键区分守卫，防 L5 式「同 sheet 双主键
+                        # 真实记录(7701/7702)」被误判影子互删。
+                        if a_pk is None and b_pk is None:
+                            def _id_val(d: dict):
+                                for kk, vv in d.items():
+                                    if ParseAgent._field_name_norm(kk) in ("id",) or \
+                                            ParseAgent._field_name_norm(kk).endswith("id"):
+                                        rv = _real(vv)
+                                        if rv is not None:
+                                            return rv
+                                return None
+                            a_pk2, b_pk2 = _id_val(fa), _id_val(fb)
+                            if a_pk2 is not None and b_pk2 is not None and a_pk2 != b_pk2:
+                                continue
                         # a 的每个非占位实值都要在 b 中同键同值（b 该键空/占位 =
                         # 待补，不算冲突）。
                         shadow = True
@@ -2578,6 +2855,10 @@ class ParseAgent:
             producers_by_target.setdefault(target, []).append(lab)
 
         fk_by_child_col: dict[tuple[str, str, str], tuple[str, str]] = {}
+        # 表级出边图，用于识别"两表互指"（见 _bind_self_primary_to_upstream 注释）：
+        # school_ability/SchoolAbility.school_ability_id → SchoolAbilityLevel.id
+        # 是推导出的错误边，照它改会把父表主键写成子表 ID。
+        outgoing: dict = {}
         for edge in fk_edges or []:
             child = (
                 (getattr(edge, "from_stem", "") or "").strip().lower(),
@@ -2590,6 +2871,8 @@ class ParseAgent:
             )
             if child[0] and child[1] and child[2] and target[0] and child[:2] != target:
                 fk_by_child_col[child] = target
+            if child[0] and child[1] and target[0] and child[:2] != target:
+                outgoing.setdefault(child[:2], set()).add(target)
         if not produced_at:
             return 0
 
@@ -2641,6 +2924,11 @@ class ParseAgent:
                         or target == produced_at.get(label)):
                     target = hint_target
                 if target is None:
+                    continue
+                # 两表互指（target 也有边指回本表）→ 父子方向不可信，不改。
+                # 典型：SchoolAbility ↔ SchoolAbilityLevel，照错误边改会把父表
+                # 主键 school_ability_id 写成 <new_school_ability_level_id>。
+                if (stem, sheet) in (outgoing.get(target) or set()):
                     continue
                 if produced_at.get(label) == target:
                     continue
@@ -2703,6 +2991,21 @@ class ParseAgent:
             return s[1:-1].strip() if s.startswith("<") and s.endswith(">") else ""
 
         edge_targets = self._fk_edge_targets(fk_edges)
+
+        # 表级出边图：(stem, sheet) -> {(to_stem, to_sheet)}，用于识别"两表互指"。
+        # 背景：FK 推导会产生方向错误的边（实测 school_ability/SchoolAbility
+        # .school_ability_id → school_ability/SchoolAbilityLevel.id），父表主键
+        # 因此被绑到子表的 producer 上（<new_school_ability_id> 被覆写成
+        # <new_school_ability_level_id>），Step2 会按子表 ID 写父表主键 → 错行。
+        outgoing: dict = {}
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").strip().lower()
+            fsh = (getattr(e, "from_sheet", "") or "").strip().lower()
+            ts = (getattr(e, "to_stem", "") or "").strip().lower()
+            tsh = (getattr(e, "to_sheet", "") or "").strip().lower()
+            if fs and fsh and ts and tsh and (fs, fsh) != (ts, tsh):
+                outgoing.setdefault((fs, fsh), set()).add((ts, tsh))
+
         produced_by_target: dict = {}
         for it in intents:
             if getattr(it, "action", "") != "add":
@@ -2736,6 +3039,11 @@ class ParseAgent:
                     continue
                 targets = edge_targets.get((stem, sheet_l, cn)) or set()
                 for tgt in targets:
+                    # target 反向指回本表 → 两表互指，父子方向不可信。
+                    # 此时"本表主键引用 target"极可能是推导出的错误边，
+                    # 绑过去会把父表主键写成子表 ID（错行/覆盖），一律跳过。
+                    if (stem, sheet_l) in (outgoing.get(tgt) or set()):
+                        continue
                     groups.setdefault((stem, sheet_l, cn, tgt), []).append((it, col))
 
         n = 0
@@ -2779,6 +3087,16 @@ class ParseAgent:
                     ((getattr(it, "table_hint", "") or "").strip().lower(),
                      (getattr(it, "sheet_hint", "") or "").strip().lower()))
         edge_targets = self._fk_edge_targets(fk_edges) if fk_edges else {}
+        # 表级出边图：用于识别"两表互指"（父子方向不可信，见
+        # _bind_self_primary_to_upstream 注释），避免按错误 FK 边回填主键。
+        outgoing: dict = {}
+        for e in fk_edges or []:
+            fs = (getattr(e, "from_stem", "") or "").strip().lower()
+            fsh = (getattr(e, "from_sheet", "") or "").strip().lower()
+            ts = (getattr(e, "to_stem", "") or "").strip().lower()
+            tsh = (getattr(e, "to_sheet", "") or "").strip().lower()
+            if fs and fsh and ts and tsh and (fs, fsh) != (ts, tsh):
+                outgoing.setdefault((fs, fsh), set()).add((ts, tsh))
 
         def _placeholder(value) -> str:
             if not isinstance(value, str):
@@ -2829,9 +3147,17 @@ class ParseAgent:
                 # §自引用主键已绑上游（_bind_self_primary_to_upstream）：本列 FK 目标
                 # 的 producer 就是 label → 保留该绑定，不要回填成自己的 produces
                 # label（否则 school_spirit 的 神通id 又被打回 <new_school_spirit_id>）。
+                # 注意 produced_at.get(label) 可能是字符串或集合，先做集合化再 & 比较，
+                # 否则字符串 & set 会抛 TypeError（'set' object is not subscriptable）。
                 if edge_targets:
                     _tgts = edge_targets.get((stem, sheet, col_norm)) or set()
-                    if _tgts and (produced_at.get(label) or set()) & _tgts:
+                    _prod = produced_at.get(label)
+                    _prod_set = _prod if isinstance(_prod, set) else ({_prod} if _prod else set())
+                    # 两表互指（label 的 producer 也指回本表）→ 方向不可信，保留原绑定。
+                    _tgt0 = next(iter(_tgts), None)
+                    if _tgt0 and (stem, sheet) in (outgoing.get(_tgt0) or set()):
+                        continue
+                    if _tgts and _prod_set & _tgts:
                         continue
                 if own:
                     fields[col] = f"<{own}>"
@@ -3737,6 +4063,89 @@ class ParseAgent:
         s = re.sub(r"_(\d+)$", "", s)
         return s
 
+    @classmethod
+    def _placeholder_canonical(cls, label: str) -> str:
+        """去除序号 + 下划线的规范形，供"下划线错位" typo 容错比对。
+
+        LLM 自引用 produces label 时偶发下划线错位打字（如同一行内 produces=
+        "new_interaction_conv_option_id_1"，自引用字段却写成
+        "new_interaction_con_voption_id_1"——下划线从 conv|option 边界挪到
+        con|voption，去下划线后两者字符序列完全相同："newinteractionconvoptionid"）。
+        这类 typo 是"下划线位置错"而非"字符错拼"，去下划线规范化即可精确捕获，
+        不需要通用编辑距离（编辑距离对长 label 误杀风险更高）。
+        """
+        return cls._placeholder_family(label).replace("_", "")
+
+    def _repair_self_ref_placeholder_typos(self, intents: list[NLIntent]) -> int:
+        """修正占位符引用的"下划线错位" typo（本批 produces label 去下划线后唯一命中）。
+
+        场景：intent 声明 produces_label=L，同一批某处引用了 <L'>（L' 是 L 的
+        typo：去下划线规范形相同，但原始拼写不同）→ exact-string 匹配判
+        unresolved_placeholder/forward_ref_broken。本层在 exact 匹配失败后，
+        用去下划线规范形回退匹配：若本批 produces label 集合中恰好一个的
+        规范形与引用的规范形相同，且原始拼写不同 → 判定 typo，改写引用为
+        正确拼写。多个候选命中同一规范形（歧义）时跳过，不猜。
+        """
+        produced: dict[str, str] = {}  # canonical -> exact label（歧义时置 None 占位）
+        ambiguous: set[str] = set()
+        for it in intents or []:
+            label = getattr(it, "produces_label", None)
+            if not label and getattr(it, "extras", None):
+                label = it.extras.get("produces")
+            if not label:
+                continue
+            label_s = str(label).strip()
+            canon = self._placeholder_canonical(label_s)
+            if not canon:
+                continue
+            if canon in produced and produced[canon] != label_s:
+                ambiguous.add(canon)
+            else:
+                produced[canon] = label_s
+
+        n = 0
+        for it in intents or []:
+            fields = (getattr(it, "extras", None) or {}).get("fields")
+            if not isinstance(fields, dict):
+                continue
+            for key, value in list(fields.items()):
+                if not isinstance(value, str):
+                    continue
+                raw = value.strip()
+                if not (raw.startswith("<") and raw.endswith(">")):
+                    continue
+                ref = raw.strip("<>").strip()
+                if not ref or ref in produced.values():
+                    continue  # exact 命中，无需修
+                canon = self._placeholder_canonical(ref)
+                if not canon or canon in ambiguous:
+                    continue
+                match = produced.get(canon)
+                if match and match != ref:
+                    fields[key] = f"<{match}>"
+                    n += 1
+            # consumes_labels 同步修正
+            cl = getattr(it, "consumes_labels", None)
+            if isinstance(cl, list) and cl:
+                new_cl = []
+                changed = False
+                for c in cl:
+                    c_s = str(c).strip()
+                    if c_s in produced.values() or not c_s:
+                        new_cl.append(c)
+                        continue
+                    canon = self._placeholder_canonical(c_s)
+                    match = produced.get(canon) if canon not in ambiguous else None
+                    if match and match != c_s:
+                        new_cl.append(match)
+                        changed = True
+                        n += 1
+                    else:
+                        new_cl.append(c)
+                if changed:
+                    it.consumes_labels = new_cl
+        return n
+
     @staticmethod
     def _placeholder_ordinal(label: str) -> int | None:
         s = str(label or "").strip().strip("<>").strip().lower()
@@ -3892,13 +4301,21 @@ class ParseAgent:
                 (getattr(it, "table_hint", None) or "").lower(),
                 (getattr(it, "sheet_hint", None) or "").lower(),
             )
-            if (getattr(it, "action", None) == "add"
+            # produces 非空的 producer 占位行豁免 shadow 去重（主键自增、字段全
+            # FK 占位符，与 _has_real_field_value 口径一致），否则被当空壳删 →
+            # 下游 consumer 悬空 forward_ref_broken
+            produces = getattr(it, "produces_label", None) or \
+                ((getattr(it, "extras", None) or {}).get("produces"))
+            has_produces = bool(produces and str(produces).strip())
+            if (not has_produces
+                    and getattr(it, "action", None) == "add"
                     and group in non_empty_groups
                     and isinstance(fields, dict)
                     and fields
                     and not any(str(v).strip() for v in fields.values())):
                 continue
-            if (getattr(it, "action", None) == "add"
+            if (not has_produces
+                    and getattr(it, "action", None) == "add"
                     and group in non_empty_groups
                     and isinstance(fields, dict)
                     and ParseAgent._is_sparse_shadow(it, intents)):
@@ -4006,7 +4423,15 @@ class ParseAgent:
         vals_a = set(pa.values())
         vals_b = set(pb.values())
         if len(vals_a) < 2 or len(vals_b) < 2:
-            return False
+            # §P-sparse：单具体值场景（LLM 多候选猜测里每条只填 1 个真实字段，
+            # 其余全占位符——如同一对话节点被重复 add 3 次，每次只有
+            # prompt_text 一个具体值）。原逻辑要求双边 ≥2 个值才判重，
+            # 单值 add 全数逃过 → 矛盾候选并存（铁匠老张例：3 条 InteractionConv
+            # add 都只填 prompt_text）。放宽：双边具体值集合完全相同（且非空）
+            # 时也判重——vals_a==vals_b 是比"重叠比例"更强的信号，误杀风险
+            # 仅限"两个不同实体偶然共享唯一同值字段"的极端 coincidence，
+            # 由 _semantic_dup_score 保留信息更全的一条，收益大于风险。
+            return bool(vals_a) and vals_a == vals_b
         overlap = len(vals_a & vals_b)
         return overlap >= 2 and overlap * 2 >= min(len(vals_a), len(vals_b))
 

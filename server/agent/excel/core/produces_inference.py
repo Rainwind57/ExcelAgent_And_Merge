@@ -119,9 +119,13 @@ def infer_produces_consumes(intents: list) -> list:
 
     步骤：
       1. 收集 add 意图，标记 producer 候选（被其他表 FK 引用的 add 表）
-      2. 给无 produces 标注的 producer 挂 produces=f"new_{stem}_id"
-      3. consumer add 的 FK 字段（get_add_dependencies）若指向同指令 producer，
-         且字段值 _should_consume → 替换为 <producer_label>
+         ——同 (stem,sheet) 多 add 全部注册，序号化 label（_1/_2/...）
+      2. 给无 produces 标注的 producer 挂 produces 标签（单 add 用基础标签，
+         多 add 用 `{base}_{pos}` 序号化，便于 _resolve_ordinal_placeholders 兜底解析）
+      3. consumer add 的 FK 字段（经 relation graph）若指向同指令 producer →
+         字段值替换为 <producer_label> 占位符（仅当值为空/<auto>/占位符时替换，
+         不覆盖显式已存在 id 引用）
+         ——多 producer 时不自动补空白 FK（无法决定指向哪个，交 LLM 连线 + ordinal 兜底）
 
     幂等：已标注 produces 的意图保留；已含显式 id 的 FK 字段不替换。
     """
@@ -140,50 +144,61 @@ def infer_produces_consumes(intents: list) -> list:
         rels = []
 
     # 1. producer 候选：同指令 add 集合中，(stem, sheet) 作为 relation `to` 端（被引用）
-    add_keys: dict[tuple, int] = {}  # (stem, sheet) -> intent idx
+    # P10b：同 (stem,sheet) 多 add 全部注册为 producer 候选（旧 P10 setdefault 只保留首个，
+    # 导致对话树多 conv/option 等同表多行 producer 第 2 条起 produces 缺失 → forward_ref
+    # 雪崩 + Conv↔Option 共享 label 在 DFS 上转圈判假环）。多 add → 序号化 label，
+    # _resolve_ordinal_placeholders 按 ordinal 兜底解析 LLM 逐行占位符。
+    add_idxs_by_key: dict[tuple, list[int]] = {}  # (stem, sheet) -> [intent idx ...]
     for i in add_idxs:
         it = intents[i]
         stem = _stem_of_hint(getattr(it, "table_hint", None))
         if not stem:
             continue
-        # P10：setdefault 保留首个 producer 候选，避免同 (stem,sheet) 多 add
-        # 后写覆盖前写（与 _suppress_over_produce「一表一 op 契约」语义一致）
-        add_keys.setdefault(_sheet_key(stem, getattr(it, "sheet_hint", None)), i)
+        add_idxs_by_key.setdefault(
+            _sheet_key(stem, getattr(it, "sheet_hint", None)), []
+        ).append(i)
 
-    producers: dict[tuple, tuple[int, str]] = {}  # (stem, sheet) -> (idx, label)
-    # producer 显式 PK 值（fields 中与 to_column 匹配的非 consume 值）→ 直接代换字面值，
-    # 绕过 _capture_produced（显式 PK add 不一定回传 result_rows，占位符会悬空）
+    producers: dict[tuple, list[tuple[int, str]]] = {}  # (stem, sheet) -> [(idx, label)...]
+    # producer 显式 PK 值（仅单 producer 时提取，多 producer 无法决定 consumer 指向）
     producer_pk_values: dict[tuple, object] = {}
     for r in rels:
         to_key = _sheet_key(_stem_of_path(r.to_path), r.to_sheet)
-        if to_key not in add_keys:
+        idxs = add_idxs_by_key.get(to_key)
+        if not idxs:
             continue
-        idx = add_keys[to_key]
-        it = intents[idx]
-        extras = it.extras if getattr(it, "extras", None) is not None else {}
-        existing = extras.get("produces")
-        if isinstance(existing, str) and existing.strip():
-            label = existing.strip()
-        else:
-            # P11：sheet-aware 标签，避免同 stem 多 producer（如 entity_prefab
-            # 的 candidate/formal 两 sheet）撞同一 `new_{stem}_id` → produced
-            # 字典后写覆盖 → consumer 占位符解析到错 PK
-            stem_part = _stem_of_path(r.to_path)
-            sheet_part = (r.to_sheet or "").strip()
-            if sheet_part:
-                label = f"new_{stem_part}_{sheet_part}_id"
+        multi = len(idxs) > 1
+        labels: list[str] = []
+        for pos, idx in enumerate(idxs, 1):
+            it = intents[idx]
+            extras = it.extras if getattr(it, "extras", None) is not None else {}
+            existing = extras.get("produces")
+            if isinstance(existing, str) and existing.strip():
+                label = existing.strip()
             else:
-                label = f"new_{stem_part}_id"
-            extras["produces"] = label
-            it.extras = extras
-        producers[to_key] = (idx, label)
-        # 提取 producer 显式 PK 值（fields 中匹配 to_column 的非 consume 值）
-        fields = extras.get("fields")
-        if isinstance(fields, dict) and to_key not in producer_pk_values:
-            for k, v in fields.items():
-                if _field_matches_col(k, r.to_column) and not _should_consume(v):
-                    producer_pk_values[to_key] = v
-                    break
+                # P11：sheet-aware 标签，避免同 stem 多 sheet 撞同一 `new_{stem}_id`
+                stem_part = _stem_of_path(r.to_path)
+                sheet_part = (r.to_sheet or "").strip()
+                base = (f"new_{stem_part}_{sheet_part}_id"
+                        if sheet_part else f"new_{stem_part}_id")
+                # P10b：同 (stem,sheet) 多 add → 序号化 label _1/_2/_3...
+                # _resolve_ordinal_placeholders._ordinal 正则 `(?:_id)?_(\d+)$`
+                # 命中末段序号 → 按 add 行序绑定第 N 个 producer label
+                label = f"{base}_{pos}" if multi else base
+                extras["produces"] = label
+                it.extras = extras
+            labels.append(label)
+        producers[to_key] = list(zip(idxs, labels))
+        # 单 producer 时提取显式 PK 值供 consumer 字面代换（多 producer 时 consumer
+        # 空白 FK 无法决定指向哪个，不提取，交 LLM 逐行连线 + ordinal 兜底）
+        if not multi:
+            it = intents[idxs[0]]
+            extras = it.extras if getattr(it, "extras", None) is not None else {}
+            fields = extras.get("fields")
+            if isinstance(fields, dict) and to_key not in producer_pk_values:
+                for k, v in fields.items():
+                    if _field_matches_col(k, r.to_column) and not _should_consume(v):
+                        producer_pk_values[to_key] = v
+                        break
 
     if not producers:
         return intents
@@ -192,27 +207,31 @@ def infer_produces_consumes(intents: list) -> list:
     for r in rels:
         from_key = _sheet_key(_stem_of_path(r.from_path), r.from_sheet)
         to_key = _sheet_key(_stem_of_path(r.to_path), r.to_sheet)
-        if from_key not in add_keys or to_key not in producers:
+        if from_key not in add_idxs_by_key or to_key not in producers:
             continue
-        cidx = add_keys[from_key]
-        pidx, plabel = producers[to_key]
-        if cidx == pidx:
-            continue  # 不自引用
-        it = intents[cidx]
-        extras = it.extras if getattr(it, "extras", None) is not None else {}
-        fields = extras.get("fields")
-        if not isinstance(fields, dict):
+        to_list = producers[to_key]
+        # 多 producer 时 consumer 空白 FK 无法决定指向哪个 → 不补（_is_blank_fk 只补空，
+        # 不覆盖 LLM 已连的 <new_xxx_id_N> 占位符）。强行补会塌成一 label → 假环 + forward_ref
+        if len(to_list) > 1:
             continue
-        source_col = r.from_column
-        # producer 有显式 PK → 直接代换字面值；否则用占位符（运行时 _capture_produced 解析）
+        pidx, plabel = to_list[0]
         subst = producer_pk_values.get(to_key)
         if subst is None:
             subst = f"<{plabel}>"
-        for k in list(fields.keys()):
-            if _field_matches_col(k, source_col) and _is_blank_fk(fields[k]):
-                fields[k] = subst
-        extras["fields"] = fields
-        it.extras = extras
+        source_col = r.from_column
+        for cidx in add_idxs_by_key[from_key]:
+            if cidx == pidx:
+                continue  # 不自引用
+            it = intents[cidx]
+            extras = it.extras if getattr(it, "extras", None) is not None else {}
+            fields = extras.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            for k in list(fields.keys()):
+                if _field_matches_col(k, source_col) and _is_blank_fk(fields[k]):
+                    fields[k] = subst
+            extras["fields"] = fields
+            it.extras = extras
     return intents
 
 

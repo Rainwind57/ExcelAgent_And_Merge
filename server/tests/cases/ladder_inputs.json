@@ -1,0 +1,214 @@
+[
+  {
+    "_meta": {
+      "name": "L1-单表单行add（最简单）",
+      "complexity": "低：单表单 sheet 一次 add，无关联",
+      "design_target": "验证最基础路由+字段填充是否准确"
+    },
+    "input": "新增一个活动，活动id 1001，活动名称'首充有礼'",
+    "expected_answer": [
+      {
+        "table": "activity\\activity.xlsx",
+        "sheet": "Activity",
+        "operation": "add",
+        "produces": "new_activity_id",
+        "row_content": {
+          "activity_id": 1001,
+          "name": "首充有礼"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "L2-单表多字段add（中等简单）",
+      "complexity": "低：单表单 sheet，字段较多",
+      "design_target": "验证多字段填充完整性（中文列名对齐）"
+    },
+    "input": "新增一个灵兽叫'朱雀'，模型id 1020，类型 1，品质 5，描述'上古神鸟，浴火重生'",
+    "expected_answer": [
+      {
+        "table": "pet\\pet.xlsx",
+        "sheet": "Pet",
+        "operation": "add",
+        "produces": "new_pet_id",
+        "row_content": {
+          "name": "朱雀",
+          "model_id": 1020,
+          "type": 1,
+          "quality": 5,
+          "desc": "上古神鸟，浴火重生"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "L3-双表关联add（引入占位符闭环）",
+      "complexity": "中：父表+子表，子表引用父表主键占位符",
+      "design_target": "验证 produces/consumes 占位符推导与 FK 绑定方向"
+    },
+    "input": "新增一个门派叫'青云宗'，门派编号 5，再给这个门派配一个神通'御剑诀'，描述'以剑气伤敌'",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "add",
+        "produces": "new_school_id",
+        "row_content": {
+          "school": "<new_school_id>",
+          "name": "青云宗",
+          "school_type": 5
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability_id",
+        "row_content": {
+          "school_ability_id": "<new_ability_id>",
+          "school": "<new_school_id>",
+          "name": "御剑诀",
+          "desc": "以剑气伤敌"
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "L4-同表双sheet add（易错点）",
+      "complexity": "中高：同一个 xlsx 两个 sheet（Ability + AbilityLevel）",
+      "design_target": "验证同 workbook 多 sheet 精准落位 + 层级父列引用"
+    },
+    "input": "新增一个神通'破天锤'，描述'巨力砸下'，一级升一级要人物 1 级，技能编号 950",
+    "expected_answer": [
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability_id",
+        "row_content": {
+          "school_ability_id": "<new_ability_id>",
+          "name": "破天锤",
+          "desc": "巨力砸下",
+          "unlock_level": 1
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability_level_id",
+        "row_content": {
+          "id": "<new_ability_level_id>",
+          "school_ability_id": "<new_ability_id>",
+          "level": 0,
+          "upgrade_level": 1,
+          "common_spell_id": 950
+        }
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "name": "L5-多表多层 add（复杂）",
+      "complexity": "高：school + school_ability(双sheet) + school_talent(双sheet) + mail(双sheet)",
+      "design_target": "综合验证路由分流、占位符多跳闭环、去重守卫"
+    },
+    "input": "新增一个门派叫'天音寺'，门派编号 7，门派类型 2，大世界模型 1030。配一个神通'梵音咒'，描述'净化众生'，一级升一级要人物 2 级，技能编号 960。再给这个门派配一个天赋盘：天赋主键 7701，名字'菩提'，描述'防御提升20%'，图标'Icon_1.png'，门派 7，层级 1，所在列 1；它的下层天赋 7702，名字'明镜'，描述'防御提升30%'，图标'Icon_2.png'，门派 7，层级 2，所在列 1，上一层功法所在列填'1'。最后发一封全服邮件：邮件模板标题'天音寺开宗'，内容'天音寺今日开宗'，全服邮件 global_id 30，邮件类型 1，发送人'系统'。",
+    "expected_answer": [
+      {
+        "table": "school\\school.xlsx",
+        "sheet": "School",
+        "operation": "add",
+        "produces": "new_school_id",
+        "row_content": {
+          "school": "<new_school_id>",
+          "name": "天音寺",
+          "school_type": 2,
+          "model_id": 1030
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbility",
+        "operation": "add",
+        "produces": "new_ability_id",
+        "row_content": {
+          "school_ability_id": "<new_ability_id>",
+          "school": "<new_school_id>",
+          "name": "梵音咒",
+          "desc": "净化众生",
+          "unlock_level": 1
+        }
+      },
+      {
+        "table": "school\\school_ability.xlsx",
+        "sheet": "SchoolAbilityLevel",
+        "operation": "add",
+        "produces": "new_ability_level_id",
+        "row_content": {
+          "id": "<new_ability_level_id>",
+          "school_ability_id": "<new_ability_id>",
+          "level": 0,
+          "upgrade_level": 2,
+          "common_spell_id": 960
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "add",
+        "produces": "new_talent_id",
+        "row_content": {
+          "id": 7701,
+          "name": "菩提",
+          "desc": "防御提升20%",
+          "icon": "Icon_1.png",
+          "school": 7,
+          "layer": 1,
+          "column": 1
+        }
+      },
+      {
+        "table": "school\\school_talent.xlsx",
+        "sheet": "SchoolTalent",
+        "operation": "add",
+        "produces": "new_talent2_id",
+        "row_content": {
+          "id": 7702,
+          "name": "明镜",
+          "desc": "防御提升30%",
+          "icon": "Icon_2.png",
+          "school": 7,
+          "layer": 2,
+          "column": 1,
+          "parent_columns": "1"
+        }
+      },
+      {
+        "table": "mail\\mail.xlsx",
+        "sheet": "MailTemplate",
+        "operation": "add",
+        "produces": "new_mail_template_id",
+        "row_content": {
+          "title": "天音寺开宗",
+          "content": "天音寺今日开宗",
+          "sender": "系统"
+        }
+      },
+      {
+        "table": "mail\\mail.xlsx",
+        "sheet": "GlobalMail",
+        "operation": "add",
+        "produces": "new_global_mail_id",
+        "row_content": {
+          "global_id": 30,
+          "mail_type": 1,
+          "template_id": "<new_mail_template_id>"
+        }
+      }
+    ]
+  }
+]

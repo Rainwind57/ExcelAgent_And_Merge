@@ -177,10 +177,24 @@ def compile_semantic_plan_to_intents(
         value = entity.get("value")
         if action == "set" and not target_field and len(fields) == 1:
             target_field, value = next(iter(fields.items()))
-        if action == "set" and not target_field:
-            add_issue("set_target_missing", pos)
+        _backfilled_loc = None
+        if action == "set" and not target_field and len(fields) >= 2:
+            _id_keys = [k for k in fields
+                        if str(k).split(":")[0].strip().lower().split(".")[-1].replace("_","").endswith("id")
+                        or "编号" in str(k) or str(k) in ("name","名称","名字")]
+            if _id_keys:
+                _loc_key = _id_keys[0]
+                _backfilled_loc = (_loc_key, fields[_loc_key])
+                target_field, value = _loc_key, fields[_loc_key]
+                add_issue("set_target_missing", pos, severity="soft",
+                          note="locator backfilled from fields")
+            else:
+                add_issue("set_target_missing", pos)
         locator_has_value = bool(locator.get("field") and locator.get("value") not in (None, ""))
         locator_has_values = bool(_as_list(locator.get("fields")) and _as_list(locator.get("values")))
+        if _backfilled_loc and not locator_has_value:
+            locator = {"field": _backfilled_loc[0], "value": _backfilled_loc[1]}
+            locator_has_value = True
         if action in {"set", "delete", "get"} and not (locator_has_value or locator_has_values):
             add_issue("locator_missing", pos, severity="soft")
 

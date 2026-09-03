@@ -286,7 +286,17 @@ def _collect_placeholder_refs(value: Any) -> set[str]:
     return refs
 
 
-def _has_real_field_value(fields: dict) -> bool:
+def _has_real_field_value(fields: dict, produces: str = "") -> bool:
+    """fields 是否含至少一个非空非占位符实值。
+
+    produces 非空时豁免空壳判定：该 add 是 producer 占位行（主键自增不填、
+    唯一字段是 FK 占位符指向被引用行），运行时 _capture_produced 会从
+    result_rows 回填真实 PK。原实现无视 produces 把这类行判 empty_add →
+    producer 链路 hard 阻断 + 下游 forward_ref_broken 雪崩（如 Interaction
+    表 add 时 effect.data.3006.conv_id 是唯一字段且为占位符）。
+    """
+    if produces:
+        return True
     for value in fields.values():
         if value is None:
             continue
@@ -305,7 +315,7 @@ def _intent_evidence_values(it: Any) -> list[str]:
     for value in fields.values():
         if isinstance(value, (str, int, float)):
             s = str(value).strip()
-            if len(s) >= 4 and not (s.startswith("<") and s.endswith(">")):
+            if len(s) >= 2 and not (s.startswith("<") and s.endswith(">")):
                 values.append(s)
     for value in (
         getattr(it, "locator_value", None),
@@ -313,7 +323,7 @@ def _intent_evidence_values(it: Any) -> list[str]:
     ):
         if isinstance(value, (str, int, float)):
             s = str(value).strip()
-            if len(s) >= 4:
+            if len(s) >= 2:
                 values.append(s)
     return values
 
@@ -339,6 +349,10 @@ def _build_step1_plan_graph(intents: list) -> dict:
             and not (str(value).strip().startswith("<")
                      and str(value).strip().endswith(">"))
         ]
+        # 与 _has_real_field_value 口径一致：已挂 produces 的 producer 占位行
+        # real_field_count 记 1（运行时 _capture_produced 回填，非空壳），避免
+        # 下游用 real_field_count==0 二次误判 empty_add
+        real_count = len(real_fields) if not produces else max(len(real_fields), 1)
         nodes.append({
             "idx": idx,
             "action": getattr(it, "action", "") or "",
@@ -351,7 +365,7 @@ def _build_step1_plan_graph(intents: list) -> dict:
                 if _normalise_label(x)
             ],
             "field_count": len(fields),
-            "real_field_count": len(real_fields),
+            "real_field_count": real_count,
         })
 
     edges: list[dict] = []
@@ -444,6 +458,129 @@ def _build_step1_plan_graph(intents: list) -> dict:
         "unresolved_ref_count": len(unresolved_refs),
         "cycle_count": len(cycle_rows),
     }
+
+
+def _resolve_self_referential_option_cycles(
+        intents: list, plan_graph: dict) -> tuple[list, int]:
+    """消解「结束选项误指自身 conv」形成的假性双向 self-ref 环。
+
+    典型场景：LLM 把对话选项「选完结束」的 option_function.data.1.conv_id
+    误填成所属 conv 的 <produces_label>（指回当前 conv），与 conv.options[N]
+    引用 option 形成 conv→option→conv 双向环 → producer_dependency_cycle hard。
+    实际语义是「结束选项无后续跳转」，conv_id 该留空。无显式结束标记约定，
+    本层把这类 self-ref 环的 option conv_id 字段清空（语义=结束），从 cycle 移除。
+
+    判定（保守，消解确定性的双向 self-ref 边）：
+      - cycle 的相邻 label 对 (L_x, L_y) 中存在双向 field 引用：
+        x 通过 fields 某列引用 L_y（conv.options[N]=<L_y>）
+        y 通过 fields 某列引用 L_x（option.conv_id=<L_x>）
+      - 且 y 是 option 类（sheet 含 ConvOption）、x 是 conv 类（含 Conv 非 Option）
+      - 清空 y 中引用 L_x 的列值（结束语义），从 cycle 列表移除
+
+    返回 (消解后剩余 cycles, 消解数)。
+    """
+    cycles = list(plan_graph.get("cycles") or [])
+    if not cycles or not intents:
+        return cycles, 0
+
+    # label → idx (1-based)
+    label_to_idx: dict[str, int] = {}
+    for i, it in enumerate(intents, start=1):
+        p = _intent_produces(it)
+        if p:
+            label_to_idx.setdefault(p, i)
+
+    idx_to_intent: dict[int, Any] = {}
+    for i, it in enumerate(intents, start=1):
+        idx_to_intent[i] = it
+
+    def _field_refs_by_idx(idx: int) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        it = idx_to_intent.get(idx)
+        if it is None:
+            return out
+        fields = _intent_fields_map(it)
+        for col, val in fields.items():
+            refs = _collect_placeholder_refs(val)
+            if refs:
+                out[str(col)] = refs
+        return out
+
+    def _is_option(idx: int) -> bool:
+        it = idx_to_intent.get(idx)
+        return "convoption" in str(getattr(it, "sheet_hint", "") or "").lower()
+
+    def _is_conv(idx: int) -> bool:
+        it = idx_to_intent.get(idx)
+        s = str(getattr(it, "sheet_hint", "") or "").lower()
+        return "conv" in s and "option" not in s
+
+    remaining: list = []
+    resolved = 0
+    for cyc in cycles:
+        labels = list(cyc.get("labels") or [])
+        idxs = [x for x in (cyc.get("idxs") or []) if x]
+        # 在 cycle 相邻 label 对中找双向 self-ref (conv, option)
+        # labels 形如 [L_conv, L_option, L_conv] 或 [L_conv, L_option]，
+        # 取相邻去重对判定
+        pairs = set()
+        for i in range(len(labels) - 1):
+            pairs.add((labels[i], labels[i + 1]))
+        # 找双向对：(L_x→L_y) 且 (L_y→L_x) 同时存在
+        bidir = [(x, y) for (x, y) in pairs if (y, x) in pairs]
+        # 退化为单条边但 cycle 首尾相同（3-label 闭环 conv→opt→conv）：
+        # labels[0]==labels[-1]，则 (labels[0], labels[1]) 与 (labels[1], labels[0]) 双向
+        if not bidir and len(labels) >= 3 and labels[0] == labels[-1]:
+            bidir = [(labels[0], labels[1])]
+        cleared = False
+        for x_label, y_label in bidir:
+            x_idx = label_to_idx.get(x_label)
+            y_idx = label_to_idx.get(y_label)
+            if x_idx is None or y_idx is None:
+                continue
+            # x=conv 引用 y=option（conv.options[N]=<y_label>），y=option 引用 x=conv
+            x_refs = _field_refs_by_idx(x_idx)
+            y_refs = _field_refs_by_idx(y_idx)
+            x_to_y_cols = [c for c, refs in x_refs.items() if y_label in refs]
+            y_to_x_cols = [c for c, refs in y_refs.items() if x_label in refs]
+            if not x_to_y_cols or not y_to_x_cols:
+                continue
+            # 类型守卫：y 是 option、x 是 conv
+            if not (_is_option(y_idx) and _is_conv(x_idx)):
+                continue
+            # 清空 y（option）中指向 x（conv）的 conv_id 列 → 结束语义
+            y_intent = idx_to_intent.get(y_idx)
+            extras = getattr(y_intent, "extras", None)
+            if not isinstance(extras, dict):
+                continue
+            fields = extras.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            for col in y_to_x_cols:
+                if _should_clear_self_ref_field(col):
+                    fields[col] = ""
+            extras["fields"] = fields
+            cl = getattr(y_intent, "consumes_labels", None)
+            if isinstance(cl, list):
+                y_intent.consumes_labels = [
+                    v for v in cl if _normalise_label(v) != x_label]
+            cleared = True
+        if cleared:
+            resolved += 1
+        else:
+            remaining.append(cyc)
+
+    return remaining, resolved
+
+
+def _should_clear_self_ref_field(col: str) -> bool:
+    """是否清空 option 的 col 字段以消解 self-referential option→conv 环。
+
+    保守判定：col 名末段含 conv_id（option 指向所属 conv 的 FK 列）才清空。
+    避免清空 option_id 等主键或 option_text 等业务字段。
+    """
+    col_norm = str(col).split(".")[-1].lower().replace("_", "")
+    return "convid" in col_norm
 
 
 def _semantic_value_kind(value: Any) -> str:
@@ -582,13 +719,35 @@ def _step1_quality_report(intents: list, plan_graph: dict | None = None) -> dict
         sheet = getattr(it, "sheet_hint", "") or ""
         fields = _intent_fields_map(it)
         field_refs = _collect_placeholder_refs(fields)
+        # §占位符格式预检：LLM 常产 <label>_序号（尖括号只包 label，序号在括号外），
+        # 导致 _collect_placeholder_refs 解析出 label（无序号），与 produces 的 label_序号
+        # 不匹配 → 误报 unresolved_placeholder。根因是格式错，不是 producer 缺失。
+        # 检测 > 后接 _数字（或 _<word>）的模式，报格式问题给用户定位真根因。
+        _fmt_bad_re = re.compile(r">\s*_\w+")
+        for _col, _val in fields.items():
+            if not isinstance(_val, str):
+                continue
+            if _fmt_bad_re.search(_val):
+                issues.append({
+                    "type": "placeholder_format_mismatch",
+                    "idx": idx,
+                    "table": table,
+                    "sheet": sheet,
+                    "label": str(_val),
+                    "col": str(_col),
+                    "severity": "hard",
+                    "detail": (f"占位符格式错：'{_val}' 的尖括号只包了 label 主体，"
+                               f"序号/后缀在括号外。正确格式尖括号包整个 label 含序号，"
+                               f"如 <new_pet_evolve_id_1> 而非 <new_pet_evolve_id>_1。"
+                               f"这会导致 produces/consumes 字面不匹配→占位符悬空。"),
+                })
         consumes = {
             str(x).strip().strip("<>").strip()
             for x in (getattr(it, "consumes_labels", None) or [])
             if str(x).strip()
         }
         own = _intent_produces(it)
-        if getattr(it, "action", "") == "add" and not _has_real_field_value(fields):
+        if getattr(it, "action", "") == "add" and not _has_real_field_value(fields, own):
             issues.append({
                 "type": "empty_add",
                 "idx": idx,
@@ -642,6 +801,14 @@ def _step1_quality_report(intents: list, plan_graph: dict | None = None) -> dict
 
     if plan_graph is None:
         plan_graph = _build_step1_plan_graph(intents)
+    # 消解「结束选项误指自身 conv」的 self-referential 双向环：
+    # 清空 option 的 conv_id 字段（结束语义），从 cycle 列表移除不再 hard。
+    # 无论 plan_graph 传入还是新建都消解（execute 路径已预先消解，此处幂等无副作用）。
+    _rem, _rn = _resolve_self_referential_option_cycles(intents, plan_graph)
+    if _rn:
+        plan_graph = dict(plan_graph)
+        plan_graph["cycles"] = _rem
+        plan_graph["cycle_count"] = len(_rem)
     for cyc in plan_graph.get("cycles", []) or []:
         issues.append({
             "type": "producer_dependency_cycle",
@@ -721,8 +888,11 @@ def _build_step1_audit(intents: list,
             if label not in produced_labels:
                 unresolved_placeholder += 1
         field_total += len(fields)
+        # field_hit 统计非占位符实值字段数（producer 占位行实值字段少，hit_rate 低
+        # 是真实情况，不改），但 empty_add 计数与 _has_real_field_value 口径一致：
+        # produces 非空豁免（producer 占位行不判 empty_add），避免 producer 链路 hard
         field_hit += len(real_fields)
-        if getattr(it, "action", "") == "add" and not real_fields:
+        if getattr(it, "action", "") == "add" and not real_fields and not produces:
             empty_add += 1
         intent_rows.append({
             "idx": idx,
@@ -866,11 +1036,11 @@ def _build_step1_audit(intents: list,
 
 _SEGMENT_ACTION_RE = re.compile(
     r"(?:"
-    r"\u65b0\u589e|\u589e\u52a0|\u6dfb\u52a0|"
-    r"\u4fee\u6539|\u6539\u6210|\u6539\u4e3a|"
+    r"\u65b0\u589e|\u589e\u52a0|\u6dfb\u52a0|\u52a0|"
+    r"\u4fee\u6539|\u6539\u6210|\u6539\u4e3a|\u6539|\u8c03\u6574|\u8bbe\u7f6e|\u8bbe\u4e3a|\u586b|\u5199\u5165|"
     r"\u5220\u9664|\u53bb\u6389|\u79fb\u9664|\u6e05\u9664|"
     r"\u67e5\u770b|\u67e5\u8be2|"
-    r"\u914d\u4e00\u4e2a|\u5efa\u4e00\u4e2a|\u9020\u4e00\u4e2a"
+    r"\u914d\u4e00\u4e2a|\u914d\u4e00\u4e0b|\u914d|\u5efa\u4e00\u4e2a|\u5efa|\u9020\u4e00\u4e2a|\u751f\u6210|\u5237\u65b0|\u653e\u5728"
     r")"
 )
 _SEGMENT_ENUM_PREFIX_RE = re.compile(
@@ -888,7 +1058,13 @@ def _is_low_signal_uncovered_segment(seg_text: str, idx: int, total: int) -> boo
     text = str(seg_text or "").strip()
     if not text:
         return True
+    if idx == 0 and total > 1 and not _SEGMENT_STRUCTURED_MARKER_RE.search(text):
+        if re.search(r"(?:\u5e2e\u6211|\u51e0\u6761|\u51e0\u4e2a|\u4ee5\u4e0b|\u5982\u4e0b|\u8fd9\u4e9b)", text):
+            return True
     if _SEGMENT_ACTION_RE.search(text):
+        return False
+    if _SEGMENT_STRUCTURED_MARKER_RE.search(text) and re.search(
+            r"[\u4e00-\u9fffA-Za-z_]", text):
         return False
     if _SEGMENT_ENUM_PREFIX_RE.search(text):
         has_row_markers = bool(re.search(
@@ -996,9 +1172,7 @@ class Step1ParseSubAgent:
                     if seg_text and (seg_text in raw or raw in seg_text or field_covered):
                         covered.add(i)
                         seg_intent_count[i] = seg_intent_count.get(i, 0) + 1
-            import re as _re
-            # 动作数校验：段含的动作词数应 ≤ 产意图数
-            _action_re = _re.compile(r'(?:新增|增加|添加|修改|改成|改为|删除|去掉|移除|清除|查看|查询|配一个|建一个|造一个|给一个)')
+            _action_re = _SEGMENT_ACTION_RE
             for i, seg in enumerate(segments):
                 seg_text = (getattr(seg, "text", seg)
                             if not isinstance(seg, str) else seg).strip()
@@ -1056,6 +1230,12 @@ class Step1ParseSubAgent:
             except Exception:
                 pass
         plan_graph = _build_step1_plan_graph(intents)
+        # 消解「结束选项误指自身 conv」的 self-referential 双向环：
+        # 清空 option 的 conv_id（结束语义），从 plan_graph.cycles 移除，
+        # 使 quality_report + audit 共用消解后的 cycle 列表，口径一致
+        _rem, _rn = _resolve_self_referential_option_cycles(intents, plan_graph)
+        plan_graph["cycles"] = _rem
+        plan_graph["cycle_count"] = len(_rem)
         semantic_plan = _build_step1_semantic_plan(intents, plan_graph)
         _, semantic_compile_report = compile_semantic_plan_to_intents(semantic_plan)
         quality = _step1_quality_report(intents, plan_graph)

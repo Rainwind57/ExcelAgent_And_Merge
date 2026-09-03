@@ -9,12 +9,13 @@ CODEMAKER_EXECUTE_NO_LLM env 进程级突变）。
 开关：CODEMAKER_EXCEL_PIPELINE_V2 默认 ON 走 V2；=0 显式降级到旧 run() 6 步。
 """
 from .contracts import (
-    SSE, STEP1_PARSE, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
+    SSE, STEP1_PARSE, STEP1_5_CONTRACT, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
     STEP_ORDER, STEP_TITLES,
     StepContext, StepError, StepHardError, StepResult,
 )
 from .orchestrator import ExcelAgentPipeline, is_v2_enabled
 from .services import ExcelAgentServices
+from .contract_gate import ContractGate
 from .semantic_plan import (
     compile_semantic_plan_to_intents,
     compile_semantic_plan_to_operation_items,
@@ -27,10 +28,11 @@ from .step3_execute_subagent import Step3ExecuteSubAgent
 from .step4_conclude_subagent import Step4ConcludeSubAgent
 
 __all__ = [
-    "SSE", "STEP1_PARSE", "STEP2_VALIDATE", "STEP3_EXECUTE", "STEP4_CONCLUDE",
+    "SSE", "STEP1_PARSE", "STEP1_5_CONTRACT",
+    "STEP2_VALIDATE", "STEP3_EXECUTE", "STEP4_CONCLUDE",
     "STEP_ORDER", "STEP_TITLES",
     "StepContext", "StepError", "StepHardError", "StepResult",
-    "ExcelAgentPipeline", "is_v2_enabled", "ExcelAgentServices",
+    "ExcelAgentPipeline", "is_v2_enabled", "ExcelAgentServices", "ContractGate",
     "compile_semantic_plan_to_intents",
     "compile_semantic_plan_to_operation_items",
     "audit_plan_completeness",

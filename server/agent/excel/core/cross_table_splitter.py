@@ -85,18 +85,11 @@ CROSS_TABLE_TYPES = (
 
 
 def detect_cross_table_action(text: str, route: Optional[dict] = None) -> Optional[str]:
-    """检测文本中是否包含跨表操作关键词。
+    """检测文本中是否包含跨表操作关键词（正则兜底判定）。
 
-    §系统性重构 Phase1（LLM 主导，规则兜底）：route 由上层 LocatorAgent
-    ._llm_classify_route 产出的 LLM 分类结果（含 cross_table_type 字段）。
-    route.ok=True 且 cross_table_type 合法时直接采信 LLM 判断（含"该判定为
-    None"的情形——LLM 判它不是跨表操作也算数），跳过下方全部正则分支。
-    route=None 或 route.ok=False 或 cross_table_type 值非法（幻觉类型名）时
-    走原正则判定（不删规则，纯降级兜底）。
-
-    此举修复正则硬编码同义词覆盖不全的问题（如"放一个NPC"因"放"字不在
-    has_entity 动作词白名单漏判 npc_dialogue，掉进通用 LLM 拆分多层串行
-    兜底导致卡 3-4 分钟）。
+    §去硬路由：route 不再产 cross_table_type（删硬编码 14 类型 LLM 分类），
+    跨表类型判定一律走下方正则。route 参数保留兼容上游（含 action/is_complex），
+    本函数只看正则关键词。
 
     Returns:
         "evolve" - 进化链操作
@@ -107,11 +100,10 @@ def detect_cross_table_action(text: str, route: Optional[dict] = None) -> Option
         "npc_composite" - 复合 NPC（对话+选项+奖励+邮件 全链路）
         None - 无跨表操作
     """
-    if route and route.get("ok"):
-        ct = route.get("cross_table_type")
-        if ct is None or ct in CROSS_TABLE_TYPES:
-            return ct
-        # 非法类型名（LLM 幻觉）：忽略 route，走下方规则兜底
+    # §去硬路由：route 不再产 cross_table_type（删硬编码 14 类型分类），
+    # 跨表类型判定一律走下方正则兜底（规则保留降级，不依赖 LLM 路由字段）。
+    # route 参数保留兼容上游调用（含 action/is_complex），本函数只看
+    # 正则关键词判定跨表动作类型。
     # pet 灵兽新增（含资质/元素/进化）优先于 evolve（纯进化链）
     # "新增灵兽...进化路径"应走 pet 模式产出完整属性，evolve 仅处理"A进化成B"纯链
     if re.search(r'新增(?:一只|一个)?(?:' + '|'.join(_CT_KW['pet_types']) + r')', text):

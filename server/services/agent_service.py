@@ -2159,10 +2159,11 @@ class AgentService:
         # =0 降级到旧 run() 6 步路径，用 s1_parse/s2_partition/... 前缀映射。
         _V2 = os.getenv("CODEMAKER_EXCEL_PIPELINE_V2", "1") != "0"
         if _V2:
-            _STAGE_ORDER = ["step1_parse", "step2_validate", "step3_execute",
-                            "step4_conclude", "summary"]
+            _STAGE_ORDER = ["step1_parse", "step1_5_contract", "step2_validate",
+                            "step3_execute", "step4_conclude", "summary"]
             _STAGE_TITLES = {
                 "step1_parse": "Step1 解析",
+                "step1_5_contract": "Step1.5 契约校验",
                 "step2_validate": "Step2 校验",
                 "step3_execute": "Step3 执行",
                 "step4_conclude": "Step4 汇总",
@@ -2192,9 +2193,13 @@ class AgentService:
                 # step_id（"step1_parse"）作 phase 发 thinking，前端必须都能映射回
                 # 对应阶段，否则 step 卡片打不开（阶段气泡缺失）。
                 _sid_map = {
-                    "step1_parse": "step1_parse", "step2_validate": "step2_validate",
+                    "step1_parse": "step1_parse",
+                    "step1_5_contract": "step1_5_contract",
+                    "step2_validate": "step2_validate",
                     "step3_execute": "step3_execute", "step4_conclude": "step4_conclude",
-                    "Step1 解析": "step1_parse", "Step2 校验": "step2_validate",
+                    "Step1 解析": "step1_parse",
+                    "Step1.5 契约校验": "step1_5_contract",
+                    "Step2 校验": "step2_validate",
                     "Step3 执行": "step3_execute", "Step4 汇总": "step4_conclude",
                 }
                 if phase in _sid_map:
@@ -2239,8 +2244,8 @@ class AgentService:
             # V2 路径：event 自带 step_id（step1_parse 等），直通不翻译。
             # 仅 legacy step name 兜底映射到 V2 阶段（兼容旧 SubAgent 产出）。
             if _V2:
-                if sid0 in ("step1_parse", "step2_validate",
-                            "step3_execute", "step4_conclude"):
+                if sid0 in ("step1_parse", "step1_5_contract",
+                            "step2_validate", "step3_execute", "step4_conclude"):
                     return sid0
                 if name in ("resolve_table", "resolve_sheet", "match_locator",
                             "match_target", "locate_row", "read_cell"):

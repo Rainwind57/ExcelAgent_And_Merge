@@ -248,6 +248,10 @@ def test_step1_audit_report_aggregates_metrics(monkeypatch):
 
 def test_step1_audit_flags_empty_add_and_placeholder_resolution(monkeypatch):
     monkeypatch.delenv("CODEMAKER_STEP1_QUALITY_GATE", raising=False)
+    # 已挂 produces 的 producer 占位行（主键自增、字段全 FK 占位符）不再判
+    # empty_add：运行时 _capture_produced 从 result_rows 回填真实 PK。
+    # 原 empty fixture 用 produces=new_template_id 触发 empty_add，新语义下
+    # 需改成无 produces 的纯空壳才判 empty_add。
     empty = NLIntent(
         action="add", table_hint="mail", sheet_hint="MailTemplate", raw="add empty",
         extras={"fields": {"template_id": "<new_template_id>"}},
@@ -258,9 +262,35 @@ def test_step1_audit_flags_empty_add_and_placeholder_resolution(monkeypatch):
     result = step.execute(StepContext(session_id="s", user_text="x"))
 
     audit = result.artifacts["step1_audit"]
+    # 无 produces + fields 全占位符 → empty_add
     assert audit["metrics"]["empty_add_count"] == 1
     assert audit["metrics"]["field_hit_rate"] == 0.0
     assert audit["metrics"]["placeholder_resolved_rate"] == 0.0
+
+
+def test_step1_producer_placeholder_row_not_empty_add(monkeypatch):
+    """已挂 produces 的 producer 占位行豁免 empty_add。
+
+    Interaction 表 add：唯一字段 effect.data.3006.conv_id=<new_conv_id>（FK 占位符），
+    主键自增不填。原 _has_real_field_value 无视 produces 判 empty_add → producer
+    链路 hard 阻断 + 下游 forward_ref_broken 雪崩。新语义 produces 非空 → 豁免。
+    """
+    monkeypatch.delenv("CODEMAKER_STEP1_QUALITY_GATE", raising=False)
+    producer_row = NLIntent(
+        action="add", table_hint="interaction", sheet_hint="Interaction", raw="x",
+        extras={"fields": {"effect.data.3006.conv_id": "<new_interaction_conv_id_1>"},
+                "produces": "new_interaction_id_1"},
+    )
+    producer_row.produces_label = "new_interaction_id_1"
+    step = Step1ParseSubAgent()
+    step._parse_agent = _FakeParseAgent([producer_row])
+
+    result = step.execute(StepContext(session_id="s", user_text="x"))
+
+    audit = result.artifacts["step1_audit"]
+    assert audit["metrics"]["empty_add_count"] == 0
+    quality = result.artifacts["step1_quality"]
+    assert all(i["type"] != "empty_add" for i in quality["issues"])
 
 
 def test_step1_semantic_plan_does_not_treat_own_produces_as_dependency(monkeypatch):
@@ -533,3 +563,75 @@ def test_step4_summarizes_step1_or_step2_failures_when_step3_never_ran():
 
     assert result.ok is False
     assert "no candidate" in result.artifacts["summary"]
+
+
+def test_step1_resolves_self_referential_option_conv_cycle():
+    """结束选项误指自身 conv 形成的双向环应被消解，不再 hard。
+
+    场景：对话选项「是的」选完结束，LLM 把 option_function.data.1.conv_id
+    误填成所属 conv 的 <produces_label>（指回当前 conv），与 conv.options[0]
+    引用 option 形成 A(conv)↔B(option) 双向环 → producer_dependency_cycle hard。
+    本层清空 option 的 conv_id（结束语义），从 cycle 列表移除不再 hard。
+    """
+    monkeypatch = None  # 用 Step1ParseSubAgent._parse_agent 注入，不需 monkeypatch
+    from server.agent.excel.core.pipeline.step1_parse_subagent import (
+        _step1_quality_report, _build_step1_plan_graph,
+    )
+    conv = NLIntent(
+        action="add", table_hint="interaction", sheet_hint="InteractionConv",
+        raw="x",
+        extras={"fields": {
+                "conv_id": "<new_interaction_conv_id_1>",
+                "prompt_text": "要打造装备吗？",
+                "options[0]": "<new_interaction_conv_option_id_1>",
+            },
+            "produces": "new_interaction_conv_id_1"},
+    )
+    conv.produces_label = "new_interaction_conv_id_1"
+    option = NLIntent(
+        action="add", table_hint="interaction", sheet_hint="InteractionConvOption",
+        raw="x",
+        extras={"fields": {
+                "option_id": "<new_interaction_conv_option_id_1>",
+                "option_text": "是的",
+                # 误指：选完结束应留空，却指回所属 conv
+                "option_function.data.1.conv_id": "<new_interaction_conv_id_1>",
+            },
+            "produces": "new_interaction_conv_option_id_1",
+            "consumes": ["new_interaction_conv_id_1"]},
+    )
+    option.produces_label = "new_interaction_conv_option_id_1"
+    intents = [conv, option]
+    pg = _build_step1_plan_graph(intents)
+    assert pg["cycle_count"] >= 1  # 消解前确有环
+    report = _step1_quality_report(intents, pg)
+    # 消解后无 hard 环
+    assert all(i["type"] != "producer_dependency_cycle" for i in report["issues"])
+    # option 的 conv_id 被清空（结束语义）
+    assert option.extras["fields"]["option_function.data.1.conv_id"] == ""
+
+
+def test_step2_backfills_locator_from_set_fields_no_hard():
+    """set intent 无 target_field 但 fields 含定位列 → 回填 locator_field 不报 hard。
+
+    场景：LLM 把定位列 interaction_id 也塞进 fields 而非 locator_field →
+    fields≥2 无 target_field → set_target_missing hard。本层把 PK 列移到
+    locator_field+locator_value，剩修改列留 fields，不报 hard。
+    """
+    intent = NLIntent(
+        action="set", table_hint="interaction", sheet_hint="Interaction", raw="x",
+        extras={"fields": {
+            "interaction_id": "<new_interaction_id_1>",
+            "effect.data.3006.conv_id": "<new_interaction_conv_id_1>",
+        }},
+    )
+    # 无 target_field、无 locator_field → 触发回填路径
+    errors = Step2ValidateSubAgent._structural_errors([intent])
+    # 回填成功 → 不报 set_target_missing hard
+    assert not any(e.error_type == "set_target_missing" and e.is_hard for e in errors)
+    # locator_field 被回填为 interaction_id
+    assert intent.locator_field == "interaction_id"
+    assert intent.extras.get("locator_value") == "<new_interaction_id_1>"
+    # fields 只剩修改列
+    assert "interaction_id" not in intent.extras["fields"]
+    assert "effect.data.3006.conv_id" in intent.extras["fields"]

@@ -295,3 +295,80 @@ class TestNLIntentSupersetFields:
         # 新字段默认
         assert it.source == "nl"
         assert it.produces_label is None
+
+
+# ── 孤立空壳 add 过滤（strict） ───────────────────────────────
+
+
+def _mk_add(stem: str, sheet: str, fields: dict, produces: str = "",
+            consumes: list | None = None) -> NLIntent:
+    extras = {"fields": fields}
+    if produces:
+        extras["produces"] = produces
+    return NLIntent(action="add", table_hint=stem, sheet_hint=sheet,
+                    extras=extras, produces_label=produces or None,
+                    consumes_labels=list(consumes or []))
+
+
+class TestPartitionOrphanEmptyAdds:
+    """_partition_orphan_empty_adds 的 strict 过滤（serve 空壳污染根因）。
+
+    场景：serve 后端 LLM 面对大候选池给每个候选表幻觉产一条
+    add+produces 占位符空壳（fields 全空/数字索引键），第一道非 strict
+    过滤因 produces 豁免全放行 → Step3 写 N 个空行污染数据。
+    strict=True（引用编译后）过滤只删真孤立幻觉行，被消费 producer 保留。
+    """
+
+    def _partition(self, intents, strict=False):
+        pa = ParseAgent()
+        return pa._partition_orphan_empty_adds(intents, strict=strict)
+
+    def test_strict_drops_orphan_produces_shell(self):
+        """挂 produces 但字段全空、无 consumer → strict 删，非 strict 保留。"""
+        shell = _mk_add("reward", "Reward", {}, produces="new_reward_id")
+        real = _mk_add("mail", "GlobalMail",
+                       {"global_id": 21, "title": "月华庆典开启"})
+        # 非 strict：produces 豁免 → 保留
+        kept, dropped = self._partition([shell, real], strict=False)
+        assert len(kept) == 2 and not dropped
+        # strict：孤立 produces 空壳 → 删
+        kept, dropped = self._partition([shell, real], strict=True)
+        assert kept == [real] and dropped == [shell]
+
+    def test_strict_keeps_consumed_producer(self):
+        """被本批消费的 producer 占位行保留（FK 链前置，_capture_produced 回填）。"""
+        producer = _mk_add("mail", "MailTemplate",
+                           {"template_id": "<new_mailtemplate_id>"},
+                           produces="new_mailtemplate_id")
+        consumer = _mk_add("mail", "GlobalMail",
+                           {"template_id": "<new_mailtemplate_id>",
+                            "global_id": 21},
+                           consumes=["new_mailtemplate_id"])
+        kept, dropped = self._partition([producer, consumer], strict=True)
+        assert len(kept) == 2 and not dropped
+
+    def test_strict_keeps_real_fields(self):
+        """有实值字段的 add 即使挂 produces 也保留（非空壳）。"""
+        real = _mk_add("reward", "Reward", {"reward_id": 10001,
+                                            "name": "全服邮件奖励"},
+                       produces="new_reward_id_10001")
+        kept, dropped = self._partition([real], strict=True)
+        assert kept == [real] and not dropped
+
+    def test_strict_drops_numeric_index_key_shell(self):
+        """数字索引键（LLM 退化列号当键，如 {42:'10001'}）不算实值 → strict 删。
+
+        对应月华样例 serve 报告：reward {42: '10001'}、combat {6: 10001}、
+        residence_building {13: 10001} 三条幻觉空壳。
+        """
+        shell = _mk_add("reward", "Reward", {42: "10001"},
+                        produces="new_reward_id")
+        real = _mk_add("mail", "GlobalMail", {"global_id": 21})
+        kept, dropped = self._partition([shell, real], strict=True)
+        assert kept == [real] and dropped == [shell]
+
+    def test_single_intent_never_dropped(self):
+        """单条空 add 可能是用户单表新增（空 fields 交 Step2 补），不删。"""
+        solo = _mk_add("quest", "Quest", {}, produces="new_quest_id")
+        kept, dropped = self._partition([solo], strict=True)
+        assert kept == [solo] and not dropped

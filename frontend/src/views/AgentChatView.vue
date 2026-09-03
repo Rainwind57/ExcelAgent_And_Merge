@@ -1592,10 +1592,12 @@ export default {
         'Step1解析': 'Step1 解析', 'Step2分区': 'Step2 分区',
         'Step3计划': 'Step3 计划', 'Step4校验': 'Step4 校验',
         'Step5应用': 'Step5 应用', 'Step6汇总': 'Step6 汇总',
-        // V2 4-Step step_id
-        'step1_parse': '解析', 'step2_validate': '校验',
+        // V2 5-Step step_id
+        'step1_parse': '解析', 'step1_5_contract': '契约校验',
+        'step2_validate': '校验',
         'step3_execute': '执行', 'step4_conclude': '汇总',
-        'Step1 解析': '解析', 'Step2 校验': '校验',
+        'Step1 解析': '解析', 'Step1.5 契约校验': '契约校验',
+        'Step2 校验': '校验',
         'Step3 执行': '执行', 'Step4 汇总': '汇总',
       }
       return map[name] || name
@@ -1729,10 +1731,10 @@ export default {
     },
     stageNo(id) {
       if (id === 'summary') return ''
-      // V2 4-Step step_id（step1_parse 等）
-      const order4v2 = ['step1_parse', 'step2_validate', 'step3_execute', 'step4_conclude']
-      const i4v2 = order4v2.indexOf(id)
-      if (i4v2 >= 0) return i4v2 + 1
+      // V2 5-Step step_id（step1_parse / step1_5_contract / step2_validate 等）
+      const order5v2 = ['step1_parse', 'step1_5_contract', 'step2_validate', 'step3_execute', 'step4_conclude']
+      const i5v2 = order5v2.indexOf(id)
+      if (i5v2 >= 0) return i5v2 + 1
       // 旧 4-Step Loop（CODEMAKER_4STEP_LOOP=1）
       const order4 = ['s1_parse', 's2_validate', 's3_execute', 's4_summary']
       const order6 = ['s1_parse', 's2_partition', 's3_plan',
@@ -1745,12 +1747,12 @@ export default {
       return i6 >= 0 ? i6 + 1 : '-'
     },
     stageTotal(msg) {
-      // 优先读后端 stage_start total 字段（4-Step=4,6 步=6,解决 s1_parse 错位）
+      // 优先读后端 stage_start total 字段（5-Step=5,4 步=4,6 步=6）
       if (msg && msg.stage_total) return msg.stage_total
-      // fallback：基于 stage_id（V2/4-Step 专属 → 4,否则 6）
+      // fallback：基于 stage_id（V2 5-Step 专属 → 5,4-Step → 4,否则 6）
       const id = msg && msg.stage_id ? msg.stage_id : ''
-      const order4v2 = ['step1_parse', 'step2_validate', 'step3_execute', 'step4_conclude']
-      if (order4v2.includes(id) || ['s2_validate', 's3_execute', 's4_summary'].includes(id)) return 4
+      const order5v2 = ['step1_parse', 'step1_5_contract', 'step2_validate', 'step3_execute', 'step4_conclude']
+      if (order5v2.includes(id) || ['s2_validate', 's3_execute', 's4_summary'].includes(id)) return order5v2.length
       return 6
     },
     // 黑话脱敏：把技术字段名转成用户友好文案

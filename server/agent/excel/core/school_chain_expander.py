@@ -45,13 +45,9 @@ def is_school_new_chain(text: str, route: Optional[dict] = None) -> bool:
     需同时满足：动作词+门派 + (门派编号|门派类型) + 至少提到神通。
     modify/delete 单点操作不命中（无门派编号/类型这类整体建表信号）。
 
-    §系统性重构 Tier A：route（LocatorAgent._llm_classify_route 产出，含
-    domain_chain 字段）route.ok=True 时采信 LLM 判断，替代三词共现正则主判
-    （同义词覆盖不全，如"开宗立派"外的其他口语表述）。route 缺失/非法时走
-    原正则兜底，不回归现有行为。
+    §去硬路由：route 不再产 domain_chain（删硬编码领域链分类），门派全链
+    判定一律走下方正则兜底（三词共现），route 参数保留兼容上游调用。
     """
-    if route and route.get("ok"):
-        return route.get("domain_chain") == "school_new_chain"
     if not text:
         return False
     t = text

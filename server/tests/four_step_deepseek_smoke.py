@@ -197,6 +197,7 @@ def _match_expected(sandbox: Path, expected: list[dict[str, Any]]) -> dict[str, 
 
 
 def _build_pipeline(agent: TableAgent) -> ExcelAgentPipeline:
+    from agent.excel.core.pipeline import ContractGate
     services = ExcelAgentServices(legacy_agent=agent)
     step1 = Step1ParseSubAgent(
         parser=agent.parser,
@@ -205,8 +206,50 @@ def _build_pipeline(agent: TableAgent) -> ExcelAgentPipeline:
         locator_agent=agent._locator_agent,
         decompose_agent=agent._decompose_agent,
     )
+    # Step1.5 契约校验层：与 run_v2 同构（schema_getter 从 cli 读表头，
+    # call_llm_raw 复用 parser.client 通道），缺失会导致 orchestrator 拿到
+    # None step → 'NoneType' object has no attribute 'execute' 软错误污染 Step4。
+    _cli = agent.cli
+    _table_index: dict = {}
+
+    def _schema_getter(stem, sheet):
+        if _cli is None:
+            return [], []
+        try:
+            idx = _table_index
+            if not idx:
+                idx = {p.stem: p for p in _cli.list_tables()}
+                _table_index.update(idx)
+            p = idx.get(stem) or idx.get((stem or "").lower())
+            if p is None:
+                return [], []
+            return list(_cli.read_header(p, sheet) or []), \
+                list(_cli.read_type_row(p, sheet) or [])
+        except Exception:
+            return [], []
+
+    _call_llm = None
+    _parser = agent.parser
+    if _parser is not None and getattr(_parser, "client", None) is not None:
+        _client = _parser.client
+        _dir = getattr(_parser, "directory", "") or ""
+        _model = getattr(_parser, "model", "") or ""
+
+        def _call_llm(prompt, timeout=30):
+            try:
+                sr = _client.create_session(_dir, _model)
+                if not getattr(sr, "ok", False):
+                    return None
+                pr = _client.prompt(getattr(sr, "session_id", ""),
+                                    prompt, timeout=timeout, model=_model)
+                return getattr(pr, "response_text", "") or None
+            except Exception:
+                return None
+    step1_5 = ContractGate(schema_getter=_schema_getter, call_llm_raw=_call_llm,
+                           cli=_cli)
     return ExcelAgentPipeline(
         step1=step1,
+        step1_5=step1_5,
         step2=Step2ValidateSubAgent(services=services),
         step3=Step3ExecuteSubAgent(services=services),
         step4=Step4ConcludeSubAgent(services=services),

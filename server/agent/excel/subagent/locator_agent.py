@@ -366,27 +366,6 @@ class LocatorAgent(LLMSubAgent):
                              if self._is_fk_reference_column(c.stem, c.sheet, col))
                 if fk_cnt * 2 >= len(spec_cols):  # FK 占多数 → 附加上下文
                     c.confidence = 0.50
-        # 1b-2. §P0 spawn/entity 语义探测（须在 _expand_by_fk 之前：FK 扩表会先把
-        # spawn_quest_entity/entity_prefab 以 0.5/0.4 低置信度加进候选，导致本探测器
-        # 的"已存在"检查跳过、0.8 高置信度写不进去，cap 裁剪时被当弱命中挤出）。
-        # 任务链里"刷XX""放在space_id 坐标""新建一位点击后展开对话"等 spawn/实体语义，
-        # alias 层没有对应词（"实体/NPC"别名不覆盖"长老/叛徒"，spawn 表无别名），
-        # 且 FK 扩表只从"已在候选内"的表出发——entity_prefab 不在候选 → spawn 表
-        # 永远补不进来（school_quest_chain case0 因此漏 3 张链核心表）。通用语义词
-        # 补候选，confidence=0.8 稳过强命中档（≥0.80 必留）。纯召回，LLM 仍据
-        # schema 决定是否产 intent。
-        def _add_if_missing(stem: str, conf: float, level: str, matched: str) -> None:
-            if not any(c.stem == stem for c in candidates):
-                candidates.append(CandidateTable(
-                    stem=stem, confidence=conf, level=level, matched_term=matched))
-        # §去硬模板：spawn_hint 现由 LLM 直接给出具体表 stem（entity_prefab/
-        # spawn_world_entity/spawn_quest_entity 之一），不再走"抽象类别→固定
-        # 表名"映射字典，也不再有纯正则兜底分支——表匹配完全交给 LLM 判断。
-        # route 不可用（LLM 路由分类失败/关闭）时不补候选，交给下游 FK 扩表/
-        # decompose 主链路自行判断，不用正则猜测代替 LLM 决策。
-        _spawn_stem = route.get("spawn_hint") if (route and route.get("ok")) else None
-        if _spawn_stem in ("entity_prefab", "spawn_world_entity", "spawn_quest_entity"):
-            _add_if_missing(_spawn_stem, 0.8, "spawn_semantic", f"llm:{_spawn_stem}")
         # 1b. FK 关系驱动补表(relation graph 任一端 stem 在候选内则补对端)。
         #     把 alias 未直接命中但语义相关的表(如 interaction/spawn_world_entity)
         #     纳入候选,而不用 locate_all 全量列名匹配(会引入 40+ 噪声表膨胀 DecomposeAgent 上下文)。
@@ -395,7 +374,14 @@ class LocatorAgent(LLMSubAgent):
         #     pet_refine/pet_evolve 等列名噪声表撑到 ≥2 误触扩表变跨表）。
         _rule_cands = [c for c in candidates
                        if getattr(c, "level", "") not in ("column_extract", "substring")]
-        if complex_input or len(_rule_cands) >= 2:
+        _pre_expand_fk_edges = self._collect_fk_edges(candidates)
+        _has_candidate_fk = len(_pre_expand_fk_edges) > 0
+        _allow_fk_expand = complex_input or len(_rule_cands) >= 2
+        if _has_candidate_fk and ambiguous:
+            self.add_thinking("定位",
+                f"歧义候选已有 {len(_pre_expand_fk_edges)} 条 FK 边，保留多候选，"
+                f"但不因 FK 单独升级复杂任务")
+        if _allow_fk_expand:
             for c in self._expand_by_fk(candidates, complex_input):
                 if not any(x.stem == c.stem for x in candidates):
                     candidates.append(c)
@@ -833,11 +819,11 @@ class LocatorAgent(LLMSubAgent):
         if not self.parser or not candidates:
             return None
         desc = "\n".join(
-            f"- {c.stem}（匹配到「{c.matched_term}」，来源:{c.level}，置信度:{c.confidence:.2f}）"
+            f"- {c.stem}/{c.sheet or '*'}（匹配到「{c.matched_term}」，来源:{c.level}，置信度:{c.confidence:.2f}）"
             for c in candidates)
-        prompt = f"""你是配表指令的候选表复核员。下面是规则/列名反查召回的候选表，
-里面混有"指令真正涉及、需要产出数据"的表和"仅因同名列/外键旁证被误召回的噪声表"
-（如 model_id 这种跨表共享列会误召回不相关的表）。
+        prompt = f"""你是 Step1 表定位复核员。下面是规则/列名/FK 召回的候选表，
+里面混有"指令真正涉及、需要产出数据"的表和"仅因同名列/外键旁证被误召回的噪声表"。
+你的目标是提升 JSON 质量：宁可少选噪声表，也不要把不相关表送入后续拆解。
 
 ## 用户指令
 {text}
@@ -845,13 +831,15 @@ class LocatorAgent(LLMSubAgent):
 ## 候选表列表
 {desc}
 
-## 任务
-逐个判断该表是否是指令真正涉及、需要产出数据的表（而非仅因共享列名/间接FK
-关联被误召回的噪声表）。
+## 判断标准
+- 选中：原文明确要新增/修改/删除/查询该表对应业务对象，或该表是本批新行必须写入的直接 FK 依赖。
+- 不选：只因同名列、id、model_id、类型、名称、描述、坐标等旁证命中，但原文没有要求写它。
+- 如果同一句包含多个业务对象，分别保留各自最直接的表；不要只保留第一个。
+- 表名相近时，优先保留动作主语最直接、专有列命中最多、sheet 已精确命中的候选。
 
 ## 输出格式（只输出 JSON，不要 markdown 代码块，不要解释）
-{{"relevant_stems": ["stem1", "stem2", ...]}}
-只列出你确认真正涉及的表 stem，不确定的不列（宁可漏列，不可错列噪声表）。"""
+{{"relevant_stems": ["stem1", "stem2"], "dropped_stems": ["noise1"], "reason": "一句话说明"}}
+不确定的不列入 relevant_stems。"""
         # §实测：复杂输入候选多(12张)时该复核 prompt 常在 15s 内超时（描述文本
         # 变长），白耗一次调用却拿不到结果。适度放宽到 25s（仍远小于 decompose
         # 的 120s），换取真正拿到复核结果、降权更准，而不是靠碰运气。
@@ -862,7 +850,10 @@ class LocatorAgent(LLMSubAgent):
         if not isinstance(stems, list):
             return None
         valid = {c.stem for c in candidates}
-        result = {s for s in stems if isinstance(s, str) and s in valid}
+        # LLM 可能返回 "stem" 或 "stem/Sheet" 两种格式，统一取 "/" 前的 stem 部分比对，
+        # 否则 "pet/Pet" 与 valid 里的 "pet" 不匹配，收窄失效，噪声表直达拆解阶段。
+        result = {s.split("/", 1)[0] for s in stems
+                  if isinstance(s, str) and s.split("/", 1)[0] in valid}
         if result:
             self.add_thinking("定位",
                 f"LLM 候选复核：{len(result)}/{len(candidates)} 个候选判定真正涉及"
@@ -870,105 +861,41 @@ class LocatorAgent(LLMSubAgent):
         return result
 
     def _llm_classify_route(self, text: str) -> Optional[dict]:
-        """LLM 一次分类调用产出路由信息，替代多处硬编码正则主判（规则保留兜底）。
+        """LLM 一次分类调用产出路由信息（action/is_complex）。
 
-        §系统性重构 Phase1：detect_cross_table_action(跨表类型)/_detect_action
-        (动作类型)/_is_complex_input(复杂度)/spawn 语义探测 四类"分类判断"
-        原全靠关键词/正则名单主判，同义词、口语化表述、语序变化即漏判
-        （典型案例："放一个引导NPC...对话...选项" 因"放"字不在动作词白名单，
-        漏判 npc_dialogue 跨表模板，掉进通用 LLM 拆分的多层串行兜底，卡 3-4
-        分钟）。改为一次轻量 LLM 分类调用产出结构化路由结果，由调用方
-        （ParseAgent.parse 入口）算一次后透传给 split_multi_intent/locate，
-        四处判定统一采信；LLM 失败/超时/返回不合法 → 返回 None，调用方各处
-        原样回落到正则判定（不删规则代码，纯降级路径，不回归现有行为）。
-
-        §系统性重构 Tier A：新增第5项 domain_chain——确定性领域链展开器
-        （school_chain_expander 等，命中即 0 LLM 全链展开）原判定门也纯正则
-        （is_school_new_chain 三词共现），同样有同义词覆盖不全的风险。
-        随分类结果一起产出，供 ParseAgent._try_domain_chain 采信。
+        辅助 split_multi_intent/locate 分段与复杂度判断。LLM 失败/超时/返回
+        不合法 → 返回 None，调用方各处原样回落到正则判定（规则保留降级路径）。
 
         Returns:
-            dict{"ok": True, "cross_table_type": str|None, "action": str,
-                 "is_complex": bool, "spawn_hint": str|None,
-                 "domain_chain": str|None} 或 None（分类失败）。
+            dict{"ok": True, "action": str, "is_complex": bool} 或 None（分类失败）。
         """
         if not self.parser:
             return None
-        from ..core.cross_table_splitter import CROSS_TABLE_TYPES
         prompt = f"""你是配表指令路由分类器。分析用户指令，输出 JSON 分类结果。
 
 ## 用户指令
 {text}
 
-## 分类任务（五项，每项独立判断，不要遗漏任何一项）
+## 分类任务（两项，每项独立判断）
 
-1. cross_table_type：指令是否命中以下"单指令多表联动"任务类型之一？
-   - pet：新增灵兽/宠物/召唤兽（含资质/元素/进化属性）
-   - evolve：纯进化链（A进化成B）
-   - npc_dialogue：新增NPC + 点击弹出对话 + 选项（无奖励/邮件）
-   - npc_teleport：新增NPC + 传送/坐标传送
-   - npc_combat：新增NPC + 战斗/擂台/挑战
-   - npc_reward：新增NPC + 奖励/获得
-   - npc_composite：新增NPC + 对话 + 选项 + 奖励 + 邮件 全链路
-   - item：新增武器/药品/法宝/装备等道具
-   - mail：新增邮件模板/全服邮件
-   - quest：新增支线/主线/日常任务
-   - school_ability_spell：新增神通/技能组/法术联动
-   - combat_reward：战斗+奖励包+战场联动
-   - residence_building：洞府建筑类型/种田/炼丹房联动
-   - null：不属于以上任何跨表联动类型（单表操作）
-   注意："放一个NPC""配一个NPC""来一个NPC"等口语表述只要语义上是"新增NPC"
-   都算命中，不要因为动词不是"新增/添加"字面词就判 null。
+1. action：这条指令的主操作是 get(查询)/set(修改)/add(新增)/delete(删除) 中的哪个？
 
-2. action：这条指令的主操作是 get(查询)/set(修改)/add(新增)/delete(删除) 中的哪个？
-   若 cross_table_type 非 null，action 固定填 "add"。
-
-3. is_complex：指令是否涉及对话/选项/支线任务/多个id引用/多个引号命名实体等
-   复杂多表形态（true/false）。
-
-4. spawn_hint：指令是否是"在场景里刷怪/生成实体/放置NPC模型"这类生成实体语义？
-   若是，直接给出应该涉及的具体表 stem（可能是以下之一或多个，也可能不涉及）：
-   - "entity_prefab"：新建一个可交互实体（NPC/怪物模型，通常伴随对话）
-   - "spawn_world_entity"：把实体放置到具体场景坐标（刷怪/放置在 space_id+坐标）
-   - "spawn_quest_entity"：任务专属的刷新实体（跟随任务生成/消失）
-   不涉及生成实体语义则填 null。
-
-5. domain_chain：指令是否命中以下"确定性全链模板"之一？
-   - "school_new_chain"：新建门派全链（门派 + 门派编号/类型 + 神通[+灵根映射/
-     门派天赋/邮件]，一次性建门派+神通+神通等级+灵根+天赋+邮件多表）
-   - null：不命中（含"仅修改/删除已有门派神通"这类非新建场景）
+2. is_complex：指令是否涉及多张表、多对象、多 id 引用、前后依赖、对话/选项/任务链/刷新点等复杂形态（true/false）。
 
 ## 输出格式（只输出 JSON，不要 markdown 代码块，不要解释）
-{{"cross_table_type": "npc_dialogue 或其他类型或 null", "action": "add",
- "is_complex": true, "spawn_hint": "entity_prefab 或其他表名或 null",
- "domain_chain": "school_new_chain 或 null"}}"""
+{{"action": "add 或 get 或 set 或 delete", "is_complex": true}}"""
         data = self._call_llm(prompt, timeout=15)
         if not isinstance(data, dict):
             return None
-        ct = data.get("cross_table_type")
-        ct = ct.strip() if isinstance(ct, str) else None
-        if ct and ct.lower() in ("null", "none", ""):
-            ct = None
-        if ct is not None and ct not in CROSS_TABLE_TYPES:
-            # 幻觉类型名，不可信，整体判定失败，调用方回落规则兜底
-            return None
         action = data.get("action")
         if action not in ("get", "set", "add", "delete", "unknown"):
-            action = "add" if ct else "unknown"
-        spawn_hint = data.get("spawn_hint")
-        spawn_hint = spawn_hint if spawn_hint in (
-            "entity_prefab", "spawn_world_entity", "spawn_quest_entity") else None
-        domain_chain = data.get("domain_chain")
-        domain_chain = domain_chain if domain_chain in ("school_new_chain",) else None
+            action = "unknown"
         route = {
-            "ok": True, "cross_table_type": ct, "action": action,
-            "is_complex": bool(data.get("is_complex")), "spawn_hint": spawn_hint,
-            "domain_chain": domain_chain,
+            "ok": True, "action": action,
+            "is_complex": bool(data.get("is_complex")),
         }
         self.add_thinking("定位",
-            f"LLM 路由分类：cross_table_type={ct or 'null'}, action={action}, "
-            f"is_complex={route['is_complex']}, spawn_hint={spawn_hint or 'null'}, "
-            f"domain_chain={domain_chain or 'null'}")
+            f"LLM 路由分类：action={action}, is_complex={route['is_complex']}")
         return route
 
     def _llm_resolve(self, text: str, candidates: list[str] = None) -> Optional[str]:

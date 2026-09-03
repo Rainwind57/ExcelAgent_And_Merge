@@ -21,7 +21,7 @@ import time
 from typing import Any, Iterator, Optional
 
 from .contracts import (
-    SSE, STEP1_PARSE, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
+    SSE, STEP1_PARSE, STEP1_5_CONTRACT, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
     STEP_ORDER, STEP_TITLES, StepContext, StepError, StepHardError, StepResult,
 )
 
@@ -31,11 +31,10 @@ logger = logging.getLogger(__name__)
 class ExcelAgentPipeline:
     """4-Step 固定流水线。run() 从千行神函数收缩为 ~80 行循环。"""
 
-    def __init__(self, step1=None, step2=None, step3=None, step4=None,
+    def __init__(self, step1=None, step1_5=None, step2=None, step3=None, step4=None,
                  legacy_agent: Any = None):
-        # V2 四 step 由 run_v2 实例化时全部注入（agent.py:4362-4365），均非空。
-        # 原 _run_legacy_step 兜底（step 为 None 时）已删——迁移完成，无死代码。
         self._step1 = step1
+        self._step1_5 = step1_5
         self._step2 = step2
         self._step3 = step3
         self._step4 = step4
@@ -67,6 +66,7 @@ class ExcelAgentPipeline:
                         metrics={"dur_ms": int((time.time() - t0) * 1000)})
                     ctx.set_result(e.step_id, result)
                     yield SSE.stage_end(e.step_id, result)
+                    yield from self._emit_skipped_until_final(ctx, e.step_id)
                     yield from self._final(ctx)
                     return
                 except Exception as e:  # noqa: BLE001
@@ -96,6 +96,7 @@ class ExcelAgentPipeline:
                 ctx.set_result(step_id, result)
                 yield SSE.stage_end(step_id, result)
                 if result.has_hard_error():
+                    yield from self._emit_skipped_until_final(ctx, step_id)
                     yield from self._final(ctx)
                     return
             yield from self._final(ctx)
@@ -104,8 +105,40 @@ class ExcelAgentPipeline:
             yield from self._final(ctx)
 
     def _get_step(self, step_id: str):
-        return {STEP1_PARSE: self._step1, STEP2_VALIDATE: self._step2,
-                STEP3_EXECUTE: self._step3, STEP4_CONCLUDE: self._step4}.get(step_id)
+        return {STEP1_PARSE: self._step1, STEP1_5_CONTRACT: self._step1_5,
+                STEP2_VALIDATE: self._step2, STEP3_EXECUTE: self._step3,
+                STEP4_CONCLUDE: self._step4}.get(step_id)
+
+    def _emit_skipped_until_final(self, ctx: StepContext, failed_step_id: str) -> Iterator[dict]:
+        """Hard stop still emits skipped stage cards before final summary.
+
+        UI otherwise jumps from failed Step1 directly to summary, making users think
+        pipeline shape is broken. These synthetic results make Step2/Step3 visible as
+        skipped, while Step4 remains the real final aggregation.
+        """
+        try:
+            failed_idx = STEP_ORDER.index(failed_step_id)
+        except ValueError:
+            failed_idx = -1
+        for step_id in STEP_ORDER[failed_idx + 1:]:
+            if step_id == STEP4_CONCLUDE or step_id in ctx.results:
+                continue
+            r = StepResult(
+                step_id=step_id,
+                ok=False,
+                errors=[StepError(
+                    step_id=step_id,
+                    error_type="skipped_due_to_prior_hard_error",
+                    message="前序步骤硬错误，本步骤跳过",
+                    root_cause=f"{failed_step_id} failed with hard error",
+                    is_hard=False,
+                )],
+                metrics={"dur_ms": 0},
+                artifacts={"skipped": True, "skipped_after": failed_step_id},
+            )
+            ctx.set_result(step_id, r)
+            yield SSE.stage_start(step_id, total=len(STEP_ORDER))
+            yield SSE.stage_end(step_id, r)
 
     def _final(self, ctx: StepContext) -> Iterator[dict]:
         """统一出口：仍跑 Step4 汇总聚合（即使中途硬停）。

@@ -594,8 +594,15 @@ class DecomposeAgent(LLMSubAgent):
                         all_intents = seg_intents
             except Exception:  # noqa: BLE001
                 logger.debug("分段单 prompt 兜底失败", exc_info=True)
+        # 单对象输入：多条同表意图通常是把字段误拆成行，先合并再进入补漏/自检。
+        if all_intents and not self._should_expand_missing_tables(text):
+            before_merge = len(all_intents)
+            all_intents = self._coalesce_single_object_intents(all_intents)
+            if len(all_intents) != before_merge:
+                self.add_thinking("细分",
+                    f"单对象字段合并：{before_merge}→{len(all_intents)} 条意图")
         # §缺表覆盖对账 + 定向单表重拆补漏（Step1 兜底，纯增量，missing 空则零开销）
-        if all_intents and not self._chain_circuit_open():
+        if all_intents and not self._chain_circuit_open() and self._should_expand_missing_tables(text):
             all_intents = self._backfill_missing(
                 text, all_intents, candidates, locator_result.fk_edges,
                 fk_block, per_to, column_signal)
@@ -603,7 +610,7 @@ class DecomposeAgent(LLMSubAgent):
         # 交给 LLM 自己看着候选池+FK图复核一遍（受 Step1 LLM 预算门控，预算耗尽
         # 自动跳过，不额外叠调用）。默认开，CODEMAKER_DECOMPOSE_TABLE_SELFCHECK=0
         # 关闭。
-        if all_intents and not self._chain_circuit_open():
+        if all_intents and not self._chain_circuit_open() and self._should_expand_missing_tables(text):
             all_intents = self._llm_verify_table_coverage(
                 text, all_intents, candidates, locator_result.fk_edges, per_to)
         # §Step1 解析层健康自检 + 保守回填（dict 残留/consumes 标签悬空）：
@@ -632,6 +639,51 @@ class DecomposeAgent(LLMSubAgent):
                 "off_candidate": _extra,
                 "total": len(all_intents)})
         return all_intents
+
+    def _should_expand_missing_tables(self, text: str) -> bool:
+        """是否允许 Step1 缺表补漏/覆盖自检扩意图。"""
+        t = str(text or "")
+        if not t.strip():
+            return False
+        multi_markers = (
+            "同时", "然后", "接着", "之后", "并且", "另外", "以及", "还有",
+            "再配", "再建", "再加", "分别", "每个", "各自", "多个", "若干",
+            "两条", "三条", "四条", "两种", "三种", "两个", "三个", "四个",
+            "第一", "第二", "第三", "选项", "奖励", "战斗", "对话", "任务链",
+        )
+        if any(m in t for m in multi_markers):
+            return True
+        if re.search(r"(?:\d+|[一二三四五六七八九十])[\.、)]\s", t):
+            return True
+        return False
+
+    def _coalesce_single_object_intents(self, intents: list) -> list:
+        """单对象场景：把同表同 sheet 同 action 的字段碎片合成一条。"""
+        if not intents:
+            return []
+        out: list = []
+        by_key: dict[tuple, object] = {}
+        for it in intents:
+            key = (
+                str(getattr(it, "table_hint", "") or "").lower(),
+                str(getattr(it, "sheet_hint", "") or "").lower(),
+                str(getattr(it, "action", "") or "").lower(),
+            )
+            if key not in by_key:
+                by_key[key] = it
+                out.append(it)
+                continue
+            base = by_key[key]
+            bf = getattr(base, "fields", None)
+            nf = getattr(it, "fields", None)
+            if isinstance(bf, dict) and isinstance(nf, dict):
+                for k, v in nf.items():
+                    if k not in bf or str(bf.get(k, "")).strip() == "":
+                        bf[k] = v
+            for attr in ("locator_field", "locator_value"):
+                if not getattr(base, attr, None) and getattr(it, attr, None):
+                    setattr(base, attr, getattr(it, attr))
+        return out
 
     def _try_domain_expander(self, text: str) -> list:
         """领域链型确定性展开器分发。命中返回 SplitIntent[]，否则 []。
@@ -1171,7 +1223,15 @@ class DecomposeAgent(LLMSubAgent):
                 if not stem or stem.lower() in existing_stems:
                     continue
                 if _fb_action in {"set", "delete", "get"} and not _stem_mentioned(stem):
-                    continue
+                    # §get 意图中文表名兜底：中文输入用"灵兽"而非英文 stem "pet"，
+                    # _stem_mentioned 按 stem 英文名匹配会误跳。候选若是 alias 级
+                    # 强命中（matched_term 是中文别名如"灵兽"），视为已提及，不跳过。
+                    _mt = str(getattr(cand, "matched_term", "") or "")
+                    _lvl = (getattr(cand, "level", "") or "").lower()
+                    if _mt and (_mt in text or _lvl in ("alias", "explicit_table_name")):
+                        pass  # 强命中候选，不跳过
+                    else:
+                        continue
                 _lvl = (getattr(cand, "level", "") or "").lower()
                 if _lvl in _WEAK_LEVELS and stem.lower() not in _producer_stems:
                     continue
@@ -1243,6 +1303,27 @@ class DecomposeAgent(LLMSubAgent):
                 # fields 全空 且 非 FK 被依赖前置 → noise 候选，不产空壳 intent
                 if _fb_action == "add" and not fields and stem.lower() not in _producer_stems:
                     continue
+                # §get 意图 locator 补全：查询指令若无 id=数字，按"名称"列定位。
+                # 从 text 提取实体名（引号内内容，或 matched_term 之后的中文词），
+                # 填 locator_field=名称/name, locator_value=实体名。避免 LLM 自由
+                # 编造 pet_grade 这类幻觉列作过滤条件。
+                if _fb_action == "get" and not cand_loc_field:
+                    _entity = None
+                    # 优先：引号内的内容
+                    _q = _re.search(r"['\"\u201c\u2018]([^'\"\u201d\u2019]+)['\"\u201d\u2019]", text)
+                    if _q:
+                        _entity = _q.group(1).strip()
+                    # 次选：matched_term（如"灵兽"）之后紧邻的中文名词
+                    if not _entity:
+                        _mt = str(getattr(cand, "matched_term", "") or "")
+                        if _mt and _mt in text:
+                            _after = text[text.index(_mt) + len(_mt):]
+                            _em = _re.search(r"^[\s,，的]*(?P<n>[\u4e00-\u9fff]{1,8})", _after)
+                            if _em:
+                                _entity = _em.group("n").strip()
+                    if _entity:
+                        cand_loc_field = "名称"
+                        _loc_value = _entity
                 all_fb.append(SI(
                     text=text, table_hint=stem,
                     sheet_hint=getattr(cand, "sheet", "") or "",
@@ -3042,7 +3123,8 @@ class DecomposeAgent(LLMSubAgent):
                 "\"consumes\":{列名:\"produces_label\"},\"locator_field\":\"\",\"locator_value\":\"\"," 
                 "\"locator_fields\":[],\"locator_values\":[]}。\n"
                 "硬规则：1) fields 键必须来自 schema 的 row1 或 row2 冒号前列名；"
-                "2) 每个明确新增/修改/删除/查询动作都要产一条；枚举项、选项、等级、奖励日等要逐行展开；"
+                "2) 一个新增/修改动作默认只产一条意图；名称、类型、描述、时间、数值等是同一行字段，必须合并进同一个 fields，绝不能拆成多条意图；"
+                "只有原文明确说多个对象/多行（如多个活动、三条奖励、两个选项、第一条/第二条）时才逐行展开；"
                 "3) 新增主键未给具体值时，主键列填 <produces_label>，并设置 produces；"
                 "4) 引用本批新行时字段值填 <同名produces_label>，consumes 必须同名；"
                 "5) 同一 sheet 多行互引用必须使用唯一标签（按实体语义命名，如 <new_<stem>_id>_<序号>）；"
@@ -3103,14 +3185,14 @@ class DecomposeAgent(LLMSubAgent):
             "此时 locator_field/locator_value 留空。单主键表仍用 locator_field/locator_value 单值。\n"
             "- ⚠ 不要调用任何工具，不要读取/搜索/打开任何文件(含上述 stem 对应的 xlsx)，"
             "严格仅基于本 prompt 文本中已给出的 schema 文本作答\n"
-            "- ⚠【硬约束】指令中每一个明确动作(新增/修改/删除/查询)都必须产出至少1条意图。"
-            "宁可产保守意图(仅填指令明确给的列,其余列留空待 Step2 校验补)也不要漏。"
-            "若指令含「同时/然后/并且/再配」等连接,每个子句都要产对应意图,不可合并丢弃。\n"
-            "- ⚠【列表计数硬约束】指令出现明确数量或枚举项（如“三条/两个/四个”、"
-            "第一条/第二条/第三条、选项1/选项2、1级/2级、A/B/C）时，"
-            "必须先按这些项目建立行清单：同一表同一 sheet 的每个枚举项目各产一条 add，"
-            "跨表子配置也按项目数展开。输出条数必须覆盖所有枚举项目，不允许只输出最后一项"
-            "或把多项合并进一条 fields。\n"
+            "- ⚠【动作边界硬约束】一个新增/修改动作默认对应一个业务对象一条意图；名称、类型、描述、时间、数值等只是该对象字段，必须合并在同一 fields 中。"
+            "例如「新增一个活动，名称春节活动，类型节日」只能产 1 条 activity add，不能把名称/类型拆成多条意图。"
+            "只有原文明确出现多个对象/多行标记（多个活动、三条奖励、两个选项、第一条/第二条等）才逐行展开。"
+            "若只是逗号分隔字段，绝不展开成多意图。\n"
+            "- ⚠【列表展开硬约束】只有出现明确多行对象标记才展开：多个/若干/三条/两个/每个/各自/分别/第一条/第二条/选项1/选项2。"
+            "字段值枚举不是多行标记；活动类型=节日、名称=春节活动、品质=紫色、等级=1 这类字段值只写入当前意图 fields，不能各产一条。"
+            "同一表同一 sheet 的每个明确多行项目各产一条 add，跨表子配置也按项目数展开。"
+            "输出条数必须覆盖所有明确多行项目，不允许只输出最后一项或把多行项目合并进一条 fields。\n"
             "- fields 键必须用上面 schema 的真实表头列名(row1 显示名)。"
             "**若 schema 列含点分规范键（括号内为 a.b.C 形式，如「体力资质（aptitude_base.StrPotCon）」），"
             "fields 键用点分规范键（aptitude_base.StrPotCon）而非中文显示名**，"

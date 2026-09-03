@@ -169,12 +169,13 @@ class TestProducesLabelSheetAwareP11:
 
 
 class TestAddKeysSetdefaultP10:
-    def test_same_stem_sheet_first_producer_wins(self, monkeypatch):
-        """同 (stem,sheet) 两 add → 首个注册为 producer 候选（setdefault）。
+    def test_same_stem_sheet_both_producers_registered(self, monkeypatch):
+        """同 (stem,sheet) 两 add → 两条都注册为 producer 候选，序号化 label。
 
-        原实现 `add_keys[key] = i` 后写覆盖前写 → 第二 add 注册,
-        第一个 add 的 produces 标注丢失。setdefault 保留首个,与
-        _suppress_over_produce「一表一 op 契约」语义一致。
+        P10b 修复：旧 P10 setdefault 只保留首个 producer → 同表多行（对话树多
+        conv/option）第二条起 produces 缺失 → forward_ref 雪崩 + 共享 label 在
+        DFS 上转圈判假环。改为全部注册 + 序号化 label（_1/_2/...），让
+        _resolve_ordinal_placeholders 按 ordinal 兜底解析 LLM 逐行占位符。
         """
         rels = [
             TableRelation("consumer.xlsx", "C", "pet_id",
@@ -185,10 +186,13 @@ class TestAddKeysSetdefaultP10:
         second = _make_intent("pet", "Pet", fields={"id": 200, "name": "second"})
         consumer = _make_intent("consumer", "C", fields={"pet_id": ""})
         out = infer_produces_consumes([first, second, consumer])
-        # 首个 add 拿到 produces 标签
-        assert "produces" in out[0].extras
-        # consumer 的 pet_id 占位符指向首个 producer 的显式 PK（100,字面代换）
-        assert out[2].extras["fields"]["pet_id"] == 100
+        # 两条 add 都挂序号化 produces
+        assert out[0].extras["produces"].endswith("_1"), out[0].extras["produces"]
+        assert out[1].extras["produces"].endswith("_2"), out[1].extras["produces"]
+        assert out[0].extras["produces"] != out[1].extras["produces"]
+        # 多 producer 时 consumer 空白 FK 不自动补（无法决定指向哪个，
+        # 交 LLM 连线 + ordinal 兜底）。原 P10 首条 wins + 字面代换 100 的行为移除。
+        assert out[2].extras["fields"]["pet_id"] == ""
 
     def test_different_sheet_both_registered(self, monkeypatch):
         """不同 sheet 的两 add → 都注册为 producer（无碰撞）。"""

@@ -327,7 +327,7 @@ def split_multi_intent(text: str, route: Optional[dict] = None) -> list[SplitSeg
 
     Args:
         text: 用户自然语言输入（可能含多个操作指令）
-        route: 可选，整句 LLM 路由分类结果（cross_table_type/action 等）
+        route: 可选，整句 LLM 路由分类结果（action/is_complex 等）
 
     Returns:
         SplitSegment 列表。单指令或跨表模式时长度为 1。
