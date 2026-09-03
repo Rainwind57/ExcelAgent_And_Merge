@@ -525,7 +525,8 @@ class ParseAgent:
         if do_backfill and locator_result and split_intents:
             try:
                 import os as _os
-                _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+                # §放宽：40→75，服务端真实响应普遍偏慢，40s 太紧一直 timeout。
+                _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
                 _da = self._decompose_agent
                 if _da is not None:
                     _fk_block = _da._build_fk_block(locator_result.fk_edges)
@@ -597,7 +598,7 @@ class ParseAgent:
             _da2 = self._decompose_agent
             if not skip_llm_complete and _da2 is not None and _da2.parser is not None:
                 import os as _os
-                _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+                _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
                 nl_intents = _da2._llm_complete_fields(text, nl_intents, _per_to)
         except Exception:  # noqa: BLE001
             logger.warning("ParseAgent 自检补漏失败,保持原产出", exc_info=True)
@@ -3665,7 +3666,7 @@ class ParseAgent:
                         f"{len(labels)} 条记录还没配出来，请只补出这些缺失的记录，"
                         f"已经配置过的行不要重复产出。")
                 fk_block = self._decompose_agent._build_fk_block(fk_edges)
-                per_to = int(os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+                per_to = int(os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
                 result = self._decompose_agent._decompose_single_prompt(
                     text + hint, [cand], fk_block, per_to)
                 new_split = result[0] if isinstance(result, tuple) else result

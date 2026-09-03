@@ -1,11 +1,13 @@
-"""multi-table-orchestration 单测（capability: cross-table-templates + cross-table-transaction + relation-graph-consumption）。
+"""multi-table-orchestration 单测（capability: cross-table-transaction + relation-graph-consumption）。
 
 验证：
-- D1 对话 NPC 生成 6 类意图 + 引用链 Base→interaction→conv
-- D2 传送/战斗/奖励 NPC 命中拆表 + 正确意图类型
-- D3 produces 标注完整 + spawn_id 独立
+- D2 跨表模式检测信号（detect_cross_table_action）
 - D4 跨表事务：全成功提交；中间失败标记 dirty_data + failed_tables
 - D5 RelationGraph.get_related_tables + 运行时 merge
+
+§去硬模板：原 D1/D3 段测试 cross_table_splitter 的 11 个硬编码 _build_*_intents
+模板函数已随生产代码整体移除，相关测试一并删除。detect_cross_table_action 本身
+（跨表模式检测信号，非模板生成）保留，其测试继续保留于 D2 段。
 """
 from __future__ import annotations
 
@@ -18,59 +20,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.cross_table_splitter import (
-    CrossTableIntentSplitter, detect_cross_table_action,
-    _build_npc_dialogue_intents, _build_npc_teleport_intents,
-    _build_npc_combat_intents, _build_npc_reward_intents,
-)
+from agent.excel.cross_table_splitter import detect_cross_table_action
 from agent.excel.agent import AgentResult
 from agent.nl_parser import NLIntent
 
 
-# ── D1 对话 NPC 拆表模板 ──────────────────────────────────
-
-def test_npc_dialogue_generates_5_intents_with_interaction():
-    """D1: 对话 NPC 生成 5 类意图（Base + Interaction + Conv + Option + spawn）。"""
-    info = {"name": "铁匠", "model_id": "1015", "space_id": "100",
-            "pos": ("1", "2", "3"), "conv": "你好", "options": ["A", "B"]}
-    intents = _build_npc_dialogue_intents(info)
-    # Base + Interaction + Conv + 2 Option + spawn = 6
-    assert len(intents) == 6
-    tables = [(i.table_hint, i.sheet_hint) for i in intents]
-    assert ("entity_prefab", "Base") in tables
-    assert ("interaction", "Interaction") in tables  # D1 新增链接表
-    assert ("interaction", "InteractionConv") in tables
-    assert ("spawn_world_entity", "SpawnWorldEntity") in tables
-
-
-def test_npc_dialogue_reference_chain_correct():
-    """D1: 引用链 Base→interaction→conv（不跳过 Interaction 中间层）。"""
-    info = {"name": "铁匠", "model_id": "", "space_id": "", "pos": None,
-            "conv": "你好", "options": ["A"]}
-    intents = _build_npc_dialogue_intents(info)
-    base = next(i for i in intents if i.table_hint == "entity_prefab")
-    interaction = next(i for i in intents if i.table_hint == "interaction"
-                       and i.sheet_hint == "Interaction")
-    # Base.交互id 引用 <new_interaction_id>（非 <new_conv_id>）
-    assert base.fields["交互id"] == "<new_interaction_id>"
-    # Interaction.effect.data.3006.conv_id 引用 <new_conv_id>
-    assert interaction.fields["effect.key"] == "3006"
-    assert interaction.fields["effect.data.3006.conv_id"] == "<new_conv_id>"
-
-
-def test_npc_dialogue_produces_complete():
-    """D3: produces 标注完整 + spawn produces 独立（new_spawn_id）。"""
-    info = {"name": "铁匠", "model_id": "", "space_id": "100",
-            "pos": None, "conv": "你好", "options": ["A"]}
-    intents = _build_npc_dialogue_intents(info)
-    produces = {i.table_hint + "." + (i.sheet_hint or ""): i.produces for i in intents}
-    assert produces["entity_prefab.Base"] == "new_prefab_id"
-    assert produces["interaction.Interaction"] == "new_interaction_id"
-    assert produces["interaction.InteractionConv"] == "new_conv_id"
-    assert produces["spawn_world_entity.SpawnWorldEntity"] == "new_spawn_id"
-
-
-# ── D2 NPC 变体拆表模板 ──────────────────────────────────
+# ── D2 跨表模式检测信号 ──────────────────────────────────
 
 def test_detect_npc_teleport():
     """D2: 传送 NPC 命中 npc_teleport。"""
@@ -85,41 +40,6 @@ def test_detect_npc_combat():
 def test_detect_npc_reward():
     """D2: 奖励 NPC 命中 npc_reward。"""
     assert detect_cross_table_action("新增NPC奖励使者获得reward_id 10006") == "npc_reward"
-
-
-def test_npc_teleport_intents_structure():
-    """D2: 传送 NPC 生成 Base + Interaction(传送效果) + spawn。"""
-    info = {"name": "传送使者", "model_id": "", "space_id": "100",
-            "pos": None, "target_space_id": "10001"}
-    intents = _build_npc_teleport_intents(info)
-    assert len(intents) == 3  # Base + Interaction + spawn
-    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
-    # effect.key 不硬编码，改用语义字段（LLM 读表头「3003: 目标space ID」推断 effect.key=3003）
-    assert interaction.fields["效果类型"] == "传送"
-    assert interaction.fields["目标space ID"] == "10001"
-
-
-def test_npc_combat_intents_structure():
-    """D2: 战斗 NPC 生成 Base + Interaction(战斗效果) + spawn。"""
-    info = {"name": "擂台挑战者", "model_id": "", "space_id": "100",
-            "pos": None, "combat_id": "102"}
-    intents = _build_npc_combat_intents(info)
-    assert len(intents) == 3
-    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
-    # effect.key 不硬编码，改用语义字段（LLM 读表头「3001: 战斗ID」推断 effect.key=3001）
-    assert interaction.fields["效果类型"] == "战斗"
-    assert interaction.fields["战斗ID"] == "102"
-
-
-def test_npc_reward_intents_structure():
-    """D2: 奖励 NPC 生成 Base + Interaction(3002) + spawn。"""
-    info = {"name": "奖励使者", "model_id": "", "space_id": "100",
-            "pos": None, "reward_id": "10006"}
-    intents = _build_npc_reward_intents(info)
-    assert len(intents) == 3
-    interaction = next(i for i in intents if i.sheet_hint == "Interaction")
-    assert interaction.fields["effect.key"] == "3002"  # 奖励效果
-    assert interaction.fields["effect.data.3002.reward_id"] == "10006"
 
 
 # ── D4 跨表事务 ──────────────────────────────────────────

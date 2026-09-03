@@ -138,8 +138,7 @@ def _check_biz_required(headers, row2, fields, raw, existing):
 
 
 def test_biz_required_exempts_denormalized_fk_mirror_name_col():
-    """row2 规范名为空的名称列（FK 反规范化镜像，如 pet_evolve 的「宠物名称」）
-    不应被当作用户漏填的业务必填列。"""
+    """业务必填启发式已停用：FK 反规范化镜像列（row2 规范名为空的名称列）不再报缺。"""
     headers = ["进化id", "宠物名称", "进化后的灵兽名称", "进化等级"]
     row2 = ["evolve_id:int", "", "", "evolve_level:int"]
     fields = {"进化id": "<new_evolve_id>", "进化等级": 10}
@@ -147,21 +146,18 @@ def test_biz_required_exempts_denormalized_fk_mirror_name_col():
                 "进化id": {"10001"}, "进化等级": {"10"}}
     raw = "进化为 pet_id 20999 叫'焚天赤龙·涅槃'"
     issues = _check_biz_required(headers, row2, fields, raw, existing)
-    flagged = {getattr(i, "col", "") for i in issues}
-    assert "宠物名称" not in flagged, f"FK 镜像列不应报缺，实际 {flagged}"
-    assert "进化后的灵兽名称" not in flagged, f"FK 镜像列不应报缺，实际 {flagged}"
+    assert issues == [], f"业务必填启发式已停用，不应报任何列，实际 {issues}"
 
 
 def test_biz_required_still_flags_real_name_col_with_row2():
-    """带 row2 规范名的真实名称列（name:string）若用户给了值但 LLM 漏产，仍报缺。"""
+    """业务必填启发式已停用：即使带 row2 规范名的真实名称列漏填，也不报缺。"""
     headers = ["活动id", "活动名称", "活动描述"]
     row2 = ["id:int", "name:string", "desc:string"]
     fields = {"活动id": 3060}
     existing = {"活动名称": {"旧活动"}, "活动描述": {"旧描述"}, "活动id": {"3000"}}
     raw = "开一个活动叫'九霄论剑'"
     issues = _check_biz_required(headers, row2, fields, raw, existing)
-    flagged = {getattr(i, "col", "") for i in issues}
-    assert "活动名称" in flagged, f"真实名称列漏填应报缺，实际 {flagged}"
+    assert issues == [], f"业务必填启发式已停用，不应报缺，实际 {issues}"
 
 
 # ── 现象2：Step4 计数互斥（skipped 不再与 fail 双计） ─────────────────────

@@ -130,7 +130,7 @@ class TestCoerceValueIntegration:
         agent = _make_agent(monkeypatch,
                             "```yaml\n攻击:\n  value: 1\n  confidence: 0.9\n```",
                             isolated_enum)
-        val, warn, error = agent._coerce_value("int", "攻击", "pet", "Pet", "类型")
+        val, _, warn, error = agent._coerce_value("int", "攻击", "pet", "Pet", "类型", _allow_rejudge=False)
         assert val == 1
         assert error is None
 
@@ -139,7 +139,7 @@ class TestCoerceValueIntegration:
         agent = _make_agent(monkeypatch,
                             "```yaml\n攻击:\n  value: 1\n  confidence: 0.5\n```",
                             isolated_enum)
-        val, warn, error = agent._coerce_value("int", "攻击", "pet", "Pet", "类型")
+        val, _, warn, error = agent._coerce_value("int", "攻击", "pet", "Pet", "类型", _allow_rejudge=False)
         assert error is not None
         assert "无法转为整数" in error
 

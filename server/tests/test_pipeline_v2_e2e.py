@@ -50,39 +50,6 @@ def test_run_legacy_when_env_off():
         os.environ.pop("CODEMAKER_EXCEL_PIPELINE_V2", None)
 
 
-def test_step1_splitter_baseline_fallback_on_empty(monkeypatch):
-    """Step1 产空 → splitter_baseline 兜底（Mock ParseAgent.parse 返空）。
-
-    §去硬模板：Step1 层 splitter_baseline 二次兜底默认已关闭，本测试显式重新
-    开启验证该分支自身逻辑仍正确（功能未删除，只是默认不再介入主链路）。
-    """
-    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
-    from server.agent.excel.core.pipeline import (
-        Step1ParseSubAgent, StepContext, STEP1_PARSE,
-    )
-    agent = Step1ParseSubAgent()
-    # Mock parse_agent.parse 返空
-    agent._parse_agent = MagicMock()
-    agent._parse_agent.parse.return_value = []
-    agent._parse_agent.parse_baseline.return_value = ["mock_intent"]
-    # P3-7.1：Step1 复用 parse 缓存的 _last_segments（mock 设非空触发兜底分支）
-    agent._parse_agent._last_segments = ["加一个新的主线任务叫X"]
-    # Mock cross_table_splitter：detect 返非空 + splitter.split 返非空
-    fake_si = MagicMock()
-    with patch("server.agent.excel.core.cross_table_splitter."
-               "detect_cross_table_action", return_value="combat_reward"), \
-         patch("server.agent.excel.core.cross_table_splitter."
-               "CrossTableIntentSplitter") as MockSplitter:
-        MockSplitter.return_value.split.return_value = [fake_si]
-        ctx = StepContext(session_id="t", user_text="加一个新的主线任务叫X")
-        r = agent.execute(ctx)
-    # 兜底应被调
-    agent._parse_agent.parse_baseline.assert_called_once()
-    assert r.ok is True  # 兜底产 intent → ok
-    assert r.artifacts.get("intents") == ["mock_intent"]
-    assert any("兜底" in w for w in r.warnings)
-
-
 def test_step1_segment_coverage_exact_match():
     """段级对账用精确全文匹配（非前缀15），漏段被标注。"""
     from server.agent.excel.core.pipeline import (

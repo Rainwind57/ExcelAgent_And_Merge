@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 # thinking sink 签名:(phase: str, detail: str) -> 注入
 ThinkingSink = Callable[[str, str], None]
 
+# ── LLM 超时全局松紧旋钮 ──────────────────────────────────────────
+# 各调用点(decompose/locator/validator...)的 timeout 数值是按"各自 prompt 大小"
+# 分别调过的相对值(如 outline 20s、单表 schema 90s)，逐个改数字既麻烦又容易顾此
+# 失彼。真实环境比预期慢（服务端本身慢）时，用一个全局比例统一放宽/收紧所有
+# _call_llm/_call_llm_raw 调用，不改各调用点相对关系。默认 1.0(不变)。
+# 例：CODEMAKER_LLM_TIMEOUT_SCALE=1.5 → 所有超时统一乘 1.5。
+def _scaled_timeout(timeout: int) -> int:
+    try:
+        scale = float(os.environ.get("CODEMAKER_LLM_TIMEOUT_SCALE", "1.0") or "1.0")
+    except (TypeError, ValueError):
+        scale = 1.0
+    if scale <= 0 or scale == 1.0:
+        return timeout
+    return max(1, int(timeout * scale))
+
+
 # ── R7 修复:子 Agent 会话上下文隔离 ──────────────────────────────
 # codemaker serve 对 directory 内文件做自动上下文(读 xlsx)，prompt 文本出现表 stem
 # 时会触发其内部 agent 去读 quest.xlsx/reward.xlsx 等 → 90s+ 超时返空、143.8k Token
@@ -225,6 +241,7 @@ class SubAgent:
         sid = self._ensure_own_session()
         if not sid:
             return None
+        timeout = _scaled_timeout(timeout)
         self._bump_llm(self.name or "subagent")
         from .llm_gate import llm_throttle
         _t0 = time.time()
@@ -259,6 +276,7 @@ class SubAgent:
         sid = self._ensure_own_session()
         if not sid:
             return None
+        timeout = _scaled_timeout(timeout)
         self._bump_llm(self.name or "subagent")
         try:
             from .llm_gate import llm_throttle

@@ -16,7 +16,6 @@ from ..cli.cli_interface import CodeMakerCLI, CLICallResult
 from ..locator.column_matcher import ColumnMatcher, ColumnMatch, _clean_header
 from .enum_resolver import get_enum_resolver
 from .live_enum import resolve_label_full
-from .cross_table_splitter import CrossTableIntentSplitter, detect_cross_table_action
 from ..parser.nl_parser import NLIntent
 from ..parser.codemaker_parser import CodemakerNLParser
 from .table_resolver import TableResolver, TableResolve
@@ -2508,7 +2507,8 @@ class TableAgent:
         self._cn_enum_col_cache[key] = result
         return result
 
-    def _coerce_value(self, col_type: str, value, stem: str = "", sheet: str = "", col_name: str = ""):
+    def _coerce_value(self, col_type: str, value, stem: str = "", sheet: str = "",
+                      col_name: str = "", _allow_rejudge: bool = True):
         """类型强制转换：按列类型把值转为对应 Python 类型，不满足类型约束则阻止写入。
 
         - int 列：int(value) 成功→写入；失败→查枚举映射→命中写入；仍未命中→硬错误阻止
@@ -2516,8 +2516,11 @@ class TableAgent:
         - bool 列：识别 0/1/true/false/yes/no；失败→硬错误阻止
         - string/未知：原样返回
 
-        返回 (转换后的值, 警告或None, 错误或None)。
-          warn  非 None：软提示，可继续写入（如范围提示）
+        返回 (转换后的值, 落列名, 警告或None, 错误或None) 四元组。
+          col  非 None 且与 col_name 不同：LLM 字段形状重判定建议改写到该列，
+                调用方应重新匹配该列并对新列二次校验（_allow_rejudge=False 防
+                死循环）。col_name 或相同列 → 按原列写入。
+          warn 非 None：软提示，可继续写入（如范围提示）
           error 非 None：硬错误，必须阻止写入该字段
         """
         import sys
@@ -2534,15 +2537,15 @@ class TableAgent:
         # <auto> 字面值原样写入单元格（如 pve_combat_npc 门派/技能列），不符合"留空"语义。
         sv = str(value).strip() if value is not None else ""
         if sv == "<auto>":
-            return None, f"列[{col_name}]标 <auto>（输入未提及，留空待补）", None
+            return None, col_name, f"列[{col_name}]标 <auto>（输入未提及，留空待补）", None
         if sv.startswith("<") and sv.endswith(">") and len(sv) >= 3:
-            return None, f"列[{col_name}]占位符 {sv} 未替换，跳过该列", None
+            return None, col_name, f"列[{col_name}]占位符 {sv} 未替换，跳过该列", None
         # 空值（灌值守卫清空/枚举转码失败置空）→ 留空不写该列，不报错。
         # 原空串落到 int() 抛 ValueError → 报「值''无法转为整数」假失败。
         if sv == "":
-            return None, None, None
+            return None, col_name, None, None
         if value is None or not col_type:
-            return value, None, None
+            return value, col_name, None, None
         ct = col_type.lower().strip()
         warn = None
         error = None
@@ -2553,12 +2556,12 @@ class TableAgent:
             # 行照常写入（缺该列），事务不中断，needs_user_fill 收集后提示用户补值。
             # （<auto>/<xxx> 占位符已在顶部统一拦截，此处仅处理真实 int 值）
             try:
-                return int(sv), None, None
+                return int(sv), col_name, None, None
             except (ValueError, TypeError):
                 # 容错1：浮点数字符串（如 "703.0"/"703.5"）→ int(float()) 截尾
                 # LLM 偶发把 int 值序列化成 float 字符串，语义上 703.0==703，不应硬失败。
                 try:
-                    return int(float(sv)), None, None
+                    return int(float(sv)), col_name, None, None
                 except (ValueError, TypeError):
                     pass
                 # 容错2：形如 "1×1"/"2x3" 的面积/尺寸字符串 → 拆出首个整数
@@ -2567,7 +2570,7 @@ class TableAgent:
                     m_area = re.search(r'(\d+)', sv)
                     if m_area:
                         try:
-                            return int(m_area.group(1)), None, None
+                            return int(m_area.group(1)), col_name, None, None
                         except (ValueError, TypeError):
                             pass
                 # 尝试枚举映射（中文标签→int）：规则 enum_map > 工作区现场发现 > L1/pending
@@ -2577,12 +2580,12 @@ class TableAgent:
                         getattr(self, "cli", None), stem, sheet, col_name, sv,
                         resolver=er)
                     if enum_val is not None:
-                        return enum_val, None, None
+                        return enum_val, col_name, None, None
                     # §中文枚举列放行：int 列标注但现有数据存中文 → 中文值合法，
                     # 直接写入原值（activity_type:int 实际存「春节活动」）。
                     _is_cn_enum = getattr(self, "_is_cn_enum_column", None)
                     if _is_cn_enum is not None and _is_cn_enum(stem, sheet, col_name):
-                        return value, None, None
+                        return value, col_name, None, None
                     # D10: LLM 辅助枚举发现（resolve 未命中 → LLM 推断 + register pending）
                     # §P0-4 零LLM gate：Step3 (execute_no_llm=True) 禁止发 LLM，
                     # 枚举推断交回 Step2 处理（Step2 应已拦 TYPE_MISMATCH + ask 用户）。
@@ -2590,21 +2593,21 @@ class TableAgent:
                     if not getattr(self, "execute_no_llm", False):
                         analyzed = self._try_analyze_enum(stem, sheet, col_name, sv)
                         if analyzed is not None:
-                            return analyzed, None, None
+                            return analyzed, col_name, None, None
                 # 类型约束硬失败：int 列不可写入非整数字符串
                 error = (f"列[{col_name}]类型为 int，值'{value}'无法转为整数"
                          f"且无枚举映射，已阻止写入")
         elif ct in ("float", "double", "number"):
             try:
-                return float(sv), None, None
+                return float(sv), col_name, None, None
             except (ValueError, TypeError):
                 error = (f"列[{col_name}]类型为 float，值'{value}'无法转为浮点数，已阻止写入")
         elif ct in ("bool", "boolean"):
             bl = sv.lower()
             if bl in ("1", "true", "yes", "是", "真", "对", "开", "启用", "有", "y", "t"):
-                return 1, None, None
+                return 1, col_name, None, None
             if bl in ("0", "false", "no", "否", "假", "错", "关", "禁用", "无", "n", "f"):
-                return 0, None, None
+                return 0, col_name, None, None
             error = (f"列[{col_name}]类型为 bool，值'{value}'无法转为布尔值，已阻止写入")
         elif ct in ("date", "datetime"):
             from .date_normalizer import parse_date
@@ -2612,7 +2615,7 @@ class TableAgent:
             if dt is None:
                 error = (f"列[{col_name}]类型为 {ct}，值'{value}'无法解析为日期，已阻止写入")
             else:
-                return dt, None, None
+                return dt, col_name, None, None
         if warn:
             print(warn, file=sys.stderr)
         if error:
@@ -2623,18 +2626,19 @@ class TableAgent:
         # 触发（零成本，不影响成功路径），只重判定1次（避免死循环）。重判定仍失败
         # 则按现状跳过字段，但保留原始值到 warning，不静默丢弃语义。
         # 数据来源：真实表头（_read_schema_cached 读 row1/row2），非代码猜规则。
-        if error is not None:
+        # 重判成功时透传 LLM 建议落列 _col，调用方据此重新匹配该列并对新列二次
+        # 校验（_allow_rejudge=False 防死循环），让字段形状重定向真正生效而非
+        # 仅记 warning。Step3 写盘路径 execute_no_llm=True 由 _rejudge_field_shape
+        # 内部 gate 拦截不发 LLM（D4 硬约束）。
+        if error is not None and _allow_rejudge:
             _rejudge = getattr(self, "_rejudge_field_shape", None)
             if callable(_rejudge):
                 rejudged = _rejudge(
                     stem, sheet, col_name, value, col_type, error)
                 if rejudged is not None:
                     _col, _val, _warn = rejudged
-                    # 重判成功：目标列或值被 LLM 调整 → 写入调整后的值（_col 仅记入 warning
-                    # 供调用方感知，值以 _val 为准，类型仍由本函数后续保证——这里 _val 已
-                    # 是 LLM 给的可落库的标量，直接返回）。
-                    return _val, (_warn or warn), None
-        return value, warn, error
+                    return _val, _col, (_warn or warn), None
+        return value, col_name, warn, error
 
     def _rejudge_field_shape(self, stem: str, sheet: str, col_name: str,
                              raw_value, col_type: str, fail_reason: str):
@@ -2725,17 +2729,82 @@ class TableAgent:
             reason = str(data.get("reason", "") or "").strip()
             if val is None or val == "":
                 return None
-            # LLM 指明目标列且与当前列不同 → 只记 warning（调用方仍按原列写入，
-            # 但语义不再静默丢弃）；值规整后回传，按规整值落库。
+            # LLM 指明目标列且与当前列不同 → 透传 _col 由调用方重新匹配新列并
+            # 二次校验后写库（字段形状重定向生效）；值规整后回传，按规整值落库。
             warn = f"字段形状重判定：原列[{col_name}]值'{raw_value}' → 落库值'{val}'"
             if tgt and str(tgt).split(":")[0].strip() != target_plain:
-                warn += f"（LLM 建议落列[{tgt}]，请人工核对）"
+                warn += f"（LLM 建议改写至列[{tgt}]，调用方重匹配后二次校验）"
             if reason:
                 warn += f"  依据：{reason}"
             return (tgt or col_name), val, warn
         except Exception:
             logger.debug("T3 _rejudge_field_shape failed", exc_info=True)
             return None
+
+    def _resolve_coerce_redirect(self, stem: str, sheet: str, matcher,
+                                 orig_col: str, value,
+                                 coerce_result, path, row, loc_idx: int = -1):
+        """§T3 字段形状重定向接线：_coerce_value 返回建议落列 ≠ 原列时，
+        重新匹配新列并对新列二次校验（_allow_rejudge=False 防死循环），
+        确保改写后的值真能落到 LLM 建议的列。
+
+        入参 coerce_result = _coerce_value 返回的 4 元组 (val, col, warn, error)。
+        loc_idx：当前行的定位列索引（1-based），重定向目标列撞定位列时拒绝改写
+        （避免把定位值改掉致行身份丢失）。-1 表示无定位列约束。
+        返回 dict：
+          {ok: True/False, match: 新列匹配或 None, value: 最终值,
+           warn: 累积 warning, error: 错误或 None, redirected: bool}
+        ok=True 且 redirected=True → 调用方按 match.index/match.column 写库。
+        ok=False → 调用方按原逻辑（失败/跳过）处理。
+        无重定向（col 与原列相同）→ ok=True/redirected=False，value/warn/error 透传。
+        """
+        cv, cc, cw, ce = coerce_result
+        if ce is not None:
+            return {"ok": False, "match": None, "value": cv, "col": cc,
+                    "warn": cw, "error": ce, "redirected": False}
+        # 无重定向建议 → 透传
+        if not cc or str(cc).split(":")[0].strip() == str(orig_col).split(":")[0].strip():
+            return {"ok": True, "match": None, "value": cv, "col": cc,
+                    "warn": cw, "error": None, "redirected": False}
+        # 重定向：重新匹配新列（matcher 来自 _run_add/_run_set 的 column matcher）
+        new_m = None
+        if matcher is not None:
+            try:
+                # LLM 给的 target_col 可能带 ":后缀"（如 "3005: 目标space ID"），
+                # 先试原串，再试 split(":")[0] plain 名，兼容两种表头形式。
+                new_m = matcher.match(cc) or matcher.match_best(cc)
+                if new_m is None:
+                    _plain = str(cc).split(":")[0].strip()
+                    if _plain and _plain != str(cc):
+                        new_m = matcher.match(_plain) or matcher.match_best(_plain)
+            except Exception:
+                new_m = None
+        if new_m is None:
+            # 建议列匹配不到 → 回退原值原列（warning 已含改写信息，不静默丢语义）
+            return {"ok": True, "match": None, "value": cv, "col": orig_col,
+                    "warn": (cw or "") + "（建议列匹配失败，按原列规整值写入）",
+                    "error": None, "redirected": False}
+        # 定位列撞列防护：重定向目标 == 定位列 → 拒绝改写（保行身份）
+        if loc_idx > 0 and new_m.index == loc_idx:
+            return {"ok": True, "match": None, "value": cv, "col": orig_col,
+                    "warn": (cw or "") + "（建议列与定位列重合，拒绝改写保行身份）",
+                    "error": None, "redirected": False}
+        # 新列二次校验（禁 rejudge，防死循环）
+        try:
+            new_type = self._get_col_type(stem, sheet, new_m.column)
+        except Exception:
+            new_type = ""
+        ncv, ncc, ncw, nce = self._coerce_value(
+            new_type, cv, stem, sheet, new_m.column, _allow_rejudge=False)
+        if nce is not None:
+            return {"ok": False, "match": None, "value": ncv, "col": new_m.column,
+                    "warn": (cw or "") + " → 新列[" + new_m.column + "]二次校验失败",
+                    "error": nce, "redirected": False}
+        _w = cw or ""
+        if ncw:
+            _w = (_w + "；" if _w else "") + ncw
+        return {"ok": True, "match": new_m, "value": ncv, "col": new_m.column,
+                "warn": _w, "error": None, "redirected": True}
 
     def _precoerce_enum_value(self, col_name: str, val, stem: str, sheet: str):
         """D10: 单值写前枚举预转换。
@@ -3110,7 +3179,22 @@ class TableAgent:
                                    f"请确认是否继续写入「{val}」。")
                     return res
                 col_type = self._get_col_type(stem, sheet, m.column)
-                coerced, warn, error = self._coerce_value(col_type, val, stem, sheet, m.column)
+                _cv = self._coerce_value(col_type, val, stem, sheet, m.column)
+                # §T3 字段形状重定向接线：_coerce_value 返回建议落列时重匹配新列
+                # 二次校验后改写至建议列（仅 Step2，execute_no_llm 时不发 LLM）
+                if _cv[3] is None and _cv[1] and str(_cv[1]).split(":")[0].strip() != str(m.column).split(":")[0].strip():
+                    _rd = self._resolve_coerce_redirect(
+                        stem, sheet, matcher, m.column, val, _cv, path, row,
+                        loc_idx=loc_match.index)
+                    if _rd["ok"] and _rd["redirected"] and _rd["match"] is not None:
+                        m = _rd["match"]
+                        coerced, warn = _rd["value"], _rd["warn"]
+                        res.add_thinking("校验",
+                                         f"§T3 字段形状重定向：{col_name}={val} → {m.column}")
+                    else:
+                        coerced, warn, error = _rd["value"], _rd["warn"], _rd["error"]
+                else:
+                    coerced, warn, error = _cv[0], _cv[2], _cv[3]
                 if warn:
                     res.add("coerce_value", True, warn)
                     res.add_thinking("校验", f"类型转换「{m.column}」: {warn}")
@@ -3273,7 +3357,22 @@ class TableAgent:
             res.message = "目标值为空"
             return res
         col_type = self._get_col_type(stem, sheet, tgt_match.column)
-        coerced, warn, error = self._coerce_value(col_type, intent.value, stem, sheet, tgt_match.column)
+        _cv = self._coerce_value(col_type, intent.value, stem, sheet, tgt_match.column)
+        # §T3 字段形状重定向接线（单字段路径）：建议落列 ≠ 当前列时改写 tgt_match
+        if _cv[3] is None and _cv[1] and str(_cv[1]).split(":")[0].strip() != str(tgt_match.column).split(":")[0].strip():
+            _rd = self._resolve_coerce_redirect(
+                stem, sheet, matcher, tgt_match.column, intent.value, _cv, path, row,
+                loc_idx=loc_match.index)
+            if _rd["ok"] and _rd["redirected"] and _rd["match"] is not None:
+                tgt_match = _rd["match"]
+                coerced, warn = _rd["value"], _rd["warn"]
+                intent.target_field = tgt_match.column
+                res.add_thinking("校验",
+                                 f"§T3 字段形状重定向 → {tgt_match.column}")
+            else:
+                coerced, warn, error = _rd["value"], _rd["warn"], _rd["error"]
+        else:
+            coerced, warn, error = _cv[0], _cv[2], _cv[3]
         if warn:
             res.add("coerce_value", True, warn)
         if error:
@@ -4284,7 +4383,10 @@ class TableAgent:
                     _unmatched_keys.append(str(col_name))
                     continue
                 col_type = self._get_col_type(stem, sheet, m.column)
-                coerced, warn, error = self._coerce_value(col_type, val, stem, sheet, m.column)
+                # §T3：_run_add fields 路径已有 ai_fix_field_mapping 改列机制（更强，
+                # 带 column_signal+enum_hint），此处禁 _rejudge 避免双重 LLM 调用。
+                coerced, _, warn, error = self._coerce_value(
+                    col_type, val, stem, sheet, m.column, _allow_rejudge=False)
                 if warn:
                     # 快赢3:<auto> 列收集,循环后批量 add(避免逐列刷屏)
                     if str(val).strip() == "<auto>":
@@ -4331,8 +4433,9 @@ class TableAgent:
                                     if new_m is not None:
                                         new_type = self._get_col_type(stem, sheet, new_m.column)
                                         new_val = ai_fix.get("correct_value", val)
-                                        new_coerced, _, new_error = self._coerce_value(
-                                            new_type, new_val, stem, sheet, new_m.column)
+                                        new_coerced, _, _, new_error = self._coerce_value(
+                                            new_type, new_val, stem, sheet, new_m.column,
+                                            _allow_rejudge=False)
                                         if new_error is None:
                                             res.add_thinking("校验",
                                                              f"AI 修正字段映射：[{m.column}]='{val}' → [{new_m.column}]='{new_val}'")
@@ -4437,7 +4540,10 @@ class TableAgent:
                     # D10: 写前枚举预转换（int 列+非 int 值命中枚举→转 int）
                     tail = self._precoerce_enum_value(col_name, tail, stem, sheet)
                     col_type = self._get_col_type(stem, sheet, m.column)
-                    coerced, warn, error = self._coerce_value(col_type, tail, stem, sheet, m.column)
+                    # §T3：path2 尾部值多为叙述碎片，error 时走叙述跳过逻辑
+                    # 不应 rejudge 改列（碎片本就该跳过），禁 rejudge。
+                    coerced, _, warn, error = self._coerce_value(
+                        col_type, tail, stem, sheet, m.column, _allow_rejudge=False)
                     if warn:
                         res.add("coerce_value", True, warn)
                     if error:
@@ -5127,52 +5233,15 @@ class TableAgent:
 
     def _check_missing_required_after_add(self, path, sheet, headers, values, res,
                                           intent=None) -> None:
-        """写库后业务必填列 schema-grounding 检查。
+        """写库后业务必填列检查（已停用，保留签名兼容）。
 
-        启发式：当 user_text 含引号(说明用户显式给了名字/描述值)且列名含「名称/描述/名」
-        字样的 string 列未落盘 → res.missing_required + schema_grounding 失败 step +
-        res.ok=False（让 Step3 failures 透传到 Step4 Conclude induce_anti_patterns）。
-        对应"看似成功的失败"——项目里大量 case LLM 漏产名称/描述，写库 ok 但缺必填列，
-        原 dialog_logger 按 ok=True 算 excellent 入 examples，学习链路缺种子。
-        PK 自动分配列豁免。
+        §约束收缩（用户原则）：只强制校验主键列，其余列均可为空；允许失败。
+        原启发式：user_text 含引号 + 列名含「名称/描述/名」字样的 string 列
+        未落盘 → 行已成功写入却把 res.ok 置 False 标为失败（"看似成功的失败"），
+        并触发 induce_anti_patterns。按新要求，成功写入的表格不应再因业务必填
+        列缺值而被标记失败——行已落盘即算成功，缺列只留信息性提示，不翻转 ok。
         """
-        if not headers or not values:
-            return
-        try:
-            written_cols = {ci for ci in values.keys()
-                            if isinstance(ci, int) and ci > 0}
-            required_kws = ("名称", "描述", "名")
-            quoted = any(q in ((intent.raw if intent else "") or "")
-                         for q in ("'", '"', "「", "」")) or \
-                any(kw in ((getattr(intent, "raw", "") if intent else "") or "")
-                    for kw in ("活动描述", "活动名称", "描述为", "名称为"))
-            if not quoted:
-                return
-            missing: list[dict] = []
-            for idx0, h in enumerate(headers, start=1):
-                if not h or idx0 in written_cols:
-                    continue
-                name = str(h).split(":")[0].strip()
-                if not name or not any(kw in name for kw in required_kws):
-                    continue
-                v = values.get(idx0, "")
-                if v in (None, ""):
-                    missing.append({"col": idx0, "col_name": name,
-                                    "col_type": "str"})
-            if not missing:
-                return
-            res.missing_required = missing
-            names = ", ".join(m["col_name"] for m in missing)
-            res.add("schema_grounding", False,
-                    f"业务必填列未填: {names}（LLM 漏产/字段缺失——行已落盘但缺列，"
-                    "按失败记录喂 induce_anti_patterns）")
-            if res.ok:
-                res.ok = False
-                _m = res.message or f"新增 {sheet} 行已写但缺必填列"
-                res.message = (f"新增行部分成功但缺业务必填列：{names}。"
-                               f"建议补列重跑或直接 ask 让用户补值。原始：{_m}")
-        except Exception:
-            logger.warning("schema-grounding check 失败(非致命)", exc_info=True)
+        return
 
     # ── 列级操作 ──
     def _clean_col_hint(self, hint: str | None) -> str:
@@ -6062,29 +6131,8 @@ class TableAgent:
                 # → Step3 仍用原 99001 → 冲突落 Step3。现移到 _apply_ai_intent_check
                 # 之后对【最终 intents】校验（见 _step2_validate_intents 调用点），
                 # Step2 才是指令最终确认点。
-        # §去硬模板：规则模板(npc_dialogue/item/...)硬编码正则抽字段，默认关闭
-        # （legacy V2=0 路径，仅 CODEMAKER_EXCEL_PIPELINE_V2=0 时可达）。
-        # 可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启。
-        if not _4step_parsed and os.getenv(
-                "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") != "1":
-            detect_action = detect_cross_table_action(orig_text)
-            if detect_action:
-                splitter = CrossTableIntentSplitter()
-                for si in splitter.split(orig_text):
-                    extras_tpl: dict = {"fields": si.fields, "source": "splitter"}
-                    if si.produces:
-                        extras_tpl["produces"] = si.produces
-                    cross_intents_nl.append(NLIntent(
-                        action=si.action, table_hint=si.table_hint, sheet_hint=si.sheet_hint,
-                        locator_value=si.locator_value, locator_field=si.locator_field,
-                        raw=si.text, extras=extras_tpl))
-                    if si.table_hint:
-                        covered_stems.add(si.table_hint)
-                cross_action = detect_action
-                if cross_intents_nl:
-                    _stream_res.add_thinking("解析",
-                        f"规则模板产出 {len(cross_intents_nl)} 条意图"
-                        f"(模式={detect_action},覆盖 {len(covered_stems)} 表)")
+        # §去硬模板：原规则模板(npc_dialogue/item/...)硬编码正则抽字段分支已删除
+        # （cross_table_splitter 的 11 个 _build_*_intents 模板已整体移除）。
         # 2. LLM 三 agent 链:仅分解"模板未覆盖"的候选表(本用例 quest/reward),
         #    缩小 LLM 调用范围→更快更可靠;detect=None(未知模式)→全候选 LLM 兜底,真正泛化。
         #    4-Step §2.10: _4step_parsed=True 时 ParseAgent 已含完整 LLM 拆分,跳过避免重复。
@@ -8278,8 +8326,9 @@ class TableAgent:
                         if not _ct:
                             continue  # 无类型信息不预检（交写盘真校验）
                         try:
-                            _, _w, _e = self._coerce_value(
-                                _ct, _v, stem=path.stem, sheet=sheet, col_name=_c)
+                            _, _, _w, _e = self._coerce_value(
+                                _ct, _v, stem=path.stem, sheet=sheet, col_name=_c,
+                                _allow_rejudge=False)
                         except Exception as _e_cv:
                             _e, _w = str(_e_cv), None
                         if _e:
@@ -9780,7 +9829,18 @@ class TableAgent:
                         _step5_log(f"  → backfill 跳过：列[{cn}]未匹配")
                         continue
                     col_type = self._get_col_type(stem, sheet, m.column)
-                    coerced, _warn, error = self._coerce_value(col_type, cv, stem, sheet, m.column)
+                    _cv = self._coerce_value(col_type, cv, stem, sheet, m.column)
+                    # §T3 字段形状重定向接线（backfill 路径）：建议落列时重匹配改写
+                    if _cv[3] is None and _cv[1] and str(_cv[1]).split(":")[0].strip() != str(m.column).split(":")[0].strip():
+                        _rd = self._resolve_coerce_redirect(
+                            stem, sheet, matcher, m.column, cv, _cv, path, row)
+                        if _rd["ok"] and _rd["redirected"] and _rd["match"] is not None:
+                            m = _rd["match"]
+                            coerced, _warn = _rd["value"], _rd["warn"]
+                        else:
+                            coerced, _warn, error = _rd["value"], _rd["warn"], _rd["error"]
+                    else:
+                        coerced, _warn, error = _cv[0], _cv[2], _cv[3]
                     if error:
                         _step5_log(f"  → backfill 跳过：列[{cn}]类型错误 {error}")
                         continue

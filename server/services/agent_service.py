@@ -886,8 +886,9 @@ class AgentService:
             # 类型转换（复用 TableAgent._coerce_value，含枚举映射）
             col_type = col.col_type or self.agent._get_col_type(
                 req.table_stem, req.sheet, col_name)
-            cv, warn, err = self.agent._coerce_value(
-                col_type, raw, req.table_stem, req.sheet, col_name)
+            cv, _, warn, err = self.agent._coerce_value(
+                col_type, raw, req.table_stem, req.sheet, col_name,
+                _allow_rejudge=False)
             if err:
                 errors.append(FieldIssue(
                     col=ci, col_name=col_name, severity="error", message=err,
@@ -1085,8 +1086,9 @@ class AgentService:
         new_val: Any = req.value
         if col_type:
             try:
-                cv, warn, err = self.agent._coerce_value(
-                    col_type, req.value, req.table_stem, req.sheet, col_name)
+                cv, _, warn, err = self.agent._coerce_value(
+                    col_type, req.value, req.table_stem, req.sheet, col_name,
+                    _allow_rejudge=False)
                 if err:
                     return CellUpdateResponse(
                         ok=False, table_stem=req.table_stem, sheet=req.sheet,
@@ -1229,8 +1231,9 @@ class AgentService:
             new_val: Any = item.value
             if col_type:
                 try:
-                    cv, warn, err = self.agent._coerce_value(
-                        col_type, item.value, req.table_stem, req.sheet, cn)
+                    cv, _, warn, err = self.agent._coerce_value(
+                        col_type, item.value, req.table_stem, req.sheet, cn,
+                        _allow_rejudge=False)
                     if err:
                         res.ok = False
                         res.error = f"type_error:{err}"

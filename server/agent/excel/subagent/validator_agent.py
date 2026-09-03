@@ -727,135 +727,19 @@ class ValidatorAgent(LLMSubAgent):
     def _check_business_required_pre_add(self, intent, headers, fields, raw,
                                          existing_values=None,
                                          type_row=None) -> list:
-        """Pack 3：写前 business heuristic 必填列校验（agent.py:4561 同启发式前移）。
+        """Pack 3：写前 business heuristic 必填列校验（已停用，保留签名兼容）。
 
-        字样的 string 列未在 LLM fields 提供值 → 报 MISSING_REQUIRED issue。
-
-        validate_two_layer 会把「业务必填列/指令明确」类缺失纳入 Step2 全字段编辑
-        闭环，用户补齐后才放行；不再预先 mark skipped，避免修好后 Step3 仍显示
-        「用户跳过此项」。PK 自动分配列豁免（首列必非空时由 _dedup_inter_pk_dup 等处理）。
-
-        四条误报豁免（均「数据/指令/schema」驱动，不绑业务词）：
-          1. 全空列豁免：该列在既有所有数据行里从没填过 → 非业务必填列，不报。
-          2. 否定式豁免：指令显式说「不带X/无X」→ 按语义补 0 放行，不报。
-          3. 同族列豁免：同一族（描述族/名称族）里已有列被写入 → 同族其余列不报。
-             （用户只说「描述'…'」，LLM 已填进「神通描述」，就没理由要求它也填满
-             「功效描述」「升级描述」——误报会把整条新增标 skipped 拦下来。）
-          4. 反规范化镜像列豁免（§8）：名称/描述族列若 row2 规范名为空 → 该列是跨表
-             FK 反规范化的展示镜像列（值随 FK 引用的目标行派生，如 pet_evolve 的
-             「宠物名称/进化后的灵兽名称」镜像 pet.灵兽名称），非用户须提供的字段。
-             通用判据：本 schema 约定「真实数据列必带 row2 `name:type`，纯展示/派生
-             列 row2 为空」——命中即豁免，避免把 FK 镜像列误当用户漏填（gold 亦不含
-             这些列）。不绑业务词/表：只看该列有无 row2 规范名。
+        §约束收缩（用户原则）：Step2 只强制校验主键列，其余列均可为空。
+        原实现按关键词（名称/描述/邮件类型/发送人/奖励/时间…）启发式把
+        「指令里提到过的列」当作业务必填，缺失即报 MISSING_REQUIRED 并
+        标 skipped 阻断写盘——邮件类型等可空列因此被误拦。现直接返回
+        空列表：不再对任何非主键列做业务必填校验，不再标 skipped。
+        主键列缺失校验由 validate_two_layer 的 _is_pk_missing 独立负责。
 
         Returns:
-            list[Issue]，空 = 无业务必填列缺失。
+            list[Issue]，恒为空列表（业务必填启发式已停用）。
         """
-        issues: list = []
-        if not headers or not isinstance(fields, dict) or not fields:
-            return issues
-        try:
-            if getattr(intent, "action", "") != "add":
-                return issues
-            raw_lower = (raw or "").lower()
-            # 触发条件：指令含引号（用户显式给过名字/描述值）或含显式赋值关键词
-            # （发送人/发送时间/奖励 等）。无此信号时用户可能本就没要求这些列，不报缺。
-            quoted = any(q in (raw or "") for q in ("'", '"', "「", "」")) \
-                or any(kw in (raw or "")
-                       for kw in ("活动描述", "活动名称", "描述为", "名称为",
-                                  "发送人", "发送时间", "有效期", "奖励",
-                                  "开始时间", "结束时间", "图标", "邮件类型"))
-            if not quoted:
-                return issues
-            never_used = self._never_filled_cols(headers, existing_values)
-            empties = self._explicitly_empty_cols(raw, headers)
-            written_norm = {(str(k) or "").split(":")[0].strip().lower()
-                            for k in fields.keys() if k}
-
-            def _kw_family(col_name: str) -> str:
-                """列名归属的关键词族：name（名称/名字/…名）/ desc（…描述）。"""
-                n = (col_name or "").lower()
-                if "名称" in n or "名字" in n or n.endswith("名"):
-                    return "name"
-                if "描述" in n:
-                    return "desc"
-                return ""
-
-            written_families = {_kw_family(k) for k in written_norm} - {""}
-            # ① 名称/描述/名 类列：保持原 Pack3 契约——raw 含引号即视为用户给了
-            #    名字/描述值，缺失即报（保守，宁可多报不可漏半成品）。
-            name_kws = ("名称", "描述", "名")
-            # ② 显式赋值列：raw 中出现列名（用户明确给了该列值）才报缺。
-            explicit_kws = ("发送人", "发送时间", "时间", "奖励", "图标", "邮件类型",
-                            "开始时间", "结束时间", "有效期")
-            for h in headers:
-                if not h:
-                    continue
-                name = str(h).split(":")[0].strip()
-                if not name:
-                    continue
-                if name.lower() in written_norm:
-                    continue
-                _is_name_kw = any(kw in name for kw in name_kws)
-                _is_explicit_kw = any(kw in name for kw in explicit_kws)
-                if not _is_name_kw and not _is_explicit_kw:
-                    continue
-                # §豁免4（§8）：名称/描述族列 row2 规范名为空 → 反规范化 FK 镜像/纯展示
-                # 列（值派生自 FK 引用目标，非用户须填）。通用 schema 约定：真实数据列
-                # 带 row2 `name:type`，展示/派生列 row2 空。命中即豁免（gold 亦不含）。
-                # 仅在 row2（type_row）确实可用时判定；不可用则保守走原行为（不豁免）。
-                if _is_name_kw and type_row:
-                    _r2 = ""
-                    for _hh, _tt in zip(headers or [], type_row or []):
-                        if str(_hh or "").split(":")[0].strip() == name:
-                            _r2 = str(_tt or "").split(":")[0].strip()
-                            break
-                    if not _r2:
-                        continue
-                # 显式赋值列需 raw 出现列名才报（防表头有「奖励」列但用户没提误报）
-                if _is_explicit_kw and not _is_name_kw \
-                        and name.lower() not in raw_lower:
-                    continue
-                # §豁免2：指令显式声明该列为空（如"不带奖励"）→ 补 0 放行，不报缺
-                if name.lower() in empties:
-                    _ct = ""
-                    for _hh, _tt in zip(headers or [], type_row or []):
-                        if str(_hh or "").split(":")[0].strip() == name:
-                            _ct = str(_tt or "")
-                            break
-                    if "int" in _ct.lower() or "float" in _ct.lower():
-                        fields[h] = 0
-                    continue
-                # §豁免3：同族已有列被写入 → 同族其余列不算漏产，不报
-                if _is_name_kw and _kw_family(name) \
-                        and _kw_family(name) in written_families:
-                    continue
-                # §豁免1：该列历史从未填过 → 非业务必填列，不报
-                if name.lower() in never_used:
-                    continue
-                # §豁免5（opt-in，CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED=1，默认
-                # 关）：前 4 条豁免全是硬编码关键词/正则（否定词表、name/desc 关键词
-                # 族），覆盖不到的表达方式就会被误判"漏填"直接硬阻断+skip 整条
-                # intent。开启此开关后，遇到前 4 条都没豁免掉的列，让模型结合原始
-                # 指令二次判断"用户是不是真的要求填这一列"，判"可选"才豁免；
-                # 判不出来/未开启/LLM 不可达 → 维持原硬阻断（宁可多报，不放过真正
-                # 漏填的字段，与 §主键必填 LLM 判断同一保守原则）。
-                if os.environ.get("CODEMAKER_VALIDATOR_LLM_BUSINESS_REQUIRED") == "1":
-                    verdict = self._llm_judge_business_required(name, raw, headers, fields)
-                    if verdict == "optional":
-                        logger.info(
-                            "业务必填降级[LLM]:列[%s] 判定为可选,不报 MISSING_REQUIRED", name)
-                        continue
-                issues.append(Issue(
-                    col=name, issue_type=IssueType.MISSING_REQUIRED.value,
-                    expected=f"业务必填列「{name}」（指令明确给出该列值，LLM 漏产）",
-                    suggestion=f"补填 {name} 列值；或跳过让 Step4 induce_anti_patterns 标失败",
-                ))
-            if issues:
-                self._mark_intent_skipped(intent)
-        except Exception:
-            logger.warning("_check_business_required_pre_add 失败", exc_info=True)
-        return issues
+        return []
 
     def _llm_judge_business_required(self, col: str, raw: str, headers: list,
                                      fields: dict) -> str:
@@ -1195,30 +1079,39 @@ class ValidatorAgent(LLMSubAgent):
                     # 再走 LLM 列名消歧（真实列名植入 prompt 选最接近），命中则
                     # 交下方 _renames 统一改名，消除 COL_NOT_FOUND + MISSING_REQUIRED。
                     _guess = self._closest_header(col_clean, headers, type_row)
+                    _col_conf, _col_reason = (1.0, "") if _guess else (0.0, "")
                     if not _guess:
                         _guess = self._suggest_header_by_value(
                             col, val, headers, type_row, fields,
                             raw=getattr(it, "raw", "") or "")
+                        if _guess:
+                            _col_conf, _col_reason = 0.8, "值形态/实体名启发式匹配"
                     if not _guess:
-                        _guess = self._resolve_col_with_llm(
+                        # §Column Resolution Agent：返回 (column, confidence, reason)。
+                        _guess, _col_conf, _col_reason = self._resolve_col_with_llm(
                             col_clean, val, headers, type_row,
                             raw=getattr(it, "raw", "") or "")
                     if _guess:
                         # 命中真实列 → 记改名，落入下方统一 _renames 应用（不在此
                         # 迭代中 mutate fields，避免 dict 迭代期改尺寸 RuntimeError）
-                        # 只有 LLM 消歧开启时才自动改；纯启发式建议留给用户确认。
-                        if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") == "1":
+                        # 只有 LLM 消歧开启 且 置信度达标才自动改；置信度不够（歧义/
+                        # 低置信）即使开关打开也留给用户确认，不由规则替业务下判断。
+                        from .column_resolution_agent import MIN_CONFIDENCE as _COL_MIN_CONF
+                        if (os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") == "1"
+                                and _col_conf >= _COL_MIN_CONF):
                             _resolved = _guess
                             _renames[col] = _guess
                         else:
                             _avail = "、".join(
                                 _norm_col_name(h)
                                 for h in headers if h)[:200]
+                            _reason_txt = (f"（{_col_reason}，置信度{_col_conf:.2f}）"
+                                          if _col_reason else "")
                             issues.append(Issue(
                                 col=col, issue_type=IssueType.COL_NOT_FOUND.value,
                                 expected=f"列存在于 {stem}/{sheet} 表头",
                                 suggestion=(
-                                    f"建议把「{col}」改为「{_guess}」。"
+                                    f"建议把「{col}」改为「{_guess}」{_reason_txt}。"
                                     f"该表真实列名有：{_avail}。"),
                                 value=val,
                             ))
@@ -1420,10 +1313,10 @@ class ValidatorAgent(LLMSubAgent):
                             expected=f"必填列「{req_col}」",
                             suggestion=f"补充 {req_col} 字段值",
                         ))
-            # Pack 3：业务必填列 heuristic 前移（agent.py:4561 同启发式）。
-            # 指令含引号（用户显式给名称/描述值）但 LLM 漏产含 名称/描述/名 kw
-            # 的列 → 报 MISSING_REQUIRED + 标 intent.validation.skipped=True 让
-            # Step3 跳写盘（避免半成品行落盘才 step4 retro-active 标失败）。
+            # Pack 3：业务必填列 heuristic 前移（已停用——§约束收缩：只强制主键，
+            # 其余列均可为空。原实现按 名称/描述/邮件类型/发送人 等关键词把指令
+            # 提过的列当必填，缺失即报 MISSING_REQUIRED + 标 skipped 阻断写盘；
+            # 现该方法直接返回空列表，不再报缺、不再标 skipped）。
             issues.extend(self._check_business_required_pre_add(
                 it, headers, fields, getattr(it, "raw", "") or "",
                 existing_values=existing_values, type_row=type_row))
@@ -1886,7 +1779,7 @@ class ValidatorAgent(LLMSubAgent):
 
     def _resolve_col_with_llm(self, col, value, headers, type_row=None,
                               raw=""):
-        """LLM 列名消歧：真实列名清单植入 prompt，让 LLM 从里面选最接近列。
+        """LLM 列名消歧：委托独立的 Column Resolution Agent（文档三.4）。
 
         场景：LLM 在 fields 里用了表头不存在的列名（如 `"None"`——漏给列名，
         或别名/英文键），规则层 `_closest_header` 匹配不到。此时把该表真实
@@ -1894,61 +1787,36 @@ class ValidatorAgent(LLMSubAgent):
         命中则改写 intent.fields 键，消除 COL_NOT_FOUND + 连带 MISSING_REQUIRED，
         让整条 intent 走通而非被 skipped。
 
-        返回：命中的真实中文表头名，或 ""（超时/失败/LLM 幻觉——幻觉列名
-        会被下方真实表头白名单校验拦掉，返回 "" 交原流程兜底）。
+        返回 (column, confidence, reason)：column="" 表示未命中/未开启/异常
+        (超时/失败/LLM 幻觉——幻觉列名已在 column_resolution_agent 内被真实
+        表头白名单拦掉)。confidence/reason 供调用方判断是否需要人工确认，
+        而不是本方法替业务下判断。
 
         opt-in：env CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG=1 开启（默认 off，
         与 forward_ref 同风格，避免 CI/无 LLM 环境意外产生额外调用）。
         """
         if os.environ.get("CODEMAKER_VALIDATOR_LLM_COL_DISAMBIG", "0") != "1":
-            return ""
+            return "", 0.0, ""
         if not col or not headers:
-            return ""
+            return "", 0.0, ""
         sid = self._ensure_own_session()
         if not sid:
-            return ""
-        cands = []
-        for _h, _t in zip(headers or [], type_row or []):
-            _n = _norm_col_name(_h)
-            if _n:
-                cands.append(_n + (f" ({_t})" if _t else ""))
-        if not cands:
-            return ""
-        _v = "" if value is None else str(value)
-        prompt = (
-            "配表列名消歧。系统在写一条配表操作时用了列名「%s」（值「%s」），"
-            "但该表真实表头里没有这个列名。\n"
-            "请从下面的【真实列名清单】中选出与它语义最接近的一个：\n"
-            "真实列名：%s\n"
-            "判断依据：列名含义 + 值「%s」的语义（如「九尾天狐·终焉」是名称）。\n"
-            "仅输出 JSON：{\"column\":\"选中的真实列名\"}，"
-            "若都不合适输出 {\"column\":\"\"}。"
-        ) % (str(col)[:40], _v[:60], "、".join(cands)[:800], _v[:60])
-        try:
-            raw_resp = self._call_llm_raw(prompt, timeout=30)
-        except Exception:
-            logger.warning("_resolve_col_with_llm 异常 col=%s", col, exc_info=True)
-            return ""
-        if not raw_resp:
-            logger.warning("_resolve_col_with_llm 空响应 col=%s", col)
-            return ""
-        m = re.search(r"\{.*\}", raw_resp, re.DOTALL)
-        if not m:
-            logger.warning("_resolve_col_with_llm 无 JSON col=%s", col)
-            return ""
-        try:
-            d = json.loads(m.group(0))
-        except ValueError:
-            logger.warning("_resolve_col_with_llm JSON 解析失败 col=%s", col)
-            return ""
-        picked = str(d.get("column", "") or "").strip()
-        # 幻觉防护：picked 必须是真实表头之一（精确匹配），否则丢弃
-        for _h in (headers or []):
-            if _norm_col_name(_h) == _norm_col_name(picked):
-                return _norm_col_name(_h)
-        logger.warning("_resolve_col_with_llm 选中列不在真实表头 col=%s picked=%s",
-                       col, picked[:40])
-        return ""
+            return "", 0.0, ""
+        from .column_resolution_agent import resolve_columns
+        result = resolve_columns(
+            self._call_llm_raw, [{"phrase": col, "value": value}],
+            headers, type_row, raw=raw)
+        for _m in result.get("mappings") or []:
+            return (_m.get("column", ""),
+                    float(_m.get("confidence", 0) or 0),
+                    _m.get("reason", ""))
+        for _a in result.get("ambiguous") or []:
+            _cands = _a.get("candidates") or []
+            if _cands:
+                # 低置信/歧义：仍给首个候选供上层展示，但置信度压到 0，
+                # 确保调用方走 ask 分支而非自动改名。
+                return _cands[0], 0.0, (_a.get("reason", "") or "候选存在歧义，需人工确认")
+        return "", 0.0, ""
 
     # ── FK 拓扑层校验（§4.2）────────────────────────────────
 
@@ -2316,6 +2184,36 @@ class ValidatorAgent(LLMSubAgent):
             ))
         return issues
 
+    def _build_repairable_plan_diff(self, lit_issues: dict, sid_to_intent: dict) -> list:
+        """§C Step2 Plan Diff Repair：把字面量 FK 断链 Issue 转成结构化、可回灌的
+        局部修正建议，而不只是一条 warning 文本。
+
+        不新增业务判断——数据全部来自 `_validate_literal_id_refs` 已算好的
+        Issue（真实 FK 图 + 本批产出集合比对）与 intent 自身的 op_id/table_hint/
+        sheet_hint。op_id 有值（走过 §A Outline Planner）时优先用 op_id 归因，
+        否则退回 table_hint/sheet_hint，供后续"只重跑该 op/该表"而非整条输入
+        重来（本轮先落地结构化 diff 本身，触发局部重跑留作后续接线）。
+        """
+        diff: list = []
+        for sid, issues in (lit_issues or {}).items():
+            it = sid_to_intent.get(sid)
+            op_id = getattr(it, "op_id", None) if it is not None else None
+            table_hint = getattr(it, "table_hint", "") if it is not None else ""
+            sheet_hint = getattr(it, "sheet_hint", "") if it is not None else ""
+            for issue in (issues or []):
+                if getattr(issue, "issue_type", "") != IssueType.FORWARD_REF_BROKEN.value:
+                    continue
+                diff.append({
+                    "op_id": op_id or f"subtask_{sid}",
+                    "table_hint": table_hint,
+                    "sheet_hint": sheet_hint,
+                    "problem": "literal_fk_missing_target",
+                    "col": getattr(issue, "col", ""),
+                    "value": getattr(issue, "value", None),
+                    "suggestion": getattr(issue, "suggestion", ""),
+                })
+        return diff
+
     def validate_two_layer(self, intents: list, schema_getter=None,
                            locator_result: LocatorResult = None,
                            data_getter=None, dry_run: bool = False) -> dict:
@@ -2418,6 +2316,7 @@ class ValidatorAgent(LLMSubAgent):
                     merged.setdefault(_sid, []).extend(_issues)
         except Exception:
             logger.debug("T4 字面量引用校验失败(降级)", exc_info=True)
+            _lit_issues = {}
         # 核心4:PK 冲突(UNIQUE_VIOLATION)前移到 validate 阶段阻断 + ask 用户
         # 原 O3 全软失败 → PK 冲突漏到 Step3 写盘才抓 + 误分类 unknown
         # 现对 UNIQUE_VIOLATION 预算建议 ID(max+1) → ask 接受/输入 → 改 intent
@@ -3127,7 +3026,9 @@ class ValidatorAgent(LLMSubAgent):
                 # （非阻断），故此处用 _is_blocking_tip 而非 _is_askable_tip。
                 _has_hard = any(_is_blocking_tip(tip) for tip in (tips or []))
             return {"ok": not _has_hard, "issues": tips, "fixes": [],
-                    "intents": intents, "tips": tips, "user_reply": None}
+                    "intents": intents, "tips": tips, "user_reply": None,
+                    "repairable_plan_diff": self._build_repairable_plan_diff(
+                        _lit_issues, _sid_to_intent)}
         for tip in (tips or []):
             if _is_business_required(tip):
                 sid = (tip.get("subtask_id") if isinstance(tip, dict)
@@ -3137,7 +3038,9 @@ class ValidatorAgent(LLMSubAgent):
                         and not it.validation.skipped:
                     self._mark_intent_skipped(it)
         return {"ok": True, "issues": tips, "fixes": [], "intents": intents,
-                "tips": tips, "user_reply": None}
+                "tips": tips, "user_reply": None,
+                "repairable_plan_diff": self._build_repairable_plan_diff(
+                    _lit_issues, _sid_to_intent)}
 
     def _suggest_next_id(self, intent, col: str, data_getter,
                          extra_used=None) -> Optional[int]:

@@ -961,27 +961,8 @@ class Step1ParseSubAgent:
             ctx.segments = segments
 
             # §去硬模板：Step1 层的二次 splitter_baseline 兜底（cross_table_splitter
-            # 11 模板）默认关闭，理由同 decompose_agent._splitter_baseline——硬编码
-            # 正则抽字段会越权替 LLM 做业务判断。可用
-            # CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启。
-            if not intents and segments and os.environ.get(
-                    "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") != "1":
-                warnings.append("ParseAgent 产空,尝试 splitter_baseline 兜底")
-                try:
-                    from ...core.cross_table_splitter import (
-                        CrossTableIntentSplitter, detect_cross_table_action)
-                    if detect_cross_table_action(ctx.user_text):
-                        splitter = CrossTableIntentSplitter()
-                        split_intents = splitter.split(ctx.user_text)
-                        if split_intents:
-                            intents = self._parse_agent.parse_baseline(
-                                ctx.user_text, split_intents)
-                            if intents:
-                                warnings.append(
-                                    f"splitter_baseline 兜底成功,产 {len(intents)} 条")
-                except Exception:  # noqa: BLE001
-                    logger.warning("Step1 splitter_baseline 兜底失败",
-                                   exc_info=True)
+            # 11 模板）已整体移除，理由同 decompose_agent._splitter_baseline——硬编码
+            # 正则抽字段会越权替 LLM 做业务判断。
         except StepHardError:
             raise
         except Exception as e:  # noqa: BLE001

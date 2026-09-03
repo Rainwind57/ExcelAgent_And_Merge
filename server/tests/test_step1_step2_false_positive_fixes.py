@@ -143,35 +143,34 @@ def test_never_filled_col_exempt():
 
 
 def test_same_family_exempt_and_still_reports_when_family_empty():
-    """同族（描述族）已有列写入 → 同族其余列不报；整族全空时仍要报（不误伤）。"""
+    """业务必填启发式已停用：同族列不再报缺（含整族全空场景，也不再报）。"""
     hdr = _schema("school_ability", "SchoolAbility")[0]
     ev = _existing_values_from_rows(hdr, _rows("school_ability", "SchoolAbility"))
     v = ValidatorAgent()
     v._pk_cols_cache = {}
     cols = [getattr(i, "col", "") for i in v._check_business_required_pre_add(
         _AddIntent(), hdr, _ability_fields(), _RAW_ABILITY, existing_values=ev)]
-    assert "功效描述" not in cols and "升级描述" not in cols
-    # 反向：描述族一列都没写 → 仍要报神通描述缺失
+    assert cols == [], f"业务必填启发式已停用，不应再报任何列，实际 {cols}"
+    # 反向：描述族一列都没写 → 同样不报（启发式停用后不再要求填满描述列）
     cols2 = [getattr(i, "col", "") for i in v._check_business_required_pre_add(
         _AddIntent(), hdr, {"神通id": 9999, "名称": "某某"}, _RAW_ABILITY,
         existing_values=ev)]
-    assert "神通描述" in cols2
+    assert cols2 == [], f"业务必填启发式已停用，不应再报神通描述，实际 {cols2}"
 
 
 def test_negation_exempt_fills_zero_for_int_column():
-    """「不带奖励」= 显式置空，不报缺；数值列补 0。"""
+    """「不带奖励」不再触发业务必填检查：无 issue，fields 不被改（启发式已停用）。"""
     hdr, trow = _schema("mail", "GlobalMail")
     raw = ("最后给新门派发一封开宗立派的全服邮件：邮件模板标题'太虚剑宗开宗立派'，"
            "全服邮件 global_id 20，邮件类型 1，发送人'系统'，"
            "发送时间 2026-09-01 00:00:00，不带奖励。")
-    assert "奖励" in ValidatorAgent._explicitly_empty_cols(raw, hdr)
     fields = {"全服邮件ID": 20, "发送人": "系统"}
     v = ValidatorAgent()
     v._pk_cols_cache = {}
     issues = v._check_business_required_pre_add(
         _AddIntent(), hdr, fields, raw, existing_values={}, type_row=trow)
-    assert all(getattr(i, "col", "") != "奖励" for i in issues)
-    assert fields.get("奖励") == 0
+    assert issues == [], f"业务必填启发式已停用，不应报缺，实际 {issues}"
+    assert "奖励" not in fields, "启发式停用后不再补 0，fields 保持原样"
 
 
 # ───────────────────────── F4：显式 FK 引用值 ─────────────────────────

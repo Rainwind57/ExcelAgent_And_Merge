@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Optional
 
 from .base import SubAgent
@@ -132,6 +133,37 @@ class DecomposeAgent(LLMSubAgent):
         # 单条指令多次 decompose（主路径+重试+单表重拆）不再每次 create_session，
         # 省 1 次 HTTP 建会话 RTT/调用。
         self._tls = threading.local()
+        # §P0 任务链分组跨组熔断：连续 N 组单 prompt 超时后短路剩余组 + 兜底链
+        # 各级 LLM 调用，直接走 _splitter_baseline 零 LLM 兜底（治"一堆 timed out"）。
+        # N=env CODEMAKER_DECOMPOSE_CHAIN_CIRCUIT（默认 1），0 关闭熔断。
+        try:
+            self._chain_timeout_circuit = max(
+                0, int(os.environ.get("CODEMAKER_DECOMPOSE_CHAIN_CIRCUIT", "1")))
+        except (TypeError, ValueError):
+            self._chain_timeout_circuit = 1
+        self._chain_timeout_streak = 0
+
+    def _chain_circuit_open(self) -> bool:
+        """任务链超时熔断是否已打开（达到连续超时阈值）。"""
+        return self._chain_timeout_streak >= self._chain_timeout_circuit > 0
+
+    def _record_chain_timeout(self, resp_err: str) -> bool:
+        """记录一次"可疑超时"（单 prompt 超时/空响应）。返回是否触发熔断。"""
+        if self._chain_timeout_circuit <= 0:
+            return False
+        _is_timeout = any(_x in (resp_err or "").lower()
+                          for _x in ("timed out", "timeout", "超时"))
+        if _is_timeout or not (resp_err or ""):
+            self._chain_timeout_streak += 1
+        else:
+            self._chain_timeout_streak = 0
+        if self._chain_circuit_open():
+            self.add_thinking(
+                "细分",
+                f"任务链连续 {self._chain_timeout_streak} 组超时，"
+                f"熔断剩余 LLM 兜底，直接走零 LLM baseline（治连环 timed out）")
+            return True
+        return False
 
     def _ensure_session(self) -> str:
         """复用 codemaker session，避免每次 LLM 调用新建会话。
@@ -241,6 +273,8 @@ class DecomposeAgent(LLMSubAgent):
 
         # 建议2：重置本次 Step1 LLM 预算（≤3 次，超则跳过补洞走 partial）
         self._init_step1_budget()
+        # §P0 任务链超时熔断：新请求重置连击（防单实例跨请求污染）
+        self._chain_timeout_streak = 0
 
         # §T10 重置本次链路已声明 produces_label 累积表（供分组 prompt 注入复用）
         self._declared_produces_vars = []
@@ -275,9 +309,9 @@ class DecomposeAgent(LLMSubAgent):
                     f"（跳过 LLM decompose，根治超时/漏意图）")
                 return _dom
 
-        # §P1-2.2 超时下调 90→40：P0-0 分段后候选 ≤3/段，单段小 schema 不需 90s
-        # 思考；长超时让 LLM 卡住拖垮整链。40s 够单段拆分。
-        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+        # §放宽：40→75，服务端真实响应普遍偏慢，40s 太紧一直 timeout；
+        # 需要更松可再调大 env，或用 CODEMAKER_LLM_TIMEOUT_SCALE 全局按比例放宽。
+        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
         candidates = locator_result.candidates
         # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：把 context 级噪声表
         # 从 schema 注入剔除，缩短 prompt。required/dependency 完整保留（不伤多表写入）。
@@ -300,7 +334,7 @@ class DecomposeAgent(LLMSubAgent):
         # 原 decompose 整句超时值，任务链单 prompt 场景复用。
         if force_single and len(candidates) > single_threshold:
             per_to = max(per_to, int(_os.environ.get(
-                "CODEMAKER_DECOMPOSE_CHAIN_TIMEOUT", "90")))
+                "CODEMAKER_DECOMPOSE_CHAIN_TIMEOUT", "120")))
         # §P0 链式分组拆分：任务链候选 12+ 表时，单 prompt 全 schema 超时/空返
         # （case0 实测 12 表 120s 仍空响应）。但单表/小 schema 单 prompt 能正常
         # 产出（entity_prefab 单表重拆产 5541 字符完整链）。折中：按 FK 链分组
@@ -349,6 +383,12 @@ class DecomposeAgent(LLMSubAgent):
                         f"DecomposeAgent 链式分组达到上限 {_max_groups}，剩余候选交缺表对账/规则兜底")
                     break
                 _groups_run += 1
+                # 熔断打开：跳过剩余组，直接走零 LLM 兜底（治连环超时）
+                if self._chain_circuit_open():
+                    self.add_thinking("细分",
+                        f"任务链超时熔断已打开，跳过剩余 "
+                        f"{max(0, len(candidates) - _gi)} 候选表分组，交零 LLM 兜底")
+                    break
                 _chunk = candidates[_gi:_gi + _chain_group]
                 _out = self._decompose_single_prompt(
                     text, _chunk, fk_block, per_to, column_signal=column_signal)
@@ -357,6 +397,8 @@ class DecomposeAgent(LLMSubAgent):
                 else:
                     _res, _drp = _out or [], []
                 if _res:
+                    # 本组成功产出 → 重置超时连击（继续后续组）
+                    self._chain_timeout_streak = 0
                     all_intents.extend(_res)
                     # §T10 累积本组产出的 produces_label，供下一组 prompt 注入复用
                     for _it in _res:
@@ -445,16 +487,69 @@ class DecomposeAgent(LLMSubAgent):
                     f"DecomposeAgent LLM 路径产空,零 LLM 兜底产 {len(fb)} 条"
                     f"(ColumnExtractor 通用兜底)")
                 all_intents = fb
-        # §分段单 prompt 兜底（与 splitter_baseline 互补）：仍空时按 split_multi_intent
-        # 分段，每段调 decompose_segment（段内候选裁剪 + 小 prompt），LLM 路径产准。
-        # 比 splitter_baseline 11 模板覆盖广（模板只命中已知链型），但依赖 LLM 可用。
-        if not all_intents:
+        # §分段单 prompt 兜底（与 splitter_baseline 互补）：仍空时先试 §A Outline
+        # Planner（LLM 拆 operation，带 op_id + raw_span），outline 产 ≥2 段时按段
+        # 逐个 decompose_segment 并把 op_id 标回 SplitIntent，供 Step2/Step4 按 op
+        # 归因。outline 产 <2/失败时原样回退 split_multi_intent 正则分段，零回归。
+        if not all_intents and not self._chain_circuit_open():
+            try:
+                outline_ops = self._llm_outline_operations(text)
+            except Exception:  # noqa: BLE001
+                logger.debug("Outline Planner 异常", exc_info=True)
+                outline_ops = []
+            if len(outline_ops) >= 2:
+                seg_intents = []
+                _op_metrics = []  # §三.3 可观测：每 op 的 schema_chars/candidate_count/llm_ms
+                for op in outline_ops:
+                    if self._chain_circuit_open():
+                        break
+                    seg_text = op["raw_span"]
+                    pruned = self._prune_segment_candidates(
+                        seg_text, candidates, column_signal,
+                        locator_result.fk_edges)
+                    seg_fk = self._build_fk_block(locator_result.fk_edges)
+                    # 仅 trace 开时才多算一次 schema block 长度用于观测（纯字符串
+                    # 拼装，无 LLM 调用；关闭时零额外开销）。
+                    _schema_chars = (
+                        len(self._build_schema_block(
+                            pruned, text=seg_text, column_signal=column_signal) or "")
+                        if _TRACE_ON else 0)
+                    _t0 = time.time()
+                    seg_out = self._decompose_single_prompt(
+                        seg_text, pruned, seg_fk, per_to,
+                        column_signal=column_signal)
+                    _llm_ms = int((time.time() - _t0) * 1000)
+                    seg_its = seg_out[0] if isinstance(seg_out, tuple) else seg_out
+                    for _it in (seg_its or []):
+                        try:
+                            _it.op_id = op["op_id"]
+                        except Exception:
+                            pass
+                    if seg_its:
+                        seg_intents.extend(seg_its)
+                    _op_metrics.append({
+                        "op_id": op["op_id"],
+                        "candidate_count": len(pruned),
+                        "schema_chars": _schema_chars,
+                        "llm_ms": _llm_ms,
+                        "produced": len(seg_its or []),
+                    })
+                if seg_intents:
+                    self.add_thinking("细分",
+                        f"DecomposeAgent 全表 prompt 产空，Outline Planner 拆 "
+                        f"{len(outline_ops)} 个 operation 兜底产 {len(seg_intents)} 条")
+                    all_intents = seg_intents
+                _push_telemetry(self.add_thinking, "outline_op_metrics",
+                                {"ops": _op_metrics})
+        if not all_intents and not self._chain_circuit_open():
             try:
                 from ..parser.multi_intent_splitter import split_multi_intent
                 segs = split_multi_intent(text)
                 if segs and len(segs) > 1:
                     seg_intents: list = []
                     for seg_text in segs:
+                        if self._chain_circuit_open():
+                            break
                         # 段级独立 locate（用主 locator_result 的候选裁剪）
                         pruned = self._prune_segment_candidates(
                             seg_text, candidates, column_signal,
@@ -475,7 +570,7 @@ class DecomposeAgent(LLMSubAgent):
             except Exception:  # noqa: BLE001
                 logger.debug("分段单 prompt 兜底失败", exc_info=True)
         # §缺表覆盖对账 + 定向单表重拆补漏（Step1 兜底，纯增量，missing 空则零开销）
-        if all_intents:
+        if all_intents and not self._chain_circuit_open():
             all_intents = self._backfill_missing(
                 text, all_intents, candidates, locator_result.fk_edges,
                 fk_block, per_to, column_signal)
@@ -483,7 +578,7 @@ class DecomposeAgent(LLMSubAgent):
         # 交给 LLM 自己看着候选池+FK图复核一遍（受 Step1 LLM 预算门控，预算耗尽
         # 自动跳过，不额外叠调用）。默认开，CODEMAKER_DECOMPOSE_TABLE_SELFCHECK=0
         # 关闭。
-        if all_intents:
+        if all_intents and not self._chain_circuit_open():
             all_intents = self._llm_verify_table_coverage(
                 text, all_intents, candidates, locator_result.fk_edges, per_to)
         # §Step1 解析层健康自检 + 保守回填（dict 残留/consumes 标签悬空）：
@@ -529,6 +624,61 @@ class DecomposeAgent(LLMSubAgent):
             logger.warning("school_chain_expander 失败", exc_info=True)
         return []
 
+    def _llm_outline_operations(self, text: str) -> list[dict]:
+        """§A Outline Planner 第一阶段：LLM 轻量拆 operation（不看 schema/候选表，
+        只归纳"有几个操作、每个操作对应原文哪一段"），供多指令/长输入先 outline
+        再逐段 grounded 分解（对应文档 T13 outline-then-expand）。
+
+        不引入表名/列名/关键词硬编码——纯 LLM 结构化输出，判断依据是原文本身。
+        受 Step1 LLM 预算门控（复用 _call_llm_raw 内部 _budget_gate），预算耗尽
+        或调用失败均返回 []，调用方原样回退 split_multi_intent 正则分段，零回归。
+        """
+        prompt = (
+            "把下面这条游戏配置指令拆成若干个独立操作(operation)。\n"
+            "只需要判断一共有几个操作、每个操作对应原文里的哪一段文字、"
+            "大致是什么动作类型，不要涉及任何表名/列名/schema（那是下一阶段的事）。\n"
+            "只输出一个 JSON 数组，不要输出任何其它文字或解释。每个元素形如：\n"
+            '{"op_id":"op_1","raw_span":"该操作对应的原文片段(尽量原样摘录，'
+            '不要遗漏也不要跨操作重叠)","action":"add|set|delete|get",'
+            '"mentioned_entities":["提到的实体/名称"],'
+            '"mentioned_values":["提到的关键数值/ID/坐标等"]}\n'
+            f"指令原文：\n{text}"
+        )
+        try:
+            # §放宽：20→30，服务端整体偏慢时 20s 仍会顶满；30 更稳，仍可经
+            # CODEMAKER_LLM_TIMEOUT_SCALE 全局再放宽。
+            raw = self._call_llm_raw(prompt, timeout=30)
+        except Exception:  # noqa: BLE001
+            logger.debug("Outline Planner LLM 调用失败", exc_info=True)
+            return []
+        if not raw:
+            return []
+        if _TRACE_ON:
+            _dump_llm_io("outline", prompt, raw, stems=[])
+        try:
+            arr = self._parse_json_array(raw)
+        except Exception:  # noqa: BLE001
+            arr = []
+        ops: list[dict] = []
+        for i, item in enumerate(arr or []):
+            if not isinstance(item, dict):
+                continue
+            span = str(item.get("raw_span") or "").strip()
+            if not span:
+                continue
+            op_id = str(item.get("op_id") or "").strip() or f"op_{i + 1}"
+            action = str(item.get("action") or "add").strip().lower()
+            if action not in ("add", "set", "delete", "get"):
+                action = "add"
+            ops.append({
+                "op_id": op_id,
+                "raw_span": span,
+                "action": action,
+                "mentioned_entities": item.get("mentioned_entities") or [],
+                "mentioned_values": item.get("mentioned_values") or [],
+            })
+        return ops
+
     def decompose_segment(self, seg: str, locator_result: LocatorResult) -> list:
         """按段分解：单段文本 + 该段候选表 → SplitIntent[]。
 
@@ -556,9 +706,9 @@ class DecomposeAgent(LLMSubAgent):
         # 建议2：重置本段 Step1 LLM 预算（≤3 次，超则跳过补洞走 partial）
         self._init_step1_budget()
         # 段级 schema 小(单段+剪枝后候选表少)，不需整句级长 timeout。默认与
-        # decompose 整句入口(L85)对齐为 40，消除两处默认不一致；runner/env
-        # 可经 CODEMAKER_DECOMPOSE_TIMEOUT 进一步下压（串行/并发累加墙钟由此收敛）。
-        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "40"))
+        # decompose 整句入口对齐（§放宽：40→75，服务端偏慢，避免一直 timeout）；
+        # runner/env 可经 CODEMAKER_DECOMPOSE_TIMEOUT 进一步调整。
+        per_to = int(_os.environ.get("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
         # 候选分层裁剪（文档 #2/#3 "context 默认不注入"）：剔除 context 级噪声表 schema。
         self._context_drop_stems = self._context_drop_set(locator_result)
         candidates = self._prune_segment_candidates(
@@ -588,7 +738,7 @@ class DecomposeAgent(LLMSubAgent):
             # §落地③：重拆是单表小 schema，不需要主 prompt 的整超时预算——命中
             # 噪声表时顶满 per_to(120s) 才判空，白等。收窄到独立的短超时，命中
             # 真表通常很快有响应，判空也快得多。
-            _bf_to = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+            _bf_to = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "45")))
 
             def _retry_dropped(_rs: str):
                 _rc = cand_by_stem.get(_rs) or CandidateTable(
@@ -644,7 +794,7 @@ class DecomposeAgent(LLMSubAgent):
             _per_table = candidates[:6][:_max_single]
             self.add_thinking("细分",
                 f"DecomposeAgent 段级超时产空,逐表单表重拆 {len(_per_table)} 候选")
-            _bf_to2 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+            _bf_to2 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "45")))
 
             def _retry_cand(_cand):
                 try:
@@ -876,13 +1026,13 @@ class DecomposeAgent(LLMSubAgent):
         """零 LLM 兜底：LLM 路径产空时产确定性 intent。
 
         §去硬模板：原 path a（cross_table_splitter 11 模板，正则抽字段/produces/
-        consumes，跳过 LLM 决策）+ _key_value_type_baseline（"第N条"句式正则硬编码）
-        默认关闭，只保留通用 path b —— ColumnExtractor 候选表 → 每表产 1 条 add
-        intent，字段值靠真实表头锚定通用抽取（value_extractor），不含任何表名/
-        业务词硬编码分支。表/sheet/列匹配交给 LLM 主链路（decompose 的真实 LLM
-        调用）完成，本方法只在 LLM 彻底产空时兜底，不越权替 LLM 做业务判断。
-        可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新开启旧模板
-        兜底（供对照/紧急回退）。
+        consumes，跳过 LLM 决策）已整体移除。_key_value_type_baseline（"第N条"
+        句式正则硬编码）默认关闭，只保留通用 path b —— ColumnExtractor 候选表 →
+        每表产 1 条 add intent，字段值靠真实表头锚定通用抽取（value_extractor），
+        不含任何表名/业务词硬编码分支。表/sheet/列匹配交给 LLM 主链路（decompose
+        的真实 LLM 调用）完成，本方法只在 LLM 彻底产空时兜底，不越权替 LLM 做
+        业务判断。可用 CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK=0 显式重新
+        开启 _key_value_type_baseline 兜底（供对照/紧急回退）。
 
         不调 LLM，不依赖 serve 健康。产空仍返 []（由 Step1 外层再回退）。
         """
@@ -891,22 +1041,6 @@ class DecomposeAgent(LLMSubAgent):
             "CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "1") == "1"
         all_fb: list = []
         if not _template_fallback_disabled:
-            # a. splitter 11 模板（默认关闭，硬编码规则，见上）
-            try:
-                from ..core.cross_table_splitter import (
-                    CrossTableIntentSplitter, detect_cross_table_action)
-                if detect_cross_table_action(text):
-                    sp = CrossTableIntentSplitter()
-                    sp_intents = sp.split(text)
-                    if sp_intents:
-                        # Template fallback is a deterministic full-chain answer for known
-                        # cross-table patterns. Do not mix in ColumnExtractor candidate
-                        # fallback afterwards; shared columns such as model_id/coords can
-                        # otherwise hallucinate weakly related tables into executable tasks.
-                        return sp_intents
-            except Exception:  # noqa: BLE001
-                logger.warning("DecomposeAgent splitter_baseline 模板失败",
-                               exc_info=True)
             kv_fb = self._key_value_type_baseline(text, candidates)
             if kv_fb:
                 return kv_fb
@@ -1253,7 +1387,7 @@ class DecomposeAgent(LLMSubAgent):
         # 收窄到"并发里最慢的一个"而非"逐个叠加"。
         # §落地③：重拆超时单独收窄（单表小 schema 不需整句超时预算，命中噪声
         # 表判空也不该等满 120s）。
-        _bf_to3 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "30")))
+        _bf_to3 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "45")))
 
         def _retry_one(_ms: str):
             _base = cand_by_stem.get(_ms)
@@ -1596,6 +1730,7 @@ class DecomposeAgent(LLMSubAgent):
                 _is_timeout = any(_x in _resp_err.lower()
                                   for _x in ("timed out", "timeout", "超时"))
                 if _is_timeout:
+                    self._record_chain_timeout(_resp_err)
                     self.add_thinking("细分",
                         f"DecomposeAgent 单 prompt 超时空响应(stems={_stems}),"
                         f"不重试节省墙钟（重试仍顶满 timeout）")
@@ -1690,6 +1825,7 @@ class DecomposeAgent(LLMSubAgent):
                              "retry_attempt": _attempt,
                              "resp_err": _resp_err[:40]})
         if not raw:
+            self._record_chain_timeout(_resp_err)
             self.add_thinking("细分", "DecomposeAgent 单 prompt 空响应")
             _push_telemetry(self.add_thinking, "decompose_io", {
                 "site": "single_prompt", "stems": _stems,
@@ -2241,6 +2377,33 @@ class DecomposeAgent(LLMSubAgent):
                             f"，无 FK 边可回填（交 Step2/backfill 兜底）")
         return n
 
+    def _annotate_schema_role(self, lines: list[str], groups: dict) -> list[str]:
+        """§B 证据卡：给 schema 行显式打 required/dependency/context 角色标签。
+
+        不新增业务判断——角色数据完全来自 locator 已算好的 candidate_groups
+        （真实 schema/FK 图/LLM 复核分层结果），本函数只做纯字符串标注，让 LLM
+        无论走哪条 schema 裁剪路径（贪心预算/分层摘要/未触发预算）都能看到"这张表
+        是主目标/依赖表/旁证表"，而不是只在 prompt 超预算时才隐式感知。
+        """
+        if not groups:
+            return lines
+        tier_of: dict[str, str] = {}
+        for tier in ("required", "dependency", "context"):
+            for stem in groups.get(tier, []) or []:
+                tier_of.setdefault(stem, tier)
+        if not tier_of:
+            return lines
+        out = []
+        for ln in lines:
+            m = re.match(r"^- ([^/]+)/([^:]+):", ln)
+            if m:
+                stem, sheet = m.group(1), m.group(2)
+                tier = tier_of.get(stem)
+                if tier:
+                    ln = ln.replace(f"- {stem}/{sheet}:", f"- {stem}/{sheet}[{tier}]:", 1)
+            out.append(ln)
+        return out
+
     def _context_drop_set(self, locator_result) -> set:
         """从 schema 注入中剔除的 context 级噪声表 stem 集合。
 
@@ -2321,6 +2484,13 @@ class DecomposeAgent(LLMSubAgent):
             all_tables = {p.stem: p for p in self._cli.list_tables()}
         except Exception:
             return ""
+        # §B 证据卡：候选分层（required/dependency/context）供全路径角色标注。
+        # 数据源是 locator 已算好的真实分层（LLM 复核 + FK 图），非本函数新增判断。
+        try:
+            from ..locator.candidate_grouping import classify_candidates
+            _groups = classify_candidates(candidates)
+        except Exception:
+            _groups = {}
         lines: list[str] = []
         _records: list[dict] = []  # schema_budget 用（stem/sheet/cols/sig_cols）
         # context 级噪声表剔除（文档 #2/#3）：全部候选都在 drop 集时放弃裁剪（避免 schema 空）。
@@ -2479,21 +2649,19 @@ class DecomposeAgent(LLMSubAgent):
                         "解析",
                         f"schema 贪心预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
                         f"（超 {_budget} 字符，命中列/PK/FK 优先，其它列按预算截断）")
-                    return "\n".join(_budget_lines)
+                    return "\n".join(self._annotate_schema_role(_budget_lines, _groups))
                 # 贪心未触发（未超预算）→ 回退分层裁剪兜底
                 from .schema_budget import apply_schema_budget
-                from ..locator.candidate_grouping import classify_candidates
-                _groups = classify_candidates(candidates)
                 _budget_lines, _applied = apply_schema_budget(_records, _groups, _budget)
                 if _applied:
                     self.add_thinking(
                         "解析",
                         f"schema 预算裁剪：{len(lines)}→{len(_budget_lines)} 行"
                         f"（超 {_budget} 字符，dependency 转摘要/context 省略）")
-                    return "\n".join(_budget_lines)
+                    return "\n".join(self._annotate_schema_role(_budget_lines, _groups))
             except Exception:
                 pass
-        return "\n".join(lines) if lines else ""
+        return "\n".join(self._annotate_schema_role(lines, _groups)) if lines else ""
 
     def _build_fk_block(self, fk_edges: list[FKEdge]) -> str:
         """构 FK 块:每条边 from.column → to.column。"""

@@ -942,7 +942,10 @@ class TestBusinessRequiredPack3:
     """
 
     def test_business_required_missing_marks_skipped(self):
-        """指令含引号 + headers 含 名称/描述 kw 列 + LLM 漏产 → MISSING_REQUIRED issue + skipped=True。"""
+        """业务必填启发式已停用：即使指令含引号、漏产 名称/描述 类列，也不报缺、不 skip。
+
+        §约束收缩（用户原则）：Step2 只强制主键列，其余列均可为空。
+        """
         v = _make_validator()
         v._pk_cols_cache = {}
         it = _intent(table="item", sheet="ItemBase",
@@ -953,10 +956,9 @@ class TestBusinessRequiredPack3:
             ["int", "string", "string", "string"])
         out = v.validate_field_layer([it], schema_getter=sg, data_getter=lambda x: {})
         issues = out.get(id(it)) or []
-        assert any(getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
-                   and "描述" in getattr(i, "col", "")
-                   for i in issues)
-        assert getattr(it.validation, "skipped", False) is True
+        assert not any(getattr(i, "issue_type", "") == IssueType.MISSING_REQUIRED.value
+                       for i in issues), "业务必填启发式已停用，不应再报缺"
+        assert getattr(getattr(it, "validation", None), "skipped", False) is False
 
     def test_business_required_not_quoted_no_check(self):
         """指令无引号（用户未显式给名称/描述值）→ 不触发 heuristic check（豁免）。"""

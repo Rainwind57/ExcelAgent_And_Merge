@@ -234,12 +234,13 @@ class Step4ConcludeSubAgent:
             summary = ctx.folded_message()
 
         # 反模式归纳（用共享 helper，替代原内联 _phase_conclude 核心逻辑）。
+        # §异步化（用户原则：允许失败，成功照常写表；汇总不阻塞）：原实现同步调
+        # LLM 归纳，失败时汇总等待；现放后台 daemon 线程执行——主线程立即产出
+        # 汇总返回，归纳失败/慢速/进程退出都不影响用户看到成功部分与失败清单。
+        # induced_count 因结果在后台线程落地、不回传，恒为 0（归纳产出数改由
+        # 后台线程写 warnings 观测；前端不再读取该指标作为"学习产出数"）。
         # _collect_failed_traces + _induce_anti_patterns_via 在 TableAgent 上，
         # V2 Step4 与 legacy _phase_conclude 共用，消除双份漂移。
-        # §低危修复：induced_count 原硬编码 len(failures)（失败条数，与"归纳产出
-        # 几条候选"语义无关——即便 induce 未开启/异常/产出 0 条，也照样报
-        # induced_count=len(failures)，前端读到的"学习产出数"是假数据）。
-        # 现用 _induce_anti_patterns_via 的真实返回值 n（默认 0，异常/未触发保持 0）。
         induced_count = 0
         if failures and self._services is not None:
             try:
@@ -247,12 +248,34 @@ class Step4ConcludeSubAgent:
                     _enh = self._services.ai_enhancer
                     if _enh is not None:
                         from ..agent import TableAgent
-                        traces = TableAgent._collect_failed_traces(failures)
-                        induced_count = TableAgent._induce_anti_patterns_via(traces, _enh) or 0
-                        if induced_count:
-                            warnings.append(
-                                f"反模式归纳产出 {induced_count} 条候选"
-                                f"（pending_review，待 promote）")
+                        import threading
+                        _traces = TableAgent._collect_failed_traces(failures)
+
+                        def _induce_bg() -> None:
+                            """后台线程：LLM 反模式归纳（失败/慢速不阻塞主汇总）。"""
+                            try:
+                                _n = TableAgent._induce_anti_patterns_via(
+                                    _traces, _enh) or 0
+                                if _n:
+                                    warnings.append(
+                                        f"反模式归纳产出 {_n} 条候选"
+                                        f"（pending_review，待 promote）")
+                            except Exception:  # noqa: BLE001
+                                logger.warning(
+                                    "Step4 反模式归纳失败（降级）", exc_info=True)
+                                warnings.append(
+                                    "反模式归纳失败（已降级，不影响结果）")
+
+                        # daemon 线程：不阻塞进程退出，失败/挂起不影响主链路
+                        _t = threading.Thread(
+                            target=_induce_bg,
+                            name="step4_induce",
+                            daemon=True)
+                        try:
+                            _t.start()
+                        except Exception:  # noqa: BLE001
+                            logger.warning("Step4 反模式归纳线程派发失败",
+                                           exc_info=True)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Step4 反模式归纳失败（降级）", exc_info=True)
                 warnings.append(f"反模式归纳失败：{e}")

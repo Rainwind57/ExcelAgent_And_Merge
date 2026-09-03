@@ -71,52 +71,6 @@ def test_key_value_type_baseline_routes_by_unquoted_intent_text(monkeypatch):
     assert intents[1].fields["type"] == "tips"
 
 
-def test_splitter_baseline_does_not_append_empty_candidate_shells_after_template(monkeypatch):
-    # §去硬模板：cross_table_splitter 11 模板默认关闭，本测试显式重新开启验证
-    # 该模板函数自身逻辑仍正确（模板未删除，只是默认不再介入主链路）。
-    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
-    text = (
-        "新增一个NPC叫铁匠老张，model_id为1015，放在space_id 10008的场景坐标(60,0,30)，"
-        "玩家点击后弹出对话，对话内容为'欢迎来到铁匠铺，我可以帮你锻造装备。'，"
-        "选项为'好的，我要锻造'和'离开'"
-    )
-    candidates = [
-        CandidateTable(stem="entity_prefab", sheet="Base", confidence=1.0),
-        CandidateTable(stem="interaction", sheet="Interaction", confidence=1.0),
-        CandidateTable(stem="spawn_world_entity", sheet="SpawnWorldEntity", confidence=1.0),
-        CandidateTable(stem="item", sheet="", confidence=0.4),
-        CandidateTable(stem="space", sheet="", confidence=0.4),
-        CandidateTable(stem="reward", sheet="", confidence=0.4),
-        CandidateTable(stem="spell", sheet="", confidence=0.4),
-    ]
-    fk_edges = [
-        FKEdge("spawn_world_entity", "SpawnWorldEntity", "entity_prefab_id",
-               "entity_prefab", "Base", "prefab_id"),
-        FKEdge("interaction", "Interaction", "effect.data.3006.conv_id",
-               "interaction", "InteractionConv", "conv_id"),
-    ]
-
-    intents = DecomposeAgent(parser=object())._splitter_baseline(
-        text, candidates, fk_edges)
-
-    actual = {(it.table_hint, it.sheet_hint) for it in intents}
-    assert ("entity_prefab", "Base") in actual
-    assert ("interaction", "Interaction") in actual
-    assert ("spawn_world_entity", "SpawnWorldEntity") in actual
-    assert not any(it.table_hint in {"item", "space", "reward", "spell"}
-                   and not it.fields for it in intents)
-    prefab = next(it for it in intents if it.table_hint == "entity_prefab")
-    spawn = next(it for it in intents if it.table_hint == "spawn_world_entity")
-    conv = next(it for it in intents
-                if it.table_hint == "interaction" and it.sheet_hint == "InteractionConv")
-    assert prefab.fields["实体类型"] == "WorldNonPlayer"
-    assert prefab.fields["model_prefab"] == "1015"
-    assert conv.fields["对话内容"] == "欢迎来到铁匠铺，我可以帮你锻造装备。"
-    assert spawn.fields["刷新ID"] == "<new_spawn_id>"
-    assert spawn.produces == "new_spawn_id"
-    assert spawn.fields["候选坐标"] == [[60, 0, 30]]
-
-
 def test_splitter_baseline_preserves_set_action_and_locator():
     text = "把entity_prefab中prefab_id为8004的NPC名字从'青龙'改成'青龙堂主'"
     candidates = [
@@ -179,39 +133,6 @@ def test_splitter_baseline_adds_explicit_table_name_missed_by_locator():
     assert "spawn_world_entity" in by_table
     assert by_table["spawn_world_entity"].action == "delete"
     assert by_table["spawn_world_entity"].sheet_hint == "SpawnWorldEntity"
-
-
-def test_splitter_baseline_reward_dialogue_uses_stable_option_3_chain(monkeypatch):
-    # §去硬模板：同上，显式重新开启验证模板函数自身逻辑仍正确。
-    monkeypatch.setenv("CODEMAKER_DECOMPOSE_DISABLE_TEMPLATE_FALLBACK", "0")
-    text = (
-        "新增一个道具商人叫'云游商人'，model_id 1021，放在space_id 10001坐标(30,0,40)，"
-        "玩家点击后弹出对话'欢迎光临，要不要看看我的货物？'，选项'好的，看看'和'下次再来'，"
-        "点击'好的，看看'后获得reward_id 10066的奖励包"
-    )
-    candidates = [
-        CandidateTable(stem="entity_prefab", sheet="Base", confidence=1.0),
-        CandidateTable(stem="interaction", sheet="Interaction", confidence=1.0),
-        CandidateTable(stem="spawn_world_entity", sheet="SpawnWorldEntity", confidence=1.0),
-    ]
-
-    intents = DecomposeAgent(parser=object())._splitter_baseline(text, candidates, [])
-
-    reward_conv = next(
-        it for it in intents
-        if it.table_hint == "interaction"
-        and it.sheet_hint == "InteractionConv"
-        and it.produces == "new_reward_conv_id"
-    )
-    option_3 = next(it for it in intents if it.produces == "option_3_id")
-    first_option = next(it for it in intents if it.produces == "option_1_id")
-
-    assert first_option.fields["option_function.data.1.conv_id"] == "<new_reward_conv_id>"
-    assert reward_conv.fields["编号"] == "<new_reward_conv_id>"
-    assert reward_conv.fields["选项1"] == "<option_3_id>"
-    assert option_3.fields["编号"] == "<option_3_id>"
-    assert option_3.fields["选项内容"] == "多谢"
-    assert option_3.fields["option_function.data.1.reward_id"] == "10066"
 
 
 def test_decompose_prompt_injects_domain_few_shots_without_parser_hook():

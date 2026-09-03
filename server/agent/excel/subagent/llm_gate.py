@@ -19,9 +19,9 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 _MAX = max(1, int(os.environ.get("CODEMAKER_LLM_GLOBAL_MAX", "8")))
-# §P1-2.4 acquire 超时 180→60s：原 180s 等待太长，排队的 LLM 调用堆叠拖垮链路。
-# 60s 够并发槽释放（单次 prompt 已调到 40s）；超时放行降级（不死锁）。
-_TIMEOUT = max(10, int(os.environ.get("CODEMAKER_LLM_THROTTLE_TIMEOUT_S", "60")))
+# §放宽：60→90。单次 prompt 超时已从 40s 放宽到 75s，排队等槽位的等待上限也
+# 跟着松一点，避免槽位没释放就先在这里降级放行、叠加更多并发压垮后端。
+_TIMEOUT = max(10, int(os.environ.get("CODEMAKER_LLM_THROTTLE_TIMEOUT_S", "90")))
 _sem = threading.BoundedSemaphore(_MAX)
 _acquired_count = 0
 _wait_total = 0.0

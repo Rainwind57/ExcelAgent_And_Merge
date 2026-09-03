@@ -732,79 +732,15 @@ class TestSplitterProducesPreserved:
             ))
         return out
 
-    def test_produces_preserved(self):
-        from agent.excel.cross_table_splitter import (
-            CrossTableIntentSplitter, detect_cross_table_action)
-        t = '新增NPC叫张三,对话内容为"你好",选项为"A"和"B",space_id为100,坐标(1,2,3)'
-        assert detect_cross_table_action(t) == "npc_dialogue"
-        splits = CrossTableIntentSplitter().split(t)
-        its = self._convert(splits)
-        # D1 重构后：NPC/Interaction/对话/选项/spawn 都有 produces
-        produces = [(i.table_hint, i.extras.get("produces")) for i in its]
-        assert ("entity_prefab", "new_prefab_id") in produces
-        assert ("interaction", "new_interaction_id") in produces  # D1 新增 Interaction 链接表
-        assert ("interaction", "new_conv_id") in produces or \
-               ("interaction", "option_1_id") in produces
-        # D1/D3: spawn 有独立 produces=new_spawn_id（避免与 prefab 撞）
-        spawn = [i for i in its if i.table_hint == "spawn_world_entity"]
-        assert spawn and spawn[0].extras.get("produces") == "new_spawn_id"
+    # §去硬模板：原 test_produces_preserved / test_npc_chain_topology /
+    # test_evolve_chain_topology 依赖 CrossTableIntentSplitter（已随生产代码
+    # 整体移除的 11 硬编码模板拆分器），一并删除。以下仅保留不依赖该类的用例。
 
     def test_produces_none_not_in_extras(self):
         from agent.excel.cross_table_splitter import SplitIntent
         si = SplitIntent(text="x", table_hint="t", produces=None)
         its = self._convert([si])
         assert "produces" not in its[0].extras
-
-    def test_npc_chain_topology(self):
-        """D1 重构后：选项→对话→Interaction→NPC→spawn（全链依赖，含 Interaction 链接表）。"""
-        from agent.excel.cross_table_splitter import CrossTableIntentSplitter
-        t = '新增NPC叫张三,对话内容为"你好",选项为"A"和"B",space_id为100,坐标(1,2,3)'
-        its = self._convert(CrossTableIntentSplitter().split(t))
-        assert len(its) >= 5  # NPC + Interaction + 对话 + 2选项 + spawn
-        deps = OperationOrchestrator._compute_deps(its)
-        # 找各意图下标
-        npc_idx = next(i for i, it in enumerate(its) if it.table_hint == "entity_prefab")
-        inter_idx = next(i for i, it in enumerate(its)
-                         if it.table_hint == "interaction" and it.sheet_hint == "Interaction")
-        conv_idx = next(i for i, it in enumerate(its)
-                        if it.table_hint == "interaction" and it.sheet_hint == "InteractionConv")
-        opt_idxs = [i for i, it in enumerate(its)
-                    if it.table_hint == "interaction" and it.sheet_hint == "InteractionConvOption"]
-        spawn_idx = next(i for i, it in enumerate(its)
-                         if it.table_hint == "spawn_world_entity")
-        # 对话(conv) 依赖选项(opt_idxs)
-        assert deps[conv_idx] == set(opt_idxs)
-        # Interaction 依赖对话（effect.data.3006.conv_id 引用 <new_conv_id>）
-        assert deps[inter_idx] == {conv_idx}
-        # NPC 依赖 Interaction（交互id 引用 <new_interaction_id>）
-        assert deps[npc_idx] == {inter_idx}
-        # spawn 依赖 NPC
-        assert deps[spawn_idx] == {npc_idx}
-        levels = OperationOrchestrator._topo_levels(its)
-        # 选项在第一层（无依赖）
-        assert all(i in levels[0] for i in opt_idxs)
-        # 对话在第二层
-        assert conv_idx in levels[1]
-        # Interaction 在第三层
-        assert inter_idx in levels[2]
-        # NPC 在第四层
-        assert npc_idx in levels[3]
-        # spawn 在第五层
-        assert spawn_idx in levels[4]
-
-    def test_evolve_chain_topology(self):
-        """进化链：pet adds 无依赖先跑，pet_evolve 依赖 pet 的 id。"""
-        from agent.excel.cross_table_splitter import CrossTableIntentSplitter
-        t = ("增加灵兽牛马一阶,牛马二阶,牛马三阶,灵兽id分别是4444,4445,4446,"
-             "并且有进化链牛马一阶进化成牛马二阶,牛马二阶进化为牛马三阶,"
-             "两条进化id分别是11111,11112")
-        from agent.excel.cross_table_splitter import detect_cross_table_action
-        assert detect_cross_table_action(t) == "evolve"
-        its = self._convert(CrossTableIntentSplitter().split(t))
-        # 至少 3 pet + 2 evolve
-        pet_n = sum(1 for i in its if i.table_hint == "pet")
-        evolve_n = sum(1 for i in its if i.table_hint == "pet_evolve")
-        assert pet_n >= 3 and evolve_n >= 2
 
 
 class TestSplitterFastPathGate:
