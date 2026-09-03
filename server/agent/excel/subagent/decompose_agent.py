@@ -723,11 +723,29 @@ class DecomposeAgent(LLMSubAgent):
         self._last_column_signal = column_signal
         self.add_thinking("细分",
             f"DecomposeAgent 段分解({len(candidates)}/{len(locator_result.candidates)} 候选,timeout={per_to}s)")
-        seg_out = self._decompose_single_prompt(
-            seg, candidates, fk_block, per_to, column_signal=column_signal)
-        # _decompose_single_prompt 返回 (intents, dropped_stems) tuple
-        intents = seg_out[0] if isinstance(seg_out, tuple) else seg_out
-        dropped = seg_out[1] if isinstance(seg_out, tuple) and len(seg_out) > 1 else []
+        # §Step1 timeout 治本：段级候选 > 阈值时走并发每表（每表 1 小 prompt，
+        # 1 表 schema，token 极小不易 timeout），不再单 prompt 拼 N 表 schema。
+        # 段内跨表 produces/consumes 靠 prompt 全文 + 占位符规范 + _assemble 后置
+        # infer_produces_consumes 接（与 _parse_segments 多段路径同构）。
+        # 阈值 CODEMAKER_DECOMPOSE_SEGMENT_PARALLEL_THRESHOLD 默认 2（≤2 表单 prompt
+        # 够小，>2 表并发每表避 timeout）。设 0 强制全走单 prompt（回旧行为）。
+        _seg_par_thr = int(_os.environ.get(
+            "CODEMAKER_DECOMPOSE_SEGMENT_PARALLEL_THRESHOLD", "2"))
+        if _seg_par_thr > 0 and len(candidates) > _seg_par_thr:
+            self.add_thinking("细分",
+                f"DecomposeAgent 段级并发每表({len(candidates)}>{_seg_par_thr}，"
+                f"避单 prompt 拼 N 表 schema timeout)")
+            seg_out = self._decompose_parallel(
+                seg, candidates, fk_block, per_to, column_signal=column_signal)
+            # _decompose_parallel 返回 list[intent]（非 tuple）
+            intents = seg_out if isinstance(seg_out, list) else (seg_out[0] if isinstance(seg_out, tuple) else seg_out)
+            dropped = seg_out[1] if isinstance(seg_out, tuple) and len(seg_out) > 1 else []
+        else:
+            seg_out = self._decompose_single_prompt(
+                seg, candidates, fk_block, per_to, column_signal=column_signal)
+            # _decompose_single_prompt 返回 (intents, dropped_stems) tuple
+            intents = seg_out[0] if isinstance(seg_out, tuple) else seg_out
+            dropped = seg_out[1] if isinstance(seg_out, tuple) and len(seg_out) > 1 else []
         # §段级叙述灌值丢弃后单表重拆（与主入口 decompose 同逻辑）：段内 LLM 退化产
         # 垃圾 fields 的 stem，用单表小 schema 重拆一次。防子任务丢失。
         if dropped:

@@ -273,18 +273,20 @@ class ParseAgent:
         if not locator_result or not locator_result.candidates:
             self._think("ParseAgent 粗路由无候选表,返回空")
             return []
-        # §Step1 列名信号：locate 已内置 ColumnExtractor，直接从 result 取
-        self._last_column_extraction = getattr(locator_result, "column_signal", None)
-        # 存 locator_result 供 4-Step 路径 validate_two_layer FK 字面值引用校验用
-        self._last_locator_result = locator_result
-        # 同步收集到全段 list（单段路径也走 list 收集，统一 Step1 读取入口）
-        self._last_locator_results = [locator_result]
-        # §3.1 step 3+4: schema 拉取 + LLM 拆分（DecomposeAgent 内嵌）
-        # §P0 单任务链：_last_segments 为单段 cross_table 时（split_multi_intent
-        # 判定为单条跨表任务链，未按句切段），force_single=True 让 decompose 无视
-        # 候选数阈值走单 prompt 全候选路径，保留跨表 produces/consumes 全链上下文。
+        # §Step1 timeout 治本：去掉 force_single 强制单 prompt 全候选路径。
+        # 原行为：整句被判单条跨表任务链（split_multi_intent 返回单段 cross_table）
+        # 时 force_single=True → decompose 无视候选数阈值走单 prompt 拼 4-12 表全
+        # schema（10-20k token）→ serve 生成长 JSON 慢 → timeout → 判空 → 多层串行
+        # 兜底叠延迟 → "一堆 timed out"。这是多意图系统性 timeout 根因。
+        # 新行为：跨表链也走正常候选阈值判定（≤阈值单 prompt，>阈值并发每表）。
+        # 跨表 produces/consumes 全链上下文不靠"单 prompt 一次看全"，靠已有基础设施：
+        #   1. locate FK 扩表 —— 跨表候选本就靠 FK 边扩进候选集
+        #   2. prompt 占位符命名规范 new_<stem>_id —— 各表独立产 produces/consumes 一致
+        #   3. _assemble 后置 infer_produces_consumes —— 按 RelationGraph FK 边连占位符
+        # force_single 仍可通过环境变量 CODEMAKER_DECOMPOSE_FORCE_SINGLE=1 恢复旧行为。
         _force_single = (
-            len(self._last_segments) == 1
+            os.getenv("CODEMAKER_DECOMPOSE_FORCE_SINGLE", "0") == "1"
+            and len(self._last_segments) == 1
             and getattr(self._last_segments[0], "action", "") == "cross_table")
         try:
             split_intents = self._decompose_agent.decompose(
