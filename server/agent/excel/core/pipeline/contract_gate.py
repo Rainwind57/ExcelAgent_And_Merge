@@ -576,19 +576,31 @@ class ContractGate:
         gaps: list[str] = []
         if not segments:
             return gaps
-        # intent 按段归属（用 raw 文本子串匹配，粗粒度）
+        # intent 按段归属（P2-2：原字符集重叠粗判——两段都含"任务/奖励"等高频
+        # 中文词会错配。改双重判据：①任一段文本是另一方的子串（intent.raw 本
+        # 就是段文本的清洗版，强命中）②否则 Jaccard=交集/并集 归一化，防高频
+        # 词虚高重叠。仍粗粒度，只供层5 参考提示，不硬判。）
         seg_intents: list[list] = [[] for _ in segments]
         for it in intents:
             raw = str(getattr(it, "raw", "") or "")
             best_seg = -1
-            best_overlap = 0
+            best_score = 0.0
             for si, seg in enumerate(segments):
                 seg_text = getattr(seg, "text", seg) if not isinstance(seg, str) else seg
                 if not seg_text:
                     continue
-                overlap = len(set(raw) & set(seg_text))
-                if overlap > best_overlap:
-                    best_overlap = overlap
+                _seg_norm = str(seg_text).strip().rstrip("。;；，,").strip()
+                _raw_norm = raw.strip().rstrip("。;；，,").strip()
+                if _seg_norm and (_seg_norm in _raw_norm or _raw_norm in _seg_norm):
+                    score = 2.0  # 子串包含 = 强归属
+                else:
+                    _a, _b = set(raw), set(seg_text)
+                    if not _a or not _b:
+                        score = 0.0
+                    else:
+                        score = len(_a & _b) / len(_a | _b)
+                if score > best_score:
+                    best_score = score
                     best_seg = si
             if best_seg >= 0:
                 seg_intents[best_seg].append(it)
@@ -612,7 +624,15 @@ class ContractGate:
         return gaps
 
     def _backfill_missing_fields(self, intents, missing_fields, warnings, report, raw_text):
-        """LLM 指出某 intent 漏列 → 让 LLM 从原文推断该列值补上。"""
+        """LLM 指出某 intent 漏列 → 让 LLM 从原文推断该列值补上。
+
+        守卫：get 意图整行查询（"所有属性/全部信息"等）跳过补全——Step1 已按
+        _is_whole_row_get 语义清空 fields（Step3 读整行全部列），此处若让 LLM
+        "补漏列"会把「所有属性」等泛指词/实体名碎片补回成垃圾字段（如
+        属性字段列表=所有属性、灵兽model_id=饕餮），Step2 校验不中触发重映射。
+        """
+        _whole_row_re = re.compile(
+            r"(?:所有|全部|整个|整行|全)(?:属性|信息|字段|数据|列|内容|东西|值|情况)")
         if not missing_fields or not self._budget.try_consume() or not self._call_llm_raw:
             return
         backfill_items = []
@@ -626,6 +646,13 @@ class ContractGate:
             if idx < 1 or idx > len(intents):
                 continue
             it = intents[idx - 1]
+            if getattr(it, "action", "") == "get" and _whole_row_re.search(raw_text or ""):
+                continue  # get 整行查询：fields 无意义，跳过补全
+            # §P2-1 补字段去重：Step1 已跑 _llm_complete_fields（对照原文+全量
+            # schema 补漏），本层再补职责重复且无 schema grounding 会补幻觉列。
+            # 有标记的 intent 跳过，省一次 LLM + 防覆盖。
+            if (getattr(it, "extras", None) or {}).get("llm_fields_completed"):
+                continue
             existing = set(_norm_key(k) for k in _fields(it).keys())
             need = [c for c in cols if _norm_key(c) not in existing]
             if need:

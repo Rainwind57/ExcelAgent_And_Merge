@@ -271,8 +271,7 @@ class ParseAgent:
 若少了，补齐到与原文数量一致。
 
 ## 输出 JSON
-{{"action_inventory":["逐行列出原文每个动作+对象+稳定标识", ...], "entity_ledger":"实体依赖绑定关系一句话", "segments":[{{"text":"改写后的单段任务，必须包含远距离绑定回填后的完整事实", "action":"add|set|delete|get|unknown", "evidence":"原文依据短句"}}]}}
-只输出 JSON，不要 markdown，不要解释。segments 数量必须等于 action_inventory 行数。"""
+{{"action_inventory":["逐行列出原文每个动作+对象+稳定标识", ...], "entity_ledger":"实体依赖绑定关系一句话", "segments":[{{"text":"改写后的单段任务，必须包含远距离绑定回填后的完整事实", "action":"add|set|delete|get|unknown", "evidence":"原文依据短句"}}]}}只输出 JSON，不要 markdown，不要解释。segments 数量必须等于 action_inventory 行数。"""
         try:
             sid = None
             create = getattr(client, "create_session", None)
@@ -554,8 +553,7 @@ class ParseAgent:
                 # bool 判定恒假 → 中文碎片放行灌库（reward 行 ={2:'...',42:'...'}
                 # 即此盲区）。通用拦截：数字索引键含中文叙述值 = 灌值污染，整键
                 # 删除（无可映射列，保留只会致 Step3 match 失败翻转整条 intent）。
-                _is_num_key = (isinstance(_fk, int)
-                               or (isinstance(_fk, str) and _fk.strip().isdigit()))
+                _is_num_key = ParseAgent._is_numeric_index_key(_fk)
                 if _is_num_key and _cn_char_re.search(_fvs):
                     del fields[_fk]
                     try:
@@ -658,7 +656,8 @@ class ParseAgent:
         # 其他 intent 消费（不是任何 FK 链前置），写盘必失败。框架级判据：
         # ① fields 无任何非空值；② 本批无 intent 消费其 produces。同时满足 → 删。
         # §主线2：不静默——记录 thinking + 结构化 dropped 台账。
-        _kept_oea, _dropped_oea = self._partition_orphan_empty_adds(nl_intents)
+        _kept_oea, _dropped_oea = self._partition_orphan_empty_adds(
+            nl_intents, raw_text=text)
         if _dropped_oea:
             for _d in _dropped_oea:
                 _dstem = getattr(_d, "table_hint", "") or "?"
@@ -694,14 +693,25 @@ class ParseAgent:
         self._resolve_existing_name_fk(nl_intents, locator_result)
         # §能力级自检补漏：LLM 对照原文 + 全量 schema 补齐漏产字段（每请求一次）。
         # 不硬编码列名——漏哪列、值取原文哪处由 LLM 判断，代码仅做 schema grounding。
+        _llm_completed = False
         try:
             _da2 = self._decompose_agent
             if not skip_llm_complete and _da2 is not None and _da2.parser is not None:
                 import os as _os
                 _per_to = int(_os.getenv("CODEMAKER_DECOMPOSE_TIMEOUT", "75"))
                 nl_intents = _da2._llm_complete_fields(text, nl_intents, _per_to)
+                _llm_completed = True
         except Exception:  # noqa: BLE001
             logger.warning("ParseAgent 自检补漏失败,保持原产出", exc_info=True)
+        if _llm_completed:
+            # §P2-1 补字段去重标记：Step1 已跑 _llm_complete_fields（对照原文+全量
+            # schema 补漏），Step1.5 contract_gate 层5 _backfill_missing_fields 职责
+            # 与之重叠。打标记让层5 跳过重复 LLM 补全，省一次调用 + 防两次补漏结果
+            # 互相覆盖（层5 无全量 schema grounding，可能补出幻觉列）。
+            for _itc in nl_intents:
+                _ex_c = getattr(_itc, "extras", None)
+                if isinstance(_ex_c, dict):
+                    _ex_c["llm_fields_completed"] = True
         nl_intents = self._compile_step1_references(nl_intents, text, locator_result, route=route)
         # §孤立空壳 add 二次过滤（strict）：引用编译完成后关系图已完整，此时再
         # 过滤「挂 produces 但无实值字段且无 consumer」的空壳。第一道（非 strict）
@@ -710,7 +720,8 @@ class ParseAgent:
         # 或残留数字索引键），第一道豁免全放行 → Step3 写 N 个空行污染数据
         # （月华邮件样例 10 条空壳 add 污染 3 表即此）。strict 过滤只删真孤立
         # 幻觉行：被本批消费的 producer 保留（consumed 分支），实值字段保留。
-        _kept_s, _dropped_s = self._partition_orphan_empty_adds(nl_intents, strict=True)
+        _kept_s, _dropped_s = self._partition_orphan_empty_adds(
+            nl_intents, strict=True, raw_text=text)
         if _dropped_s:
             for _d in _dropped_s:
                 _dstem = getattr(_d, "table_hint", "") or "?"
@@ -1155,7 +1166,29 @@ class ParseAgent:
                     (getattr(edge, "to_sheet", "") or "").lower(),
                 )
                 col = str(getattr(edge, "from_column", "") or "").split(":")[0].strip()
-                if not col or str(fields.get(col, "")).strip():
+                if not col:
+                    continue
+                # §P1-4 FK 别名列判定：LLM 常把 FK 列写成中文别名（如 from_column=
+                # "school_id" 但 fields 键是「门派」）。先过 _field_canon_map 中英桥：
+                # 若已有等价键非空实值，该 FK 已填，跳过回填（否则重复回填覆盖）。
+                if str(fields.get(col, "")).strip():
+                    continue
+                _filled_alias = False
+                try:
+                    _canon_fk = self._field_canon_map(stem, sheet) or {}
+                except Exception:
+                    _canon_fk = {}
+                if _canon_fk:
+                    _fk_norm = ParseAgent._field_name_norm(col)
+                    _fk_canon = _canon_fk.get(_fk_norm, _fk_norm)
+                    for _fk2, _fv2 in fields.items():
+                        _c2 = _canon_fk.get(
+                            ParseAgent._field_name_norm(str(_fk2)),
+                            ParseAgent._field_name_norm(str(_fk2)))
+                        if _c2 == _fk_canon and str(_fv2).strip():
+                            _filled_alias = True
+                            break
+                if _filled_alias:
                     continue
                 labels = producers.get(target_key) or []
                 if len(labels) == 1:
@@ -1245,6 +1278,15 @@ class ParseAgent:
     @staticmethod
     def _field_name_norm(value) -> str:
         return re.sub(r"[\s_:\-./\\()\[\]（）【】]+", "", str(value or "").lower())
+
+    @staticmethod
+    def _is_numeric_index_key(k) -> bool:
+        """数字索引键判定（LLM 退化把列号当键，如 {42:'10001'}）：int 或纯数字 str。
+
+        fields 键约定为列名，纯数字绝非列名，无可映射列。_scrub_narrative_scalar
+        与 _partition_orphan_empty_adds 两处共用同一口径，避免漂移。
+        """
+        return isinstance(k, int) or (isinstance(k, str) and k.strip().isdigit())
 
     def _headers_for(self, stem: str, sheet: str) -> list:
         return self._schema_row_for(stem, sheet, type_row=False)
@@ -1481,7 +1523,8 @@ class ParseAgent:
 
     @staticmethod
     def _partition_orphan_empty_adds(
-            intents: list[NLIntent], *, strict: bool = False
+            intents: list[NLIntent], *, strict: bool = False,
+            raw_text: str = ""
     ) -> tuple[list[NLIntent], list[NLIntent]]:
         """返回 (保留, 被删) 两组孤立空壳 add 划分（纯函数，供日志/台账用）。
 
@@ -1490,13 +1533,14 @@ class ParseAgent:
         consumes 关系不可见，需 produces 豁免防误删下游悬空。
         strict=True（引用编译后调用）：关系图已完整，produces 不再豁免，
         孤立 produces 空壳（无任何实值字段且无 consumer）判为 LLM 幻觉删。
+
+        raw_text（可选）：原文。strict 模式下单条空 add 若其表 stem 在原文
+        中未出现（用户根本没提这张表），判为 LLM 幻觉单表过产，删——否则
+        单条空 add 会直达 Step3 写空行污染数据（月华 serve 后端即使收敛到
+        单条也躲不过）。原文提及的 stem 保留（用户单表新增交 Step2 补）。
         """
         if not intents:
             return list(intents or []), []
-        # 仅当本批 >1 条（跨表上下文）才做孤立空壳过滤：单条空 add 可能是
-        # 用户单表新增（如「新增 quest」），空 fields 交 Step2 补，不能删。
-        if len(intents) <= 1:
-            return list(intents), []
 
         def _has_real_value(it) -> bool:
             """字段含至少一个非空实值（空串/None/占位符不算）。
@@ -1526,11 +1570,38 @@ class ParseAgent:
                     continue
                 if s.startswith("<") and s.endswith(">"):
                     continue  # 占位符 = 待补，不算实值
-                if (isinstance(k, int)
-                        or (isinstance(k, str) and k.strip().isdigit())):
+                if ParseAgent._is_numeric_index_key(k):
                     continue  # 数字索引键：LLM 退化把列号当键，无可映射列
                 return True
             return False
+        # 仅当本批 >1 条（跨表上下文）才做孤立空壳过滤：单条空 add 可能是
+        # 用户单表新增（如「新增 quest」），空 fields 交 Step2 补，不能删。
+        # 例外（P0-3 安全版）：strict=True 且原文完全未提及该表——用英文 stem +
+        # 中文别名域（alias_mapping，如 quest→「任务」）双查，都未命中才判
+        # LLM 幻觉单表过产删之。纯 stem 查会因中文原文 vs 英文表名必然 miss
+        # 误删合法单意图（如「加任务」vs quest），别名域兜底解决。
+        if len(intents) <= 1:
+            if strict and raw_text and not _has_real_value(intents[0]):
+                _stem0 = (getattr(intents[0], "table_hint", "") or "").strip()
+                _mentioned = False
+                if _stem0:
+                    _tl = raw_text.lower()
+                    if _stem0.lower() in _tl:
+                        _mentioned = True
+                    else:
+                        try:
+                            from .locator.alias_mapping import AliasMapping as _AM
+                            _aliases = _AM.load()
+                            for _a, _fp in (_aliases.mapping or {}).items():
+                                if str(_fp).split("/")[-1].replace(".xlsx", "").lower() == _stem0.lower():
+                                    if str(_a).strip() and str(_a).strip() in raw_text:
+                                        _mentioned = True
+                                        break
+                        except Exception:
+                            _mentioned = True  # 别名不可用时不误删（保守保留）
+                if _stem0 and not _mentioned:
+                    return [], list(intents)
+            return list(intents), []
 
         # 被消费的 produces 标签集合（跨 intent，供"孤立"判定）
         consumed: set[str] = set()
@@ -2074,6 +2145,12 @@ class ParseAgent:
         if not intents:
             return intents
         kept = list(intents)
+        # §P0-4 影子合并后 label 重映射：被丢弃影子若挂 produces 而获胜 canonical
+        # 挂了另一个 label（或未挂），consumer 侧对旧 label 的引用会悬空 →
+        # Step1.5 报 unresolved_placeholder。跨轮累积映射，循环结束统一重映射
+        # 保留 intent 的 consumes_labels / fields 占位符引用（与
+        # _dedupe_same_sheet_same_explicit_pk 的 label_remap 同款）。
+        label_remap: dict[str, str] = {}
         for _ in range(len(kept) + 1):
             changed = False
             # 分组（组内比较）
@@ -2262,6 +2339,23 @@ class ParseAgent:
                         if shadow:
                             if _protected(ia):
                                 continue
+                            # §P0-4：被丢弃影子 ia 的 produces label → canonical ib 的
+                            # label 映射，供循环后重映射 consumer 引用防悬空。
+                            def _label_of(idx: int) -> str:
+                                _it = kept[idx]
+                                _l = getattr(_it, "produces_label", None)
+                                if not _l and getattr(_it, "extras", None):
+                                    _l = _it.extras.get("produces")
+                                return str(_l or "").strip().strip("<>").strip()
+                            _la = _label_of(ia)
+                            _lb = _label_of(ib)
+                            if _la and _lb and _la != _lb:
+                                label_remap[_la] = _lb
+                            elif _la and not _lb:
+                                # canonical 未挂 label → 继承影子的（保 producer 身份）
+                                if getattr(kept[ib], "extras", None) is not None:
+                                    kept[ib].extras["produces"] = _la
+                                kept[ib].produces_label = _la or None
                             if same_produces_richer or default_shell_shadow:
                                 src = (getattr(kept[ia], "extras", None) or {}).get("fields") or {}
                                 dst = (getattr(kept[ib], "extras", None) or {}).get("fields") or {}
@@ -2283,6 +2377,26 @@ class ParseAgent:
                 kept = [it for i, it in enumerate(kept) if i not in drop]
             if not changed:
                 break
+        # §P0-4 循环后统一重映射：被删影子的 label 引用 → canonical label。
+        if label_remap:
+            for it in kept:
+                fields = (getattr(it, "extras", None) or {}).get("fields") or {}
+                if isinstance(fields, dict):
+                    for col, value in list(fields.items()):
+                        if isinstance(value, str):
+                            raw = value.strip().strip("<>").strip()
+                            if raw in label_remap:
+                                fields[col] = f"<{label_remap[raw]}>"
+                it.consumes_labels = [
+                    label_remap.get(str(x).strip().strip("<>").strip(), x)
+                    for x in (getattr(it, "consumes_labels", None) or [])
+                ]
+                consumes = (getattr(it, "extras", None) or {}).get("consumes")
+                if isinstance(consumes, dict):
+                    for col, label in list(consumes.items()):
+                        raw = str(label).strip().strip("<>").strip()
+                        if raw in label_remap:
+                            consumes[col] = label_remap[raw]
         return kept
 
     def _replace_reused_explicit_pks_with_placeholders(self, intents: list[NLIntent],
@@ -4500,6 +4614,15 @@ class ParseAgent:
         action = getattr(si, "action", "add") or "add"
         if action == "modify":
             action = "set"
+        # get 整行查询（"所有属性/全部信息/整个数据"等）：fields 无意义，Step3
+        # 走 _is_whole_row_get 读整行全部列。LLM 常把实体名/泛指词拆成垃圾字段
+        # （如 查看灵兽饕餮一阶的所有属性 → 灵兽model_id=饕餮、
+        # 灵兽出战所需人物等级=一阶、属性字段列表=所有属性），Step2 校验不中
+        # 触发重映射弹窗。整行查询下 fields 清空不丢任何信息。
+        if (action == "get" and fields and text
+                and re.search(r"(?:所有|全部|整个|整行|全)(?:属性|信息|字段|数据|列|内容|东西|值|情况)", text)):
+            fields.clear()
+            extras["fields"] = fields
 
         return NLIntent(
             action=action,

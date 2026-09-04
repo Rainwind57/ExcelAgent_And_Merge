@@ -50,7 +50,7 @@ def _tokenize(text: str) -> list[str]:
     if not text:
         return []
     try:
-        from .parser.segmenter import segment
+        from ..parser.segmenter import segment
     except Exception:
         # 兜底：简单按非字母数字切
         return [t for t in re.split(r"\W+", text.lower()) if t]

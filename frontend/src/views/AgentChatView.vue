@@ -28,12 +28,14 @@ let elapsedTimer = null
 let stuckTimer = null
 let lastEventTime = 0
 
-// ── 示例指令 ──
+// ── 示例指令（label=缩写展示；full=点击后填入输入框的完整指令）──
 const examples = [
-  '查看灵兽饕餮一阶的所有属性',
-  '将法宝名称测试法宝3的法宝描述修改为测试描述修改',
-  '新增一个活动，名称春节活动，类型节日',
-  '删除活动名称为春节活动的行',
+  { label: '查看灵兽饕餮一阶的所有属性', full: '查看灵兽饕餮一阶的所有属性' },
+  { label: '将法宝名称测试法宝3的法宝描述修改为测试描述修改', full: '将法宝名称测试法宝3的法宝描述修改为测试描述修改' },
+  { label: '新增一个活动，名称春节活动，类型节日', full: '新增一个活动，名称春节活动，类型节日' },
+  { label: '删除活动名称为春节活动的行', full: '删除活动名称为春节活动的行' },
+  { label: '开一个限时活动九霄论剑', full: '开一个限时活动叫\'九霄论剑\'，活动编号 3060，活动描述\'九霄之上，群雄论剑，活动期间内每日可参与一次剑试\'，开始时间 2026-11-01 00:00:00，结束时间 2026-11-15 23:59:59。' },
+  { label: '新增灵兽朱雀', full: '新增一个灵兽叫\'朱雀\'，模型id 1020，类型 1，品质 5，描述\'上古神鸟，浴火重生\'' },
 ]
 
 // ── 模型切换 ──
@@ -786,8 +788,8 @@ async function commitForm(form) {
   form.submitting = false
 }
 
-function fillExample(text) {
-  inputText.value = text
+function fillExample(ex) {
+  inputText.value = (typeof ex === 'string') ? ex : (ex.full || ex.label || '')
 }
 
 // T2/R9: 用户点击候选行 → 优先从 multi_results 缓存切换，无缓存时发"用行N"
@@ -936,7 +938,9 @@ onMounted(() => {
       <div v-else-if="msg.isWelcome" class="msg-bubble agent-bubble">
         <p>{{ msg.message }}</p>
         <div class="example-chips">
-          <button v-for="ex in examples" :key="ex" class="example-chip" @click="fillExample(ex)">{{ ex }}</button>
+          <button v-for="ex in examples" :key="ex.label" class="example-chip"
+                  :title="typeof ex === 'string' ? ex : (ex.full || ex.label)"
+                  @click="fillExample(ex)">{{ typeof ex === 'string' ? ex : ex.label }}</button>
         </div>
       </div>
 

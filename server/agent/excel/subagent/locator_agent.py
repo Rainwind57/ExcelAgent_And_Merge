@@ -319,7 +319,20 @@ class LocatorAgent(LLMSubAgent):
         # 处零散规则判定门），LLM 优先做真正的表选择，规则仅管候选召回/降级兜底。
         # 单候选无歧义可判，不必调（省一次无意义 LLM）。
         if len(candidates) > 1:
-            _llm_relevant = self._llm_judge_candidate_relevance(text, candidates)
+            _llm_judged = self._llm_judge_candidate_relevance(text, candidates)
+            # P2-4：复核返回 (relevant, dropped) 元组，交叉验证——矛盾（既 relevant
+            # 又 dropped）以 relevant 为准并记 warning，防 LLM 输出自相矛盾致误删。
+            if isinstance(_llm_judged, tuple) and len(_llm_judged) == 2:
+                _llm_relevant, _llm_dropped = _llm_judged
+                _conflict = (_llm_relevant or set()) & (_llm_dropped or set())
+                if _conflict:
+                    self.add_thinking("定位",
+                        f"LLM 复核输出矛盾（同表既 relevant 又 dropped）："
+                        f"{','.join(sorted(_conflict))}，以 relevant 为准")
+                    _llm_dropped = (_llm_dropped or set()) - _conflict
+            else:
+                _llm_relevant = _llm_judged
+                _llm_dropped = set()
             # §系统性重构：LLM 复核结果立即生效收窄候选（而非仅当"豁免"用），
             # 让 LLM 成为"哪些表真正涉及"的主判——原来只在 ambiguous/超cap 时
             # 才被动用于豁免，rule 层无歧义(ambiguous=False)但列名信号带噪声表
@@ -335,6 +348,38 @@ class LocatorAgent(LLMSubAgent):
                 _before_n = len(candidates)
                 _filtered = [c for c in candidates if c.stem in _llm_relevant]
                 if _filtered and len(_filtered) < _before_n:
+                    # §专有列命中保底（保守版）：LLM 复核误判剔除真表会致单候选
+                    # decompose 产空（月华前例 fabao/* 被当通配噪声剔除 → 只剩
+                    # item/Fabao 无对应列 → LLM 产 []）。
+                    # 判据：仅当 LLM 保留的候选【全部没有任何专有列命中】时才考虑
+                    # 加回被剔除的专有列命中候选——此时 LLM 的选择无列证据支撑
+                    # （如 item/Fabao 仅 alias 命中「法宝」，无「法宝描述」列命中），
+                    # 规则用列证据兜底。若 LLM 保留候选已有专有列命中（如饕餮案例
+                    # pet 命中「灵兽品质/灵兽id/灵兽类型」），说明其选择有列证据，
+                    # 被剔除的（ability/assistant_ability/pet_refine 等）就是真噪声，
+                    # 不再加回——避免把噪声表塞回候选池膨胀 decompose 上下文。
+                    _kept_hits = [h for c in _filtered
+                                  for h in stem_agg.get(c.stem, [])
+                                  if h.column not in _GENERIC_COLS
+                                  and h.column not in _ambig_cols]
+                    _kept_back: list = []
+                    if not _kept_hits:
+                        for c in candidates:
+                            if c.stem in _llm_relevant:
+                                continue
+                            stem_hits = stem_agg.get(c.stem, [])
+                            _disc = [h for h in stem_hits
+                                     if h.column not in _GENERIC_COLS
+                                     and h.column not in _ambig_cols]
+                            if not _disc:
+                                continue
+                            c.confidence = max(c.confidence, 0.75)
+                            _kept_back.append(c)
+                    if _kept_back:
+                        _filtered = _filtered + _kept_back
+                        self.add_thinking("定位",
+                            f"LLM 候选复核保留候选无专有列命中，规则保底加回 "
+                            f"{len(_kept_back)} 张：{','.join(sorted(c.stem for c in _kept_back))}")
                     candidates = _filtered
                     self.add_thinking("定位",
                         f"LLM 候选复核收窄候选池：{_before_n}→{len(candidates)}"
@@ -399,19 +444,45 @@ class LocatorAgent(LLMSubAgent):
         # cap 默认 8（env 可调，见上方 _cand_cap 计算），按置信度降序保留，
         # 优先规则命中(高conf) + 列名专有列命中 + LLM 复核判定真正涉及(_llm_relevant)。
         # 保留策略：① conf>=0.80(规则强命中) 或 LLM 复核命中 全留 ② 其余按conf降序取到cap
+        # §P0-2：LLM 复核失败/超时(_llm_relevant 为空)时仅靠 conf 硬砍，动作主语表
+        #   （column_extract/substring 档 conf 0.70-0.85，未达 0.80 强命中阈值但列证据
+        #   是专有判别列）会被噪声表挤出 → 后续 decompose 缺表。保底：专有列命中
+        #   （非通用列、非跨表歧义列）候选必留，不参与 conf 竞争。
+        _stem_agg_safe: dict = {}
+        _ambig_safe: set = set()
+        if column_signal is not None and getattr(column_signal, "has_signal", False):
+            try:
+                _stem_agg_safe = stem_agg
+                _ambig_safe = _ambig_cols
+            except Exception:
+                pass
         if len(candidates) > _cand_cap:
             # 分档：强命中(>=0.80)或 LLM 复核判定真正涉及 必留，弱命中按conf降序补到cap
             strong = [c for c in candidates
                       if c.confidence >= 0.80 or (_llm_relevant and c.stem in _llm_relevant)]
+            _strong_stems = {c.stem for c in strong}
+            # 专有列命中保底：LLM 复核失败时动作主语表不因 conf<0.80 被砍
+            protected: list = []
+            if _stem_agg_safe:
+                for c in candidates:
+                    if c.stem in _strong_stems:
+                        continue
+                    _hits = _stem_agg_safe.get(c.stem, [])
+                    _disc = [h for h in _hits
+                             if h.column not in _GENERIC_COLS
+                             and h.column not in _ambig_safe]
+                    if _disc:
+                        protected.append(c)
+            _prot_stems = {c.stem for c in protected}
             weak = sorted([c for c in candidates
-                           if not (c.confidence >= 0.80 or (_llm_relevant and c.stem in _llm_relevant))],
+                           if c.stem not in _strong_stems and c.stem not in _prot_stems],
                           key=lambda c: (c.confidence,
                                          c.level == "column_extract"),
                           reverse=True)
-            candidates = strong + weak[:max(0, _cand_cap - len(strong))]
+            candidates = strong + protected + weak[:max(0, _cand_cap - len(strong) - len(protected))]
             self.add_thinking("定位",
-                f"候选池超上限({len(candidates)+len(weak[:0])}→{_cand_cap})，"
-                f"按置信度裁剪保留 {len(candidates)} 个")
+                f"候选池超上限，按置信度裁剪保留 {len(candidates)} 个"
+                + (f"（含 {len(protected)} 张专有列命中保底）" if protected else ""))
         # 2. LLM 裁决:歧义或无命中时(复杂输入保留多候选交 DecomposeAgent,不走收敛)
         # §Step1 定位歧义修复：原逻辑复杂输入一律跳过 LLM 收敛——但 _is_complex_input
         # 的判定只靠对话/选项/支线/采集/多id 等"内容形态"关键词，覆盖不了"表名相似/
@@ -802,7 +873,7 @@ class LocatorAgent(LLMSubAgent):
             return []
 
     def _llm_judge_candidate_relevance(self, text: str,
-                                       candidates: list[CandidateTable]) -> Optional[set]:
+                                       candidates: list[CandidateTable]) -> Optional[tuple]:
         """LLM 复核候选表列表，标出"指令真正涉及"的表，供裁剪/降权豁免。
 
         §系统性重构 Tier A：候选裁剪(_cand_cap 硬砍) 和 FK 密集列降权(complex_input
@@ -813,8 +884,9 @@ class LocatorAgent(LLMSubAgent):
         同名列/FK旁证误召回的噪声（如 model_id 跨表共享列带出的 guild/city 噪声）。
 
         Returns:
-            LLM 判定"真正涉及"的 stem 集合；LLM 不可用/失败/返回不合法 → None
-            （调用方原样按置信度/规则硬判，不回归现有行为）。
+            (relevant_set, dropped_set)：LLM 判定"真正涉及"与"噪声"的 stem 集合。
+            LLM 不可用/失败/返回不合法 → None（调用方原样按置信度/规则硬判）。
+            P2-4：dropped_stems 一并返回供调用方交叉验证（矛盾以 relevant 为准）。
         """
         if not self.parser or not candidates:
             return None
@@ -842,7 +914,7 @@ class LocatorAgent(LLMSubAgent):
 不确定的不列入 relevant_stems。"""
         # §实测：复杂输入候选多(12张)时该复核 prompt 常在 15s 内超时（描述文本
         # 变长），白耗一次调用却拿不到结果。适度放宽到 25s（仍远小于 decompose
-        # 的 120s），换取真正拿到复核结果、降权更准，而不是靠碰运气。
+        # 120s），换取真正拿到复核结果、降权更准，而不是靠碰运气。
         data = self._call_llm(prompt, timeout=25)
         if not isinstance(data, dict):
             return None
@@ -854,23 +926,29 @@ class LocatorAgent(LLMSubAgent):
         # 否则 "pet/Pet" 与 valid 里的 "pet" 不匹配，收窄失效，噪声表直达拆解阶段。
         result = {s.split("/", 1)[0] for s in stems
                   if isinstance(s, str) and s.split("/", 1)[0] in valid}
+        # P2-4：dropped_stems 一并解析返回（LLM 明示的噪声表），供调用方交叉验证。
+        dropped = set()
+        _dropped_raw = data.get("dropped_stems")
+        if isinstance(_dropped_raw, list):
+            dropped = {s.split("/", 1)[0] for s in _dropped_raw
+                       if isinstance(s, str) and s.split("/", 1)[0] in valid}
         if result:
             self.add_thinking("定位",
                 f"LLM 候选复核：{len(result)}/{len(candidates)} 个候选判定真正涉及"
                 f"（豁免裁剪/降权）：{','.join(sorted(result))}")
-        return result
+        return result, dropped
 
     def _llm_classify_route(self, text: str) -> Optional[dict]:
         """LLM 一次分类调用产出路由信息（action/is_complex）。
 
         辅助 split_multi_intent/locate 分段与复杂度判断。LLM 失败/超时/返回
-        不合法 → 返回 None，调用方各处原样回落到正则判定（规则保留降级路径）。
-
-        Returns:
-            dict{"ok": True, "action": str, "is_complex": bool} 或 None（分类失败）。
+        不合法 → 返回保守 route：is_complex=True（宁保守扩候选防漏表，靠后续
+        schema 预算裁剪控 token）。不返回 None——None 会让调用方走纯正则兜底，
+        正则覆盖不了"无关键词但实际多表"的场景（误判简单 → 候选收窄过狠漏表）。
         """
         if not self.parser:
-            return None
+            # LLM 不可用：保守判复杂（宁扩候选防漏表，schema 预算裁剪控 token）
+            return {"ok": True, "action": "unknown", "is_complex": True}
         prompt = f"""你是配表指令路由分类器。分析用户指令，输出 JSON 分类结果。
 
 ## 用户指令
@@ -886,7 +964,10 @@ class LocatorAgent(LLMSubAgent):
 {{"action": "add 或 get 或 set 或 delete", "is_complex": true}}"""
         data = self._call_llm(prompt, timeout=15)
         if not isinstance(data, dict):
-            return None
+            # LLM 分类失败：保守判复杂（防"无关键词但实际多表"被误判简单
+            # → 候选收窄过狠漏表）。is_complex=True 只是放宽候选网，后续
+            # 有 schema 预算裁剪兜底，不会显著增耗时。
+            return {"ok": True, "action": "unknown", "is_complex": True}
         action = data.get("action")
         if action not in ("get", "set", "add", "delete", "unknown"):
             action = "unknown"

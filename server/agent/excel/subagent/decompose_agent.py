@@ -887,8 +887,16 @@ class DecomposeAgent(LLMSubAgent):
         # 重拆（单表小 schema 不易超时），把每张真实动作主语表拆出来。仅产空时
         # 触发，不叠正常路径。限每表 1 次 + 候选 ≤6 防爆。
         if not intents and candidates:
-            _max_single = max(0, int(_os.environ.get("CODEMAKER_DECOMPOSE_SEG_SINGLE_MAX", "2")))
-            _per_table = candidates[:6][:_max_single]
+            # §P0 兜底链修复：默认重拆 6 表（原 2），并按置信度降序先拆——
+            # 候选池被噪声表挤占时动作主语表常排在第 3+ 位，限 2 表永远拆不到
+            # 它（月华 fabao 无对应列产空即此）。候选表按 conf 排序，conf 高的
+            # 是规则/列名强命中，最可能是动作主语，优先拆。
+            _max_single = max(0, int(_os.environ.get("CODEMAKER_DECOMPOSE_SEG_SINGLE_MAX", "6")))
+            _sorted_cands = sorted(candidates,
+                                   key=lambda c: (getattr(c, "confidence", 0.0) or 0.0,
+                                                  getattr(c, "level", "") == "column_extract"),
+                                   reverse=True)
+            _per_table = _sorted_cands[:6][:_max_single]
             self.add_thinking("细分",
                 f"DecomposeAgent 段级超时产空,逐表单表重拆 {len(_per_table)} 候选")
             _bf_to2 = min(per_to, int(_os.environ.get("CODEMAKER_DECOMPOSE_BACKFILL_TIMEOUT", "45")))
@@ -1062,8 +1070,11 @@ class DecomposeAgent(LLMSubAgent):
         hit_stems = set(sig_stems) | text_stems | fk_stems | semantic_stems
         if not hit_stems:
             return list(candidates)
-        # §P0 候选超量裁剪：>5 表按命中强度取 top N + FK 依赖表全保
-        if len(candidates) > 5:
+        # §P1-1 候选超量裁剪：>4 表触发 LLM 复核 + 强度排序（原 >5）。文档实测
+        # 4-5 表单 prompt 稳定、6 表超时；4-5 表区间此前既不裁剪也无 LLM 复核，
+        # 直接单 prompt 拼 5 表 schema 是超时高风险盲区。阈值降到 >4 把 5 表场景
+        # 纳入 LLM 复核保护（LLM 通常挑出更精简组合缩小 schema）。
+        if len(candidates) > 4:
             # §匹配层判定门修复：先问 LLM 哪些表本段真正需要产出数据，只在
             # LLM 不可用/失败/结果空时才退回下方 _strength 规则排序（不回归
             # 现有行为）。根因：纯规则打分对多分支叙事（对话树+多选项等）
@@ -2558,7 +2569,21 @@ class DecomposeAgent(LLMSubAgent):
         if _os.environ.get("CODEMAKER_DECOMPOSE_DROP_CONTEXT", "1") == "0":
             return set()
         groups = getattr(locator_result, "candidate_groups", None) or {}
-        return set(groups.get("context", []) or [])
+        _drop = set(groups.get("context", []) or [])
+        # §P1-3 FK 端点保护：context 分组误判（分类把 FK 链上表分进 context）会
+        # 静默丢链上表 → 跨表 produces 断裂。凡出现在本批候选 FK 边（两端均在
+        # 候选内）上的表绝不剔除——链路必需节点，即使弱信号召回。
+        if _drop:
+            _fk_stems: set[str] = set()
+            for _e in (getattr(locator_result, "fk_edges", None) or []):
+                _fs = (getattr(_e, "from_stem", "") or "").strip().lower()
+                _ts = (getattr(_e, "to_stem", "") or "").strip().lower()
+                if _fs:
+                    _fk_stems.add(_fs)
+                if _ts:
+                    _fk_stems.add(_ts)
+            _drop = {s for s in _drop if s not in _fk_stems}
+        return _drop
 
     def _build_schema_block(self, candidates: list[CandidateTable],
                              text: str = "", column_signal=None) -> str:

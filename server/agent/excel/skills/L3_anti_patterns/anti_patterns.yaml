@@ -1794,9 +1794,9 @@ anti_patterns:
   sheet: Activity
   column: 活动名称
   trigger: ambiguous
-  occurrences: 52
+  occurrences: 73
   first_seen: '2026-08-28T14:41:49+08:00'
-  last_seen: '2026-09-02T16:49:37+08:00'
+  last_seen: '2026-09-04T09:45:10+08:00'
   action: force_exact
   status: active
   source: rule
@@ -1879,9 +1879,9 @@ anti_patterns:
   sheet: Activity
   operation: delete_row
   trigger: confirm_abandoned
-  occurrences: 18
+  occurrences: 25
   first_seen: '2026-08-31T09:35:43+08:00'
-  last_seen: '2026-09-03T15:16:03+08:00'
+  last_seen: '2026-09-04T09:31:14+08:00'
   action: require_confirm
   status: active
   source: rule
