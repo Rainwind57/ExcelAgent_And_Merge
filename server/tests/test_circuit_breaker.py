@@ -1,4 +1,4 @@
-"""A4 全链路 LLM 熔断单测:连续失败达阈值熔断,降级跳过;reset_circuit 恢复。"""
+﻿"""A4 全链路 LLM 熔断单测:连续失败达阈值熔断,降级跳过;reset_circuit 恢复。"""
 from __future__ import annotations
 
 import os
@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import pytest
 
-from agent.excel.step_ai_enhancer import StepAIEnhancer
+from agent.excel.core.step_ai_enhancer import StepAIEnhancer
 
 
 class FakeClient:

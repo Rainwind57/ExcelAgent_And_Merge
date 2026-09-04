@@ -1,4 +1,4 @@
-"""LLM 辅助枚举发现单测（capability: enum-mapping-pipeline D10 / 7.1-7.6）。
+﻿"""LLM 辅助枚举发现单测（capability: enum-mapping-pipeline D10 / 7.1-7.6）。
 
 验证：
 - 7.1/7.2 analyze_enum_column 模块 + prompt 模板
@@ -20,7 +20,7 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent.excel.core.analyze_enum_columns as ae_mod
-from agent.excel import enum_resolver as er_mod
+from agent.excel.core import enum_resolver as er_mod
 from agent.excel.agent import TableAgent
 
 
@@ -37,7 +37,7 @@ def isolated_enum(tmp_path, monkeypatch):
                         skills_dir / "_pending" / "enum_candidates.yaml", raising=False)
     ae_mod.reset_session_cache()
     # 重置 enum_resolver 单例（避免跨测试内存 pending 污染）
-    from agent.excel.enum_resolver import reset_enum_resolver
+    from agent.excel.core.enum_resolver import reset_enum_resolver
     reset_enum_resolver()
     return skills_dir
 
@@ -103,7 +103,7 @@ class TestTryAnalyzeEnum:
         out = agent._try_analyze_enum("pet", "Pet", "类型", "攻击")
         assert out == 1
         # pending 已写
-        from agent.excel.enum_resolver import EnumResolver
+        from agent.excel.core.enum_resolver import EnumResolver
         resolver = EnumResolver.load()
         assert resolver.resolve_label("pet", "Pet", "类型", "攻击") == 1
 
@@ -114,7 +114,7 @@ class TestTryAnalyzeEnum:
         out = agent._try_analyze_enum("pet", "Pet", "类型", "攻击")
         assert out is None  # confidence < 0.7 拒绝
         # pending 无记录
-        from agent.excel.enum_resolver import EnumResolver
+        from agent.excel.core.enum_resolver import EnumResolver
         resolver = EnumResolver.load()
         assert resolver.resolve_label("pet", "Pet", "类型", "攻击") is None
 

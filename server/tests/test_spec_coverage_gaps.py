@@ -1,4 +1,4 @@
-"""5.2 spec 覆盖补缺:B8 策略0 / C10 索引缓存 / C11 yaml 缓存 / C12 matcher 缓存。"""
+﻿"""5.2 spec 覆盖补缺:B8 策略0 / C10 索引缓存 / C11 yaml 缓存 / C12 matcher 缓存。"""
 from __future__ import annotations
 
 import os
@@ -130,7 +130,7 @@ def test_load_yaml_cache_hit_and_mtime_invalidation(tmp_path, monkeypatch):
 
 def test_col_types_cache_reuse_and_reset():
     """相同 tuple(stems) 二次构建命中缓存;reset 后重建。"""
-    from agent.excel import skill_context
+    from agent.excel.core import skill_context
 
     skill_context.reset_skill_context_cache()
     # _col_types_cache 直接操纵:预填一个 key,断言 get 命中

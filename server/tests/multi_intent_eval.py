@@ -1,4 +1,4 @@
-"""多指令场景评测（capability: multi-intent-evaluation）。
+﻿"""多指令场景评测（capability: multi-intent-evaluation）。
 
 两层指标：
   纯逻辑层（无 LLM，确定性，总是跑）：
@@ -58,7 +58,7 @@ def _load_dotenv(env_path: Path) -> None:
 _load_dotenv(ROOT / ".env")
 
 from agent.excel.nl_parser import NLIntent  # noqa: E402
-from agent.excel.operation_orchestrator import OperationOrchestrator  # noqa: E402
+from agent.excel.core.operation_orchestrator import OperationOrchestrator  # noqa: E402
 
 
 # ── mock 执行结果（供 orchestrator 纯逻辑测试）──
@@ -222,7 +222,7 @@ def eval_speedup(fixtures: dict) -> dict:
         intents.append(NLIntent(action="add", table_hint=f"pad_{len(intents)}",
                                 extras={"fields": {"id": str(len(intents))}}))
 
-    import agent.excel.operation_orchestrator as oo
+    import agent.excel.core.operation_orchestrator as oo
     sleep_ms = 80  # 每意图 80ms，顺序 ~320ms，并行 ~80ms → 期望 speedup≈4
 
     # 顺序（max_workers=1）

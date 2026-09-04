@@ -1,4 +1,4 @@
-"""D3 最小 agentic loop 单测（capability: agent-retry-loop）。
+﻿"""D3 最小 agentic loop 单测（capability: agent-retry-loop）。
 
 验证：
 1. 硬错误→重试成功→ok=True
@@ -167,7 +167,7 @@ def test_error_feedback_d4_format_with_failed_col_and_schema(monkeypatch):
         _get_col_type=lambda stem, sheet, col: "int" if col == "类型" else "",
     )
     # mock D2 列类型 schema 块（测试环境无真实 value_constraints）
-    import agent.excel.skill_context as sc_mod
+    import agent.excel.core.skill_context as sc_mod
     monkeypatch.setattr(sc_mod, "_format_column_types_block",
                         lambda stems: "## 目标表列类型 schema\n  pet[Pet]:\n    类型: int",
                         raising=False)

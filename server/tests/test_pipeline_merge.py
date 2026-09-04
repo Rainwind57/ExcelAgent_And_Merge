@@ -1,4 +1,4 @@
-"""LLM 合并路径(confirm+plan+validate 单次调用)单测。
+﻿"""LLM 合并路径(confirm+plan+validate 单次调用)单测。
 
 覆盖:
   - StepAIEnhancer.ai_pipeline_merge 解析/校验/回退
@@ -20,7 +20,7 @@ import pytest
 
 from agent.agent import TableAgent, AgentResult
 from agent.nl_parser import NLIntent
-from agent.excel.step_ai_enhancer import StepAIEnhancer
+from agent.excel.core.step_ai_enhancer import StepAIEnhancer
 
 
 # ── StepAIEnhancer 级:mock _call_llm + fake client ──────────────────

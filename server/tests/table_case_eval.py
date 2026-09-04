@@ -1,4 +1,4 @@
-"""表格操作测试用例 —— 真实后端 Agent skill on/off A/B 评测脚本。
+﻿"""表格操作测试用例 —— 真实后端 Agent skill on/off A/B 评测脚本。
 
 用途:
     针对 tests/cases/table_operation_test_cases.json 中的每条自然语言指令，
@@ -717,7 +717,7 @@ def _classify_error(service, resp) -> str:
     if resp is None or getattr(resp, "ok", False):
         return "unknown"
     try:
-        from agent.excel.error_classifier import classify, VerifyResult
+        from agent.excel.repair.error_classifier import classify, VerifyResult
         # service.chat 返回 AgentChatResponse，无 steps；构造 res-like 取 message
         res_like = type("R", (), {"steps": [], "message": getattr(resp, "message", "") or ""})()
         classified = classify(None, res_like, VerifyResult(), context={})
@@ -1121,7 +1121,7 @@ def main():
         print("#6 AI 反模式归纳...")
         try:
             from agent.codemaker_client import CodemakerClient
-            from agent.excel.step_ai_enhancer import StepAIEnhancer
+            from agent.excel.core.step_ai_enhancer import StepAIEnhancer
             from agent.excel.skill_updater import get_skill_updater
             failed_traces = []
             for r in on_results:

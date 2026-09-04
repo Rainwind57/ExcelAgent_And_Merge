@@ -11,6 +11,8 @@ import importlib
 import sys
 
 # 已迁移到子目录的模块：旧顶层名 → 新子目录路径
+# 仅保留 _compat.py 依赖（agent.<name> 旧路径）与生产代码直引的键；
+# 其余引用方已统一改为真实子路径（agent.excel.<subdir>.<name>）。
 _MOVED = {
     "formula_ref_shifter": "formula.formula_ref_shifter",
     "formula_semantics": "formula.formula_semantics",
@@ -18,39 +20,24 @@ _MOVED = {
     "table_index": "locator.table_index",
     "alias_mapping": "locator.alias_mapping",
     "fuzzy_matcher": "locator.fuzzy_matcher",
-    "column_name_resolver": "locator.column_name_resolver",
     "column_matcher": "locator.column_matcher",
     "table_locator": "locator.table_locator",
-    "error_classifier": "repair.error_classifier",
-    "repair_context": "repair.repair_context",
-    "repair_playbook": "repair.repair_playbook",
-    "cascade_planner": "repair.cascade_planner",
     "nl_parser": "parser.nl_parser",
     "codemaker_parser": "parser.codemaker_parser",
     "schema_infer": "parser.schema_infer",
     "segmenter": "parser.segmenter",
-    "multi_intent_splitter": "parser.multi_intent_splitter",
     "cli_interface": "cli.cli_interface",
-    "cli_instrument": "cli.cli_instrument",
     "real_cli": "cli.real_cli",
     "xlsx_tool": "cli.xlsx_tool",
     "table_relations": "core.table_relations",
-    "cross_table_splitter": "core.cross_table_splitter",
     "skill_loader": "core.skill_loader",
     "skill_updater": "core.skill_updater",
     "confidence_config": "core.confidence_config",
-    "semantic_gate": "core.semantic_gate",
-    "checkpoint": "core.checkpoint",
-    "enum_resolver": "core.enum_resolver",
     "backup_audit": "core.backup_audit",
-    "dialog_logger": "core.dialog_logger",
     "style_utils": "core.style_utils",
     "file_watcher": "core.file_watcher",
     "agent": "core.agent",
     "llm_context": "core.llm_context",
-    "operation_orchestrator": "core.operation_orchestrator",
-    "skill_context": "core.skill_context",
-    "step_ai_enhancer": "core.step_ai_enhancer",
     "table_resolver": "core.table_resolver",
 }
 

@@ -1,4 +1,4 @@
-"""repair_playbook 单测：路由表 + 各 ErrorType 定向策略 + Level 1 修复原语。
+﻿"""repair_playbook 单测：路由表 + 各 ErrorType 定向策略 + Level 1 修复原语。
 
 capability: error-classification-repair
 """
@@ -9,8 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.error_classifier import ClassifiedError, ErrorType
-from agent.excel.repair_playbook import (
+from agent.excel.repair.error_classifier import ClassifiedError, ErrorType
+from agent.excel.repair.repair_playbook import (
     RepairActionKind,
     RepairPlaybook,
     RepairTaskCtx,
@@ -141,7 +141,7 @@ def test_coerce_value_helpers():
 
 
 def test_register_overrides_strategy():
-    from agent.excel.repair_playbook import RepairStrategy, RepairLevel
+    from agent.excel.repair.repair_playbook import RepairStrategy, RepairLevel
     pb = RepairPlaybook()
     custom = RepairStrategy(name="custom", error_type=ErrorType.TYPE_MISMATCH, level=RepairLevel.RULE)
     pb.register(custom)

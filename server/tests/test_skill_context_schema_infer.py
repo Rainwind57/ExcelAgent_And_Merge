@@ -1,4 +1,4 @@
-"""skill_context + schema_infer 枚举发现单测。
+﻿"""skill_context + schema_infer 枚举发现单测。
 
 覆盖：
 - 2.5 法术关键词命中路由；无路由命中退化全表列名
@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.skill_context import (
+from agent.excel.core.skill_context import (
     pre_route, build_skill_context, _format_column_types_block,
     reset_skill_context_cache,
 )
@@ -50,7 +50,7 @@ class TestRoute:
 
     def test_degrade_to_all_table_columns_when_no_route(self, monkeypatch):
         # mock _all_columns 返回固定表集
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         fake_cols = {
             "aaa_sheet": {"SheetA": ["col1", "col2"]},
             "bbb_sheet": {"SheetB": ["x"]},
@@ -64,7 +64,7 @@ class TestRoute:
 
     def test_sheet_name_registered_as_keyword(self, monkeypatch):
         """2.3: sheet 名补齐为关键词 → 命中路由。"""
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         fake_cols = {"pet": {"Pet": ["宠物id", "名字"]}}
         monkeypatch.setattr(sc_mod, "_all_columns", lambda: fake_cols, raising=False)
         reset_skill_context_cache()
@@ -74,7 +74,7 @@ class TestRoute:
 
     def test_name_column_registered_as_keyword(self, monkeypatch):
         """2.3: 主名称列名补齐为关键词 → 命中路由。"""
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         fake_cols = {"custom_table": {"CustomSheet": ["编号", "道具名称"]}}
         monkeypatch.setattr(sc_mod, "_all_columns", lambda: fake_cols, raising=False)
         reset_skill_context_cache()
@@ -84,7 +84,7 @@ class TestRoute:
 
     def test_non_name_column_not_registered(self, monkeypatch):
         """2.3: 普通列名不注册（避免短列名噪声误命中）。"""
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         fake_cols = {"xxx_table": {"XSheet": ["普通字段", "描述"]}}
         monkeypatch.setattr(sc_mod, "_all_columns", lambda: fake_cols, raising=False)
         reset_skill_context_cache()
@@ -97,7 +97,7 @@ class TestRoute:
 
 class TestColumnTypesBlock:
     def test_int_column_annotated_with_type(self, monkeypatch):
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
 
         def fake_load_yaml(name):
             if name == "value_constraints.yaml":
@@ -119,7 +119,7 @@ class TestColumnTypesBlock:
         assert "pet[Pet]" in block
 
     def test_name_column_marked(self, monkeypatch):
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         import agent.excel.skill_loader as sl_mod
 
         def fake_load_yaml(name):
@@ -142,7 +142,7 @@ class TestColumnTypesBlock:
         assert "类型: int [主名称列]" not in block
 
     def test_enum_values_annotated(self, monkeypatch):
-        from agent.excel import skill_context as sc_mod
+        from agent.excel.core import skill_context as sc_mod
         import agent.excel.skill_loader as sl_mod
 
         def fake_load_yaml(name):

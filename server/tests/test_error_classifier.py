@@ -1,4 +1,4 @@
-"""error_classifier 单测：覆盖每类 ErrorType 分类与 verify 门控优先级。
+﻿"""error_classifier 单测：覆盖每类 ErrorType 分类与 verify 门控优先级。
 
 capability: error-classification-repair
 """
@@ -10,7 +10,7 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.error_classifier import (
+from agent.excel.repair.error_classifier import (
     ClassifiedError,
     ErrorType,
     VerifyResult,

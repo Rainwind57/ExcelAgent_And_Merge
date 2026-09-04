@@ -1,4 +1,4 @@
-"""repair 信号回流学习单测（capability: error-classification-repair）。
+﻿"""repair 信号回流学习单测（capability: error-classification-repair）。
 
 验证：
 1. skill_updater._ingest_anti_pattern_signal 接受显式 signal_type 并写 jsonl
@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.agent import TableAgent
-from agent.excel.error_classifier import ClassifiedError, ErrorType
+from agent.excel.repair.error_classifier import ClassifiedError, ErrorType
 from agent.excel.skill_updater import SkillUpdater
 
 

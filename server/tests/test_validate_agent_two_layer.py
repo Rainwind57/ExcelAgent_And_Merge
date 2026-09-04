@@ -1,4 +1,4 @@
-"""ValidateAgent 两段式单测（§4.8）。
+﻿"""ValidateAgent 两段式单测（§4.8）。
 
 本批覆盖 §4.1 validate_field_layer + §4.4 assemble_tips/IssueType（字段层 2 项 +
 tips 序列化）。FK 拓扑层（§4.2）+ 交互反问（§4.5）+ e2e（§4.9）留后续批次。
@@ -802,12 +802,12 @@ class TestFieldLayerEnumUniqueRange:
         """⑥ modify + run_semantic_gate 返 issue → RANGE_OUTLIER。"""
         self._patch_topo(monkeypatch, [0])
         monkeypatch.setattr(
-            "agent.excel.semantic_gate.run_semantic_gate",
+            "agent.excel.core.semantic_gate.run_semantic_gate",
             lambda *a, **k: [{"column": "成长率", "reason": "超出范围",
                               "value": 999, "suggested_fix": "改值"}])
         # _check_enum_whitelist fallback 不触发（enum_set 覆盖成长率且值在白名单）
         monkeypatch.setattr(
-            "agent.excel.semantic_gate._check_enum_whitelist",
+            "agent.excel.core.semantic_gate._check_enum_whitelist",
             lambda *a, **k: None)
         v = _make_validator()
         it = NLIntent(action="modify", table_hint="pet", sheet_hint="Pet",
@@ -831,8 +831,8 @@ class TestFieldLayerEnumUniqueRange:
             calls[0] += 1
             return []
 
-        monkeypatch.setattr("agent.excel.semantic_gate.run_semantic_gate", _spy_sg)
-        monkeypatch.setattr("agent.excel.semantic_gate._check_enum_whitelist",
+        monkeypatch.setattr("agent.excel.core.semantic_gate.run_semantic_gate", _spy_sg)
+        monkeypatch.setattr("agent.excel.core.semantic_gate._check_enum_whitelist",
                             lambda *a, **k: None)
         v = _make_validator()
         it = _intent(fields={"成长率": 999})  # action=add

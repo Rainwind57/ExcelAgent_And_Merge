@@ -1,4 +1,4 @@
-"""skill-ab-gating 单测（capability: skill-ab-gating）。
+﻿"""skill-ab-gating 单测（capability: skill-ab-gating）。
 
 验证 D9 / D11：
 - 1.3 门控：enable_skill=False 不注入 skill_context；on/off prompt 不同
@@ -203,7 +203,7 @@ class TestEnableSkillGating:
         parser = self._make_parser(enable_skill=True, monkeypatch=monkeypatch)
         # build_skill_context 在函数内 `from .skill_context import build_skill_context`
         # 局部 import，patch 源模块属性
-        import agent.excel.skill_context as sc_mod
+        import agent.excel.core.skill_context as sc_mod
         fake_ctx = "## 目标表列名候选\npet.Pet: 名字/类型"
         monkeypatch.setattr(sc_mod, "build_skill_context",
                             lambda text: fake_ctx, raising=False)
@@ -212,7 +212,7 @@ class TestEnableSkillGating:
         assert "BASE:添加宠物" in out
 
     def test_on_off_prompt_differ(self, monkeypatch):
-        import agent.excel.skill_context as sc_mod
+        import agent.excel.core.skill_context as sc_mod
         fake_ctx = "## 目标表列名候选\npet.Pet: 名字"
         monkeypatch.setattr(sc_mod, "build_skill_context",
                             lambda text: fake_ctx, raising=False)

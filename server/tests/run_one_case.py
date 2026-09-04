@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """单条跨表用例全链路打印调试脚本。
 
@@ -66,7 +66,7 @@ from agent.excel.subagent.base import SubAgent  # noqa: E402
 from agent.excel.subagent.locator_agent import LocatorAgent  # noqa: E402
 from agent.excel.subagent.decompose_agent import DecomposeAgent  # noqa: E402
 from agent.excel.subagent.validator_agent import ValidatorAgent  # noqa: E402
-from agent.excel.operation_orchestrator import OperationOrchestrator  # noqa: E402
+from agent.excel.core.operation_orchestrator import OperationOrchestrator  # noqa: E402
 from agent.codemaker_client import CodemakerClient  # noqa: E402
 from services.agent_service import AgentService  # noqa: E402
 from tests.table_case_eval import (  # noqa: E402

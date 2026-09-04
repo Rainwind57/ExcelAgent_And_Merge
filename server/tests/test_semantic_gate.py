@@ -1,4 +1,4 @@
-"""semantic_gate + SEMANTIC_OUTLIER 修复路径单元测试。
+﻿"""semantic_gate + SEMANTIC_OUTLIER 修复路径单元测试。
 
 验证 #2 值语义合理性门的新能力（baseline 无此能力）：
 - 硬编码范围违例检测（_verify_write 原不做 min/max 检查）
@@ -14,11 +14,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.excel.semantic_gate import (
+from agent.excel.core.semantic_gate import (
     run_semantic_gate, clear_cache, _try_numeric, _check_distribution_outlier, ColStats,
 )
-from agent.excel.error_classifier import ErrorType, VerifyResult, classify, ClassifiedError
-from agent.excel.repair_playbook import _h_semantic_outlier, RepairTaskCtx, RepairActionKind
+from agent.excel.repair.error_classifier import ErrorType, VerifyResult, classify, ClassifiedError
+from agent.excel.repair.repair_playbook import _h_semantic_outlier, RepairTaskCtx, RepairActionKind
 
 
 class _MockCLI:
@@ -134,7 +134,7 @@ def test_add_still_checks_enum_whitelist(monkeypatch):
     vc = {"品质": {"type": "int"}}
     result_rows = [{"col_name": "品质", "new_value": 99, "col": 3}]
     monkeypatch.setattr(
-        "agent.excel.semantic_gate._load_enum_values",
+        "agent.excel.core.semantic_gate._load_enum_values",
         lambda stem, sheet, col: [1, 2, 3, 4, 5],
     )
     issues = run_semantic_gate("pet", "Pet", "/fake/pet.xlsx", ["品质"],
@@ -151,7 +151,7 @@ def test_enum_whitelist_violation(monkeypatch):
     vc = {"品质": {"type": "int"}}
     result_rows = [{"col_name": "品质", "new_value": 99, "col": 3}]
     monkeypatch.setattr(
-        "agent.excel.semantic_gate._load_enum_values",
+        "agent.excel.core.semantic_gate._load_enum_values",
         lambda stem, sheet, col: [1, 2, 3, 4, 5],
     )
     issues = run_semantic_gate("pet", "Pet", "/fake/pet.xlsx", ["品质"], result_rows, _MockCLI([]), vc)
@@ -167,7 +167,7 @@ def test_enum_whitelist_pass(monkeypatch):
     vc = {"品质": {"type": "int"}}
     result_rows = [{"col_name": "品质", "new_value": 3, "col": 3}]
     monkeypatch.setattr(
-        "agent.excel.semantic_gate._load_enum_values",
+        "agent.excel.core.semantic_gate._load_enum_values",
         lambda stem, sheet, col: [1, 2, 3, 4, 5],
     )
     issues = run_semantic_gate("pet", "Pet", "/fake/pet.xlsx", ["品质"], result_rows, _MockCLI([]), vc)
@@ -281,7 +281,7 @@ def test_classify_routes_semantic_outlier():
 
 def test_strategy_table_has_semantic_outlier():
     """_STRATEGY_TABLE 注册了 SEMANTIC_OUTLIER 策略."""
-    from agent.excel.repair_playbook import _STRATEGY_TABLE, RepairLevel
+    from agent.excel.repair.repair_playbook import _STRATEGY_TABLE, RepairLevel
     strat = _STRATEGY_TABLE.get(ErrorType.SEMANTIC_OUTLIER)
     assert strat is not None
     assert strat.handler is _h_semantic_outlier

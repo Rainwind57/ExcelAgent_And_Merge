@@ -1,4 +1,4 @@
-"""cascade_planner 单元测试 —— SET 改主键级联影响推理。
+﻿"""cascade_planner 单元测试 —— SET 改主键级联影响推理。
 
 验证 #1 P0 数据风险防护能力（baseline 无此能力）：
 - table_relations.json 关系图加载
@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.excel.cascade_planner import (
+from agent.excel.repair.cascade_planner import (
     _load_table_relations, _find_fk_columns_in_relation,
     _stem_matches_relation_to, preview_cascade_set_pk, apply_cascade_set_pk,
 )
@@ -195,12 +195,12 @@ def test_preview_cascade_set_pk_pet(monkeypatch):
 
     # mock _resolve_workspace_path 返回 mock 路径
     monkeypatch.setattr(
-        "agent.excel.cascade_planner._resolve_workspace_path",
+        "agent.excel.repair.cascade_planner._resolve_workspace_path",
         lambda rel: Path(rel),
     )
     # mock _sheet_exists 用 cli
     monkeypatch.setattr(
-        "agent.excel.cascade_planner._sheet_exists",
+        "agent.excel.repair.cascade_planner._sheet_exists",
         lambda c, p, s: s in cli._files.get(str(p).replace("\\", "/"), {}),
     )
 
@@ -224,8 +224,8 @@ def test_preview_cascade_set_pk_no_refs():
     # row2/3 宠物id==1, row4 进化后==1。改 id=2：宠物id==2 无，进化后==2 有 row2
     # 所以改 2 仍有 1 处引用。改一个确实无引用的：用 id=999（不存在）
     from unittest.mock import patch
-    with patch("agent.excel.cascade_planner._resolve_workspace_path", lambda rel: Path(rel)), \
-         patch("agent.excel.cascade_planner._sheet_exists", lambda c, p, s: s in cli._files.get(str(p).replace("\\", "/"), {})):
+    with patch("agent.excel.repair.cascade_planner._resolve_workspace_path", lambda rel: Path(rel)), \
+         patch("agent.excel.repair.cascade_planner._sheet_exists", lambda c, p, s: s in cli._files.get(str(p).replace("\\", "/"), {})):
         preview = preview_cascade_set_pk(
             cli, Path(pet_path), "Pet", 2, "灵兽id", 999, 1000, "pet")
     # old_val=999 在 evolve 里无匹配 → count=0
@@ -237,11 +237,11 @@ def test_apply_cascade_set_pk_executes_updates(monkeypatch):
     """apply 执行级联更新：引用行的外键值被改为新值。"""
     cli, pet_path, evolve_path = _build_pet_cascade_scenario()
     monkeypatch.setattr(
-        "agent.excel.cascade_planner._resolve_workspace_path",
+        "agent.excel.repair.cascade_planner._resolve_workspace_path",
         lambda rel: Path(rel),
     )
     monkeypatch.setattr(
-        "agent.excel.cascade_planner._sheet_exists",
+        "agent.excel.repair.cascade_planner._sheet_exists",
         lambda c, p, s: s in cli._files.get(str(p).replace("\\", "/"), {}),
     )
 

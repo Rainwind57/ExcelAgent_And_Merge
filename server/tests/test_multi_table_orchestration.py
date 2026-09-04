@@ -1,4 +1,4 @@
-"""multi-table-orchestration 单测（capability: cross-table-transaction + relation-graph-consumption）。
+﻿"""multi-table-orchestration 单测（capability: cross-table-transaction + relation-graph-consumption）。
 
 验证：
 - D2 跨表模式检测信号（detect_cross_table_action）
@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.cross_table_splitter import detect_cross_table_action
+from agent.excel.core.cross_table_splitter import detect_cross_table_action
 from agent.excel.agent import AgentResult
 from agent.nl_parser import NLIntent
 
@@ -46,7 +46,7 @@ def test_detect_npc_reward():
 
 def test_transaction_all_success():
     """D4: 全成功提交（所有 res.ok=True）。"""
-    from agent.excel.operation_orchestrator import OperationOrchestrator
+    from agent.excel.core.operation_orchestrator import OperationOrchestrator
 
     def fake_run_single(intent, confirm_token, session_id):
         res = AgentResult(intent=intent)
@@ -63,7 +63,7 @@ def test_transaction_all_success():
 
 def test_transaction_middle_failure_marks_dirty():
     """D4: 中间失败 → 标记 dirty_data + failed_tables + 中断后续。"""
-    from agent.excel.operation_orchestrator import OperationOrchestrator
+    from agent.excel.core.operation_orchestrator import OperationOrchestrator
 
     call_count = [0]
 

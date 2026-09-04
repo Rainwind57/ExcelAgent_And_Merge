@@ -1,4 +1,4 @@
-"""enum_resolver 动态补充单测（capability: enum-mapping-pipeline D10.1-D10.4）。
+﻿"""enum_resolver 动态补充单测（capability: enum-mapping-pipeline D10.1-D10.4）。
 
 验证：
 - 10.1 register_label 写 pending
@@ -18,8 +18,8 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel import enum_resolver as er_mod
-from agent.excel.enum_resolver import EnumResolver
+from agent.excel.core import enum_resolver as er_mod
+from agent.excel.core.enum_resolver import EnumResolver
 from agent.excel.skill_updater import SkillUpdater
 
 

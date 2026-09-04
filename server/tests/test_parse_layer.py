@@ -1,4 +1,4 @@
-
+﻿
 """解析层与编排器单测（P3 3.6 + P2 编排器 + P5.3 并发）。
 
 不依赖 codemaker serve：仅测纯函数与可注入桩的编排逻辑。
@@ -29,7 +29,7 @@ from agent.excel.agent import _clean_quotes
 from agent.excel.codemaker_parser import PromptMode, mode_classify, CodemakerNLParser
 from agent.excel.llm_context import estimate_tokens
 from agent.excel.nl_parser import NLIntent
-from agent.excel.operation_orchestrator import (
+from agent.excel.core.operation_orchestrator import (
     OperationOrchestrator, _FailedResult,
 )
 
@@ -226,7 +226,7 @@ class TestValidateIntent:
         assert it.table_hint is None
 
     def test_table_hint_in_stems_kept(self, monkeypatch):
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "known_stems", lambda: {"pet", "item"})
         monkeypatch.setattr(sc, "get_table_route", lambda: {})
         it = NLIntent(action="get", table_hint="pet")
@@ -234,7 +234,7 @@ class TestValidateIntent:
         assert it.table_hint == "pet"
 
     def test_table_hint_routed_to_stem(self, monkeypatch):
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "known_stems", lambda: {"pet"})
         monkeypatch.setattr(sc, "get_table_route", lambda: {"宠物": "pet"})
         it = NLIntent(action="get", table_hint="宠物")
@@ -242,7 +242,7 @@ class TestValidateIntent:
         assert it.table_hint == "pet"
 
     def test_table_hint_unmappable_cleared(self, monkeypatch):
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "known_stems", lambda: {"pet"})
         monkeypatch.setattr(sc, "get_table_route", lambda: {})
         it = NLIntent(action="get", table_hint="不存在的表")
@@ -254,7 +254,7 @@ class TestValidateFields:
     """D2: _validate_intent 就近对 fields 做 match_best 校验+自纠（capability: column-matching-accuracy）。"""
 
     def _patch_sc(self, monkeypatch, columns):
-        from agent.excel import skill_context as sc
+        from agent.excel.core import skill_context as sc
         monkeypatch.setattr(sc, "get_columns",
                             lambda stem, sheet="": columns if stem == "pet" else {})
         monkeypatch.setattr(sc, "known_stems", lambda: {"pet"})
@@ -290,17 +290,17 @@ class TestValidateFields:
 
 class TestSkillContext:
     def test_pre_route_empty_text(self):
-        from agent.excel.skill_context import pre_route
+        from agent.excel.core.skill_context import pre_route
         assert pre_route("") == []
         assert pre_route(None) == []  # type: ignore[arg-type]
 
     def test_build_skill_context_empty_text(self):
-        from agent.excel.skill_context import build_skill_context
+        from agent.excel.core.skill_context import build_skill_context
         assert build_skill_context("") == ""
 
     def test_build_skill_context_no_candidate(self, monkeypatch):
         # D1：预解析无候选时退化为全表列名候选（不再返回空，避免 LLM 零约束臆造）
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "pre_route", lambda txt, limit=3: [])
         monkeypatch.setattr(sc, "known_stems", lambda: {"pet", "item"})
         result = sc.build_skill_context("无关文本")
@@ -308,7 +308,7 @@ class TestSkillContext:
 
     def test_build_skill_context_budget_keeps_columns(self, monkeypatch):
         # 3.5 修正：候选列名必保留，路由从全量→仅候选→无降级
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "pre_route", lambda txt, limit=3: ["pet"])
         monkeypatch.setattr(sc, "_format_columns_block",
                             lambda stems: "【列名】pet: 名称,等级,ID")
@@ -322,7 +322,7 @@ class TestSkillContext:
         assert "【列名】" in ctx
 
     def test_build_skill_context_full_route_when_within_budget(self, monkeypatch):
-        import agent.excel.skill_context as sc
+        import agent.excel.core.skill_context as sc
         monkeypatch.setattr(sc, "pre_route", lambda txt, limit=3: ["pet"])
         monkeypatch.setattr(sc, "_format_columns_block", lambda stems: "COL")
         monkeypatch.setattr(sc, "_format_enums_block", lambda stems: "ENUM")
@@ -621,7 +621,7 @@ class TestOrchestratorRun:
     def test_concurrent_same_result_as_sequential(self, monkeypatch):
         # 强制启用并发路径，验证结果与顺序一致
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_MAX_WORKERS", 4)
+            "agent.excel.core.operation_orchestrator._ORCH_MAX_WORKERS", 4)
         its = [NLIntent(action="get", locator_value=f"x{i}") for i in range(5)]
         log: list = []
         orch = OperationOrchestrator(self._fake_run_single(log, delay=0.05))
@@ -634,7 +634,7 @@ class TestOrchestratorRun:
     def test_concurrent_isolation_on_exception(self, monkeypatch):
         # 并发路径下单 worker 异常不崩整批
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_MAX_WORKERS", 4)
+            "agent.excel.core.operation_orchestrator._ORCH_MAX_WORKERS", 4)
         def _rs(intent, confirm_token, session_id):
             if intent.locator_value == "boom":
                 raise RuntimeError("boom")
@@ -652,7 +652,7 @@ class TestOrchestratorRun:
     def test_concurrent_producer_before_consumer(self, monkeypatch):
         # 并发路径下依赖仍被尊重：producer 层先于 consumer 层
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_MAX_WORKERS", 4)
+            "agent.excel.core.operation_orchestrator._ORCH_MAX_WORKERS", 4)
         order: list = []
         lock = threading.Lock()
         counter = {"n": 0}
@@ -673,9 +673,9 @@ class TestOrchestratorRun:
 
     def test_retry_then_succeed(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_MAX_RETRIES", 2)
+            "agent.excel.core.operation_orchestrator._ORCH_MAX_RETRIES", 2)
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_BACKOFF_BASE", 0.0)
+            "agent.excel.core.operation_orchestrator._ORCH_BACKOFF_BASE", 0.0)
         attempts = {"n": 0}
         def _rs(intent, confirm_token, session_id):
             attempts["n"] += 1
@@ -690,9 +690,9 @@ class TestOrchestratorRun:
     def test_retry_exhausted_raises_sequential(self, monkeypatch):
         # 顺序路径下重试耗尽 → 异常向上抛（保留 fail-fast）
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_MAX_RETRIES", 1)
+            "agent.excel.core.operation_orchestrator._ORCH_MAX_RETRIES", 1)
         monkeypatch.setattr(
-            "agent.excel.operation_orchestrator._ORCH_BACKOFF_BASE", 0.0)
+            "agent.excel.core.operation_orchestrator._ORCH_BACKOFF_BASE", 0.0)
         def _rs(intent, confirm_token, session_id):
             raise RuntimeError("always fails")
         orch = OperationOrchestrator(_rs)
@@ -737,7 +737,7 @@ class TestSplitterProducesPreserved:
     # 整体移除的 11 硬编码模板拆分器），一并删除。以下仅保留不依赖该类的用例。
 
     def test_produces_none_not_in_extras(self):
-        from agent.excel.cross_table_splitter import SplitIntent
+        from agent.excel.core.cross_table_splitter import SplitIntent
         si = SplitIntent(text="x", table_hint="t", produces=None)
         its = self._convert([si])
         assert "produces" not in its[0].extras

@@ -1,4 +1,4 @@
-"""repair_context 单测：累积历史、重复策略检测、占位符解析。
+﻿"""repair_context 单测：累积历史、重复策略检测、占位符解析。
 
 capability: verify-repair-loop
 """
@@ -9,8 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.error_classifier import ErrorType
-from agent.excel.repair_context import RepairContext
+from agent.excel.repair.error_classifier import ErrorType
+from agent.excel.repair.repair_context import RepairContext
 
 
 def test_record_attempt_accumulates():

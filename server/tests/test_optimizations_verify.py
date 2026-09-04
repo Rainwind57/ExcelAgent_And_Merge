@@ -1,4 +1,4 @@
-"""验证本次优化修改的正确性：向量化 compare / 规则 parse / 白名单 AI / aiCache Proxy"""
+﻿"""验证本次优化修改的正确性：向量化 compare / 规则 parse / 白名单 AI / aiCache Proxy"""
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -110,7 +110,7 @@ def test_rule_parse():
 # ── 3. 白名单 AI 模式 ──
 def test_whitelist_ai():
     try:
-        from agent.excel.step_ai_enhancer import StepAIEnhancer
+        from agent.excel.core.step_ai_enhancer import StepAIEnhancer
     except ImportError as e:
         print(f"  ⊘ 跳过白名单 AI 测试（agent 导入链断裂：{e}）")
         return

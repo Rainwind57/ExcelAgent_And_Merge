@@ -1,4 +1,4 @@
-"""skill 挂载 vs 未挂载 A/B 对照测试框架。
+﻿"""skill 挂载 vs 未挂载 A/B 对照测试框架。
 
 目的: 评判 skill（列别名/行规则/上下文消歧/反模式/短形式）对 AI 表格定位的增强质量。
 
@@ -989,7 +989,7 @@ def main():
 def _cleanup_test_dialogs():
     """删 ab_test session 的 dialog 记录，避免测试数据进案例库。"""
     try:
-        from agent.excel.dialog_logger import get_dialog_logger
+        from agent.excel.core.dialog_logger import get_dialog_logger
         dl = get_dialog_logger()
         for d in (dl.dialog_dir, dl.examples_dir, dl.failures_dir):
             if not d.exists():

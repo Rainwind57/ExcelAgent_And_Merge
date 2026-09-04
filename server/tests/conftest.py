@@ -1,4 +1,4 @@
-"""测试级公共 fixture。
+﻿"""测试级公共 fixture。
 
 autouse 清空 skill 模块级缓存，避免模块级缓存(_route_cache/_columns_cache/
 _col_types_cache/_YAML_CACHE)跨测试泄漏导致假阳性。
@@ -28,7 +28,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_skill_caches():
     try:
-        from agent.excel import skill_context
+        from agent.excel.core import skill_context
         skill_context.reset_skill_context_cache()
     except Exception:
         pass

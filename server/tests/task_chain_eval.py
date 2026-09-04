@@ -1,4 +1,4 @@
-"""task_chain.json 复合任务链评估脚本（excel_LLM Agent 内环验证）。
+﻿"""task_chain.json 复合任务链评估脚本（excel_LLM Agent 内环验证）。
 
 针对 task_chain.json 每条复合指令（跨表多步 + produces 占位符引用链），
 用真实 AgentService（excel_LLM Agent 全套：parse_multi / cross_table_splitter /
@@ -504,7 +504,7 @@ def _classify_chain_error(service, resp) -> str:
     if resp is None or getattr(resp, "ok", False):
         return "unknown"
     try:
-        from agent.excel.error_classifier import classify, VerifyResult
+        from agent.excel.repair.error_classifier import classify, VerifyResult
         res_like = type("R", (), {"steps": [], "message": getattr(resp, "message", "") or ""})()
         return classify(None, res_like, VerifyResult(), context={}).error_type.value
     except Exception:
