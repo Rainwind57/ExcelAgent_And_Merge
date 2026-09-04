@@ -1,4 +1,0 @@
-PIPELINE_MODE=off AI_WHITELIST=1 AI_TIMEOUT_SCALE=1.0
-[init] done
-
-[get    ]   26291ms  ok=True  intent='get'  err=''
