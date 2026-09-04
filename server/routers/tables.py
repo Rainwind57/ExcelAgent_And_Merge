@@ -36,25 +36,6 @@ async def search_tables(
     return service.search(keyword=q, table=table)
 
 
-# R26: history 路由必须在 /{stem} 之前注册，否则 /history 被 /{stem} 当 stem 参数吃掉（同 T2）
-@router.get("/history", response_model=list)
-async def list_table_history(
-    table: str = Query(..., description="表格 stem"),
-    sheet: str = Query(default="", description="sheet 名（空=该表所有 sheet）"),
-    since: int = Query(default=24, ge=1, le=168, description="近 N 小时"),
-):
-    """R26: 查询配表操作历史（近 N 小时）。"""
-    from engine.table_history import list_history
-    return list_history(table, sheet=sheet, since_hours=since)
-
-
-@router.post("/history/rollback/{record_id}", response_model=RowOpResponse)
-async def rollback_history(record_id: str):
-    """R26: 按记录 id 回滚单次变更。"""
-    service = get_agent_service()
-    return service.rollback_history(record_id)
-
-
 @router.get("/{stem}", response_model=TableInfo)
 async def get_table(stem: str):
     """获取单个表格的详细信息。"""

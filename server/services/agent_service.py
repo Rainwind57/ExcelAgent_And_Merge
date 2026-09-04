@@ -1009,15 +1009,6 @@ class AgentService:
 
         new_row = res.final.data.get("row") if isinstance(res.final.data, dict) else None
         sorted_done = any(s.name == "auto_sort" and s.ok for s in res.steps)
-        # R26: 记录新增行历史（供回滚删除）
-        if new_row:
-            try:
-                from engine.table_history import record_change
-                record_change(req.table_stem, req.sheet, "add_commit",
-                              row=new_row, new_value={str(k): v for k, v in values.items()},
-                              source="add_form_commit")
-            except Exception:
-                pass
         return AddFormCommitResponse(
             ok=True,
             table_stem=req.table_stem,
@@ -1143,15 +1134,6 @@ class AgentService:
         # 清缓存（写盘后让后续读取拿新值）
         try:
             self.cli._cache.clear()
-        except Exception:
-            pass
-
-        # R26: 记录操作历史
-        try:
-            from engine.table_history import record_change
-            record_change(req.table_stem, req.sheet, "cell_update",
-                          row=req.row, col=req.col, col_name=col_name,
-                          old_value=old_val, new_value=new_val, source="cell_update")
         except Exception:
             pass
 
@@ -1296,18 +1278,6 @@ class AgentService:
         except Exception:
             pass
 
-        # R26: 记录每列操作历史
-        try:
-            from engine.table_history import record_change
-            for res in results:
-                if res.ok:
-                    record_change(req.table_stem, req.sheet, "batch_update",
-                                  row=req.row, col=res.col, col_name=res.col_name,
-                                  old_value=res.old_value, new_value=res.new_value,
-                                  source="batch_update")
-        except Exception:
-            pass
-
         resp.results = results
         resp.ok = not has_error
         if has_error:
@@ -1353,15 +1323,6 @@ class AgentService:
                 resp.warnings.append("删行后公式引用已机械位移，请检查跨行引用是否正确")
             if r.cache_message:
                 resp.warnings.append(r.cache_message)
-            # R26: 记录历史
-            try:
-                from engine.table_history import record_change
-                record_change(req.table_stem, req.sheet, "row_delete",
-                              row=req.row, old_value=None, new_value=None,
-                              source="row_delete",
-                              extra={"deleted_values": [str(v) for v in deleted_values]})
-            except Exception:
-                pass
         except Exception as e:
             resp.message = f"删行异常：{e}"
         return resp
@@ -1390,13 +1351,6 @@ class AgentService:
                 resp.warnings.append("插行后公式引用已机械位移，请检查跨行引用是否正确")
             if r.cache_message:
                 resp.warnings.append(r.cache_message)
-            # R26: 记录历史
-            try:
-                from engine.table_history import record_change
-                record_change(req.table_stem, req.sheet, "row_insert",
-                              row=req.row, source="row_insert")
-            except Exception:
-                pass
         except Exception as e:
             resp.message = f"插行异常：{e}"
         return resp
@@ -1439,13 +1393,6 @@ class AgentService:
             resp.warnings.append("新增列后所有行的该列位置改变，公式引用已机械位移，请检查")
             if cache_info.get("needs_manual_fix"):
                 resp.warnings.append(cache_info.get("cache_message", ""))
-            # R26: 记录历史
-            try:
-                from engine.table_history import record_change
-                record_change(req.table_stem, req.sheet, "column_add",
-                              col=req.col, new_value=req.col_name, source="column_add")
-            except Exception:
-                pass
         except Exception as e:
             resp.message = f"新增列异常：{e}"
         return resp
@@ -1476,68 +1423,8 @@ class AgentService:
             resp.warnings.append("删列后右侧列左移，公式引用已机械位移，请检查")
             if cache_info.get("needs_manual_fix"):
                 resp.warnings.append(cache_info.get("cache_message", ""))
-            # R26: 记录历史
-            try:
-                from engine.table_history import record_change
-                record_change(req.table_stem, req.sheet, "column_delete",
-                              col=req.col, source="column_delete")
-            except Exception:
-                pass
         except Exception as e:
             resp.message = f"删列异常：{e}"
-        return resp
-
-    def rollback_history(self, record_id: str) -> "RowOpResponse":
-        """R26: 按记录 id 回滚单次变更。"""
-        from models.agent_models import RowOpResponse
-        from engine.table_history import rollback_record
-        info = rollback_record(record_id)
-        if not info.get("ok"):
-            return RowOpResponse(ok=False, message=info.get("message", "回滚失败"))
-        rec = info["record"]
-        rev = info["reverse_op"]
-        ts = rec.get("table_stem", "")
-        sh = rec.get("sheet", "")
-        row = rec.get("row")
-        col = rec.get("col")
-        old_val = rec.get("old_value")
-        resp = RowOpResponse(ok=False, table_stem=ts, sheet=sh, row=row, col=col)
-        try:
-            if rev == "set_value" and row and col:
-                # 改回旧值
-                from models.agent_models import CellUpdateRequest
-                r = self.update_cell(CellUpdateRequest(
-                    table_stem=ts, sheet=sh, row=row, col=col,
-                    value=str(old_val) if old_val is not None else ""))
-                resp.ok = r.ok
-                resp.message = f"回滚：行{row} 列{col} 改回「{old_val}」" + ("" if r.ok else f"（失败：{r.error})")
-            elif rev == "delete_row" and row:
-                from models.agent_models import RowDeleteRequest
-                r = self.delete_row(RowDeleteRequest(table_stem=ts, sheet=sh, row=row))
-                resp.ok = r.ok
-                resp.message = f"回滚：删除行{row}" + ("" if r.ok else f"（失败：{r.message})")
-            elif rev == "insert_row" and row:
-                from models.agent_models import RowInsertRequest
-                extra = rec.get("extra", {})
-                vals = extra.get("deleted_values", [])
-                values = {str(i + 1): v for i, v in enumerate(vals) if v is not None}
-                r = self.insert_row(RowInsertRequest(
-                    table_stem=ts, sheet=sh, row=row, values=values))
-                resp.ok = r.ok
-                resp.message = f"回滚：用旧值重插行{row}" + ("" if r.ok else f"（失败：{r.message})")
-            elif rev == "delete_column" and col:
-                from models.agent_models import ColumnOpRequest
-                r = self.delete_column(ColumnOpRequest(
-                    table_stem=ts, sheet=sh, col=col, confirm=True))
-                resp.ok = r.ok
-                resp.message = f"回滚：删除列{col}" + ("" if r.ok else f"（失败：{r.message})")
-            elif rev == "manual":
-                resp.ok = False
-                resp.message = info.get("message", "需手动恢复")
-            else:
-                resp.message = f"不支持的回滚操作：{rev}"
-        except Exception as e:
-            resp.message = f"回滚异常：{e}"
         return resp
 
     def suggest_rows(self, table_stem: str, sheet: str, value: str,

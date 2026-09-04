@@ -47,10 +47,6 @@ MERGE_HISTORY_TTL_SECONDS = 24 * 3600
 # R5: skill 四层目录（L0_methodology / L1_derived / L2_runtime / L3_anti_patterns / _pending）
 SKILLS_DIR = PROJECT_ROOT / "server" / "agent" / "excel" / "skills"
 
-# R26: 配表操作历史目录（记录 cell/update、batch-update、commit、row/col 增删等变更，供查询/回滚）
-TABLE_HISTORY_DIR = RESOURCES_DIR / ".history"
-os.makedirs(TABLE_HISTORY_DIR, exist_ok=True)
-
 # 服务器配置
 HOST = "127.0.0.1"
 PORT = 8000

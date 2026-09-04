@@ -73,7 +73,7 @@ class CrossTableFKRule:
 
 
 # 依据 rules/fill/_reference.md §2.2 道具链，人工核对 merge/svn/demo_svn/wc 实际
-# 表头文字后登记（见 merge/scripts/seed_cross_table_ref_integrity_sync.py 的验证场景）：
+# 表头文字后登记：
 #   item.xlsx·Chest."reward ID" → reward.xlsx·Reward.reward_id（开箱掉落奖励表）
 CROSS_TABLE_FK_RULES: List[CrossTableFKRule] = [
     CrossTableFKRule(
