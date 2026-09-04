@@ -1685,65 +1685,6 @@ class AgentService:
         if dry_run:
             return self._dry_run_chat(text, session_id, table_hint=table_hint)
 
-        # ── 管道模式判定 ──
-        # 输入含文件路径或多表关键词 → 走 7 步管道;否则走旧 CRUD 路径
-        # 可配置 CODEMAKER_PIPELINE_MODE=auto|off|on(默认 auto)
-        try:
-            from agent.excel.pipeline.pipeline import (
-                should_trigger_pipeline, extract_file_path, Pipeline
-            )
-            from agent.excel.cli_instrument import ToolSink  # noqa: F401
-            if should_trigger_pipeline(text):
-                file_path = extract_file_path(text)
-                if file_path:
-                    # 管道 step_sink:复用 agent 的 thinking_sink 通道推送 step 事件,
-                    # chat_stream 统一经 _sink 转 SSE(step 与 thinking 共享 queue)
-                    step_sink_cb = getattr(self.agent, "_agent_step_sink", None)
-                    pipe = Pipeline(
-                        cli=getattr(self.agent, "cli", None),
-                        parser=getattr(self.agent, "parser", None),
-                        thinking_sink=getattr(self.agent, "_agent_thinking_sink", None),
-                        tool_sink=getattr(self.agent, "_agent_tool_sink", None),
-                        writer=self.agent,
-                        step_sink=step_sink_cb,
-                    )
-                    pipe_result = pipe.run(file_path, text=text,
-                                           session_id=session_id,
-                                           workspace=getattr(self.cli, "workspace", "Trunk"))
-                    # PipelineResult → AgentChatResponse 兼容格式
-                    from models.agent_models import AgentStepInfo
-                    step_infos = [AgentStepInfo(name=s.name, ok=(s.status == "done"),
-                                                detail=s.output or s.error or "")
-                                  for s in pipe_result.steps]
-                    return AgentChatResponse(
-                        ok=pipe_result.ok or False,
-                        session_id=session_id,
-                        intent="pipeline",
-                        reply_type="crud",
-                        message=pipe_result.message,
-                        steps=step_infos,
-                        sub_tasks=pipe_result.sub_tasks,
-                        thinking_steps=[{"phase": s.step_id, "detail": s.output or s.error or ""}
-                                         for s in pipe_result.steps],
-                        data={"produced": pipe_result.produced,
-                              "report_path": pipe_result.report_path},
-                        error="; ".join(e["error"] for e in pipe_result.errors) if pipe_result.errors else None,
-                    )
-        except Exception as e:
-            # 管道模式异常 → 返回管道失败响应(保留管道上下文,不降级 QA 丢失进度)
-            import logging as _log
-            _log.getLogger(__name__).warning(
-                f"管道模式执行异常: {e}", exc_info=True)
-            return AgentChatResponse(
-                ok=False,
-                session_id=session_id,
-                intent="pipeline",
-                reply_type="crud",
-                message=f"管道执行异常: {e}",
-                error=f"pipeline_error: {type(e).__name__}: {e}",
-                thinking_steps=[{"phase": "pipeline", "detail": f"执行异常: {e}"}],
-            )
-
         # ─文字确认分支 ──
         # 多端对话式确认：上一轮留有 pending 确认时，用户直接回短句
         # （"无误/确认/是/取消/不"等）→ 映射为 confirm_token 回传/取消，

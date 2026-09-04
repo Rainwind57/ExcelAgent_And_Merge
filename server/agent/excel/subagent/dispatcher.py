@@ -25,8 +25,8 @@ _DEFAULT_TIMEOUT = int(os.environ.get("CODEMAKER_SUBAGENT_TIMEOUT", "120"))
 
 
 def _AgentFragment():
-    """延迟导入 pipeline.types.AgentFragment 避免循环 import。"""
-    from ..pipeline.types import AgentFragment
+    """延迟导入 core.pipeline.contracts.AgentFragment 避免循环 import。"""
+    from ..core.pipeline.contracts import AgentFragment
     return AgentFragment
 
 

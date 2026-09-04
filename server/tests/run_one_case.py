@@ -301,21 +301,6 @@ def _patched_prompt(self, session_id, message, timeout=None, model="", stage="",
 CodemakerClient.prompt = _patched_prompt
 
 
-# ============ 10. Pipeline 判定拦截 (确认走 Pipeline 还是 TableAgent.run) ============
-try:
-    import services.agent_service as _as_mod
-    _orig_stp = _as_mod.should_trigger_pipeline
-
-    def _patched_stp(text):
-        r = _orig_stp(text)
-        _p(f"[pipeline?] should_trigger_pipeline={r}  text={text[:50]!r}")
-        return r
-
-    _as_mod.should_trigger_pipeline = _patched_stp
-except Exception as _e:
-    _p(f"[patch] should_trigger_pipeline patch 失败: {_e}")
-
-
 # ============ 主流程 ============
 def run(case, cases_file, case_index, raise_on_err=True):
     os.environ["CODEMAKER_AGENT_CHAIN_RAISE"] = "1" if raise_on_err else "0"

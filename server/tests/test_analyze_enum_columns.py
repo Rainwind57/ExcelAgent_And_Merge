@@ -19,7 +19,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel import analyze_enum_columns as ae_mod
+import agent.excel.core.analyze_enum_columns as ae_mod
 from agent.excel import enum_resolver as er_mod
 from agent.excel.agent import TableAgent
 

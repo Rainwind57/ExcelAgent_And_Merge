@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from agent.excel.subagent.llm_agent import LLMSubAgent
-from agent.excel.pipeline.types import DocIntent
+from agent.excel.core.pipeline.contracts import DocIntent
 
 
 class MockLLMSubAgent(LLMSubAgent):

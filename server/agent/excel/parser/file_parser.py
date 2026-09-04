@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _types():
-    """延迟导入 pipeline.types 避免循环 import(parser ← pipeline ← parser)。"""
-    from ..pipeline.types import DocIntent, StepCard
+    """延迟导入 pipeline.contracts 避免循环 import(parser ← pipeline ← parser)。"""
+    from ..core.pipeline.contracts import DocIntent, StepCard
     return DocIntent, StepCard
 
 # 实体类型 → placeholder 前缀(对齐 cross_table_splitter produces 模式)

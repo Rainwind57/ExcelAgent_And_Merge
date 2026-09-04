@@ -60,9 +60,9 @@ def _isolated_empty_dir() -> str:
 
 
 def _AgentFragment():
-    """延迟导入 pipeline.types.AgentFragment 避免循环 import
+    """延迟导入 core.pipeline.contracts.AgentFragment 避免循环 import
     (subagent ← pipeline ← subagent)。"""
-    from ..pipeline.types import AgentFragment
+    from ..core.pipeline.contracts import AgentFragment
     return AgentFragment
 
 

@@ -7,7 +7,7 @@ from agent.excel.cli_interface import StubCodeMakerCLI
 from agent.excel.subagent.roles import (
     DialogFillAgent, ItemNpcFillAgent, ButterflyEventFillAgent, GenericFillAgent,
 )
-from agent.excel.pipeline.types import DocIntent
+from agent.excel.core.pipeline.contracts import DocIntent
 
 
 RES = Path(r"c:\Users\wuzhixian\Desktop\kk\resources")

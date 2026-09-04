@@ -215,6 +215,84 @@ class StepContext:
         return f"{n_ok}/{n_total} 步完成，{ '、'.join(failed) } 未通过"
 
 
+@dataclass
+class StepCard:
+    """文件解析产出的单步卡片。
+
+    Attributes:
+        step_id: 步骤编号(如 "1.1")
+        title: 步骤标题
+        content: 步骤内容(非对话部分,如旁白/交互描述)
+        involved_elements: 涉及的实体列表,每项 {"type","symbol","name"}
+        branches: 分支信息(如选项跳转),无分支为空
+        dialog_fragments: 对话片段列表,每项 {"speaker","text","symbol"}
+    """
+    step_id: str = ""
+    title: str = ""
+    content: str = ""
+    involved_elements: list[dict] = field(default_factory=list)
+    branches: list[dict] = field(default_factory=list)
+    dialog_fragments: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class DocIntent:
+    """文件解析产出的结构化意图。
+
+    Attributes:
+        source_path: 源文件路径
+        file_type: 文件类型(md/xlsx/csv/txt)
+        steps: 步骤卡片列表(md 才有,xlsx/csv 为空)
+        records: 行记录列表(xlsx/csv 才有,每行一 dict)
+        symbol_map: 符号映射表 {"<placeholder>": "原始名"}
+        raw_text: 原始文本(txt 降级用)
+        ok: 解析是否成功
+        error: 失败时的错误信息
+    """
+    source_path: str = ""
+    file_type: str = ""
+    steps: list[StepCard] = field(default_factory=list)
+    records: list[dict] = field(default_factory=list)
+    symbol_map: dict[str, str] = field(default_factory=dict)
+    raw_text: str = ""
+    ok: bool = True
+    error: str = ""
+
+    def add_symbol(self, placeholder: str, name: str) -> None:
+        """分配符号到映射表,重复名复用已有符号。"""
+        # 反查:已有同名则复用
+        for ph, nm in self.symbol_map.items():
+            if nm == name:
+                return
+        self.symbol_map[placeholder] = name
+
+
+@dataclass
+class AgentFragment:
+    """SubAgent 产出单元:含 placeholder 声明 + SQL片段/操作列表 + thinking。
+
+    Attributes:
+        agent_name: 产出该 fragment 的 SubAgent 名(如 "Dialog配表专家")
+        produces: 该 fragment 声明产出的 placeholder 符号(如 "<npc_laochen>")
+        references: 该 fragment 引用的其他 placeholder 列表
+        sql_or_ops: 生成的 SQL 片段或操作列表
+        thinking_steps: 思考步骤,每项 {"phase","detail"}
+        ok: 是否成功
+        error: 失败详情
+        target_table: 目标表 stem(供 Step4 汇总排序)
+        target_sheet: 目标 sheet
+    """
+    agent_name: str = ""
+    produces: Optional[str] = None
+    references: list[str] = field(default_factory=list)
+    sql_or_ops: list[Any] = field(default_factory=list)
+    thinking_steps: list[dict] = field(default_factory=list)
+    ok: bool = True
+    error: str = ""
+    target_table: str = ""
+    target_sheet: str = ""
+
+
 # ── SSE 事件构造（单一、带 step_id） ─────────────────────────────
 class SSE:
     """SSE 事件工厂。所有事件带 step_id，前端按此路由到 StepCard。"""
@@ -268,4 +346,5 @@ __all__ = [
     "STEP1_PARSE", "STEP1_5_CONTRACT", "STEP2_VALIDATE", "STEP3_EXECUTE", "STEP4_CONCLUDE",
     "STEP_ORDER", "STEP_TITLES",
     "StepError", "StepResult", "StepHardError", "StepContext", "SSE",
+    "StepCard", "DocIntent", "AgentFragment",
 ]
