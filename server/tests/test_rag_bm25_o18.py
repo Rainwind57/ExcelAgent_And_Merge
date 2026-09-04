@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from agent.excel.rag_searcher import (
+from agent.excel.locator.rag_searcher import (
     bm25_search, RAGHit, _BM25Index, _get_index,
 )
 
@@ -40,7 +40,7 @@ class TestG1BM25Search:
         _write_mini_index(idx_path, {"pet": {"path": "pet.xlsx", "sheets": [
             {"name": "Pet", "search_blob": "灵兽\n饕餮\n白虎"}]}})
         # 重置单例（off 模式不建索引，但保险）
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         assert bm25_search("灵兽", idx_path) == []
 
@@ -54,7 +54,7 @@ class TestG1BM25Search:
             "item": {"path": "item.xlsx", "sheets": [
                 {"name": "Item", "search_blob": "法宝\n丹药\n材料"}]},
         })
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None  # 重置缓存
         hits = bm25_search("灵兽饕餮", idx_path, top_k=5)
         assert len(hits) > 0
@@ -70,7 +70,7 @@ class TestG1BM25Search:
         idx_path = tmp_path / "_table_index.json"
         _write_mini_index(idx_path, {"pet": {"path": "pet.xlsx", "sheets": [
             {"name": "Pet", "search_blob": "灵兽"}]}})
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         hits = bm25_search("不存在的词xyz", idx_path)
         assert hits == []
@@ -84,7 +84,7 @@ class TestG1BM25Search:
             tables[f"t{i}"] = {"path": f"t{i}.xlsx", "sheets": [
                 {"name": "S", "search_blob": f"共同词\n表{i}"}]}
         _write_mini_index(idx_path, tables)
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         hits = bm25_search("共同词", idx_path, top_k=2)
         assert len(hits) <= 2
@@ -97,7 +97,7 @@ class TestBM25IndexCache:
         idx_path = tmp_path / "_table_index.json"
         _write_mini_index(idx_path, {"pet": {"path": "pet.xlsx", "sheets": [
             {"name": "Pet", "search_blob": "灵兽"}]}})
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         idx1 = _get_index(idx_path)
         idx2 = _get_index(idx_path)
@@ -111,7 +111,7 @@ class TestBM25IndexCache:
         p2 = tmp_path / "idx2.json"
         _write_mini_index(p1, {"a": {"path": "a.xlsx", "sheets": [{"name": "S", "search_blob": "词a"}]}})
         _write_mini_index(p2, {"b": {"path": "b.xlsx", "sheets": [{"name": "S", "search_blob": "词b"}]}})
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         i1 = _get_index(p1)
         i2 = _get_index(p2)
@@ -141,7 +141,7 @@ class TestG2LocatorInjection:
         # mock _idx_path 返 tmp_path 索引
         import agent.excel.locator.table_index as _ti
         monkeypatch.setattr(_ti, "_idx_path", lambda: idx_path)
-        import agent.excel.rag_searcher as _rs
+        import agent.excel.locator.rag_searcher as _rs
         _rs._bm25_index = None
         from agent.excel.locator.table_locator import TableLocator, TableMeta, SheetMeta
         sm = SheetMeta(name="Pet", headers=["编号"], header_names=["编号"],

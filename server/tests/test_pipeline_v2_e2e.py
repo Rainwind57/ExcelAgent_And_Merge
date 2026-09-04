@@ -1,4 +1,4 @@
-"""V2 端到端桩测试：4-Step 流水线全跑通（Mock LLM，无 serve 依赖）。
+﻿"""V2 端到端桩测试：4-Step 流水线全跑通（Mock LLM，无 serve 依赖）。
 
 验证：
   - CODEMAKER_EXCEL_PIPELINE_V2=1 时 run() 分流到 run_v2
@@ -21,7 +21,7 @@ def test_run_v2_dispatch_when_env_on():
     """CODEMAKER_EXCEL_PIPELINE_V2=1 时 run() 走 run_v2。"""
     os.environ["CODEMAKER_EXCEL_PIPELINE_V2"] = "1"
     try:
-        from server.agent.excel.core.agent import TableAgent
+        from agent.excel.core.agent import TableAgent
         agent = TableAgent.__new__(TableAgent)
         agent.run_v2 = MagicMock(return_value="v2_result")
         # run() 应在 env=1 时调 run_v2
@@ -36,7 +36,7 @@ def test_run_legacy_when_env_off():
     """env=0 时 run() 走原 legacy 逻辑（不调 run_v2）。"""
     os.environ["CODEMAKER_EXCEL_PIPELINE_V2"] = "0"
     try:
-        from server.agent.excel.core.agent import TableAgent
+        from agent.excel.core.agent import TableAgent
         agent = TableAgent.__new__(TableAgent)
         agent.run_v2 = MagicMock(return_value="v2_result")
         # stub 掉 legacy 主体的第一步，确认不调 run_v2
@@ -52,7 +52,7 @@ def test_run_legacy_when_env_off():
 
 def test_step1_segment_coverage_exact_match():
     """段级对账用精确全文匹配（非前缀15），漏段被标注。"""
-    from server.agent.excel.core.pipeline import (
+    from agent.excel.core.pipeline import (
         Step1ParseSubAgent, StepContext, STEP1_PARSE,
     )
     agent = Step1ParseSubAgent()

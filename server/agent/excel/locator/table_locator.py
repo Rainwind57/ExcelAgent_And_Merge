@@ -307,7 +307,7 @@ class TableLocator:
             return []
         try:
             from .table_index import _idx_path
-            from ..rag_searcher import bm25_search
+            from .rag_searcher import bm25_search
             hits = bm25_search(text, _idx_path(), top_k=5)
         except Exception:
             return []

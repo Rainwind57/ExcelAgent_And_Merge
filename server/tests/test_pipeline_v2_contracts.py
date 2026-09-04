@@ -1,4 +1,4 @@
-"""4-Step V2 流水线契约与 orchestrator 骨架单测（§设计 S1）。
+﻿"""4-Step V2 流水线契约与 orchestrator 骨架单测（§设计 S1）。
 
 验证不变量：
   - 每步恰好一次 stage_start/stage_end
@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from server.agent.excel.core.pipeline import (
+from agent.excel.core.pipeline import (
     SSE, STEP1_PARSE, STEP2_VALIDATE, STEP3_EXECUTE, STEP4_CONCLUDE,
     STEP_ORDER, StepContext, StepError, StepHardError, StepResult,
     ExcelAgentPipeline, Step1ParseSubAgent,

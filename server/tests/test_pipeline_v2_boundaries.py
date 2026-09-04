@@ -1,6 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from server.agent.excel.core.pipeline import (
+from agent.excel.core.pipeline import (
     STEP1_PARSE,
     STEP2_VALIDATE,
     Step1ParseSubAgent,
@@ -11,7 +11,7 @@ from server.agent.excel.core.pipeline import (
     StepError,
     StepResult,
 )
-from server.agent.excel.parser.nl_parser import NLIntent
+from agent.excel.parser.nl_parser import NLIntent
 
 
 class _FakeParseAgent:
@@ -482,7 +482,7 @@ def test_step1_keeps_uncovered_action_segment_as_warning(monkeypatch):
 
 def test_step3_self_pk_placeholder_not_treated_as_unresolved():
     """自增主键占位符 <new_item_id> 是本行待分配主键，不是上游引用，不应被拦截。"""
-    from server.agent.excel.core.pipeline.step3_execute_subagent import (
+    from agent.excel.core.pipeline.step3_execute_subagent import (
         _find_unresolved_placeholders,
     )
     it = NLIntent(
@@ -496,7 +496,7 @@ def test_step3_self_pk_placeholder_not_treated_as_unresolved():
 
 def test_step3_still_flags_real_unresolved_reference():
     """真正的上游引用占位符（非本行 produces）仍应被拦截。"""
-    from server.agent.excel.core.pipeline.step3_execute_subagent import (
+    from agent.excel.core.pipeline.step3_execute_subagent import (
         _find_unresolved_placeholders,
     )
     it = NLIntent(
@@ -574,7 +574,7 @@ def test_step1_resolves_self_referential_option_conv_cycle():
     本层清空 option 的 conv_id（结束语义），从 cycle 列表移除不再 hard。
     """
     monkeypatch = None  # 用 Step1ParseSubAgent._parse_agent 注入，不需 monkeypatch
-    from server.agent.excel.core.pipeline.step1_parse_subagent import (
+    from agent.excel.core.pipeline.step1_parse_subagent import (
         _step1_quality_report, _build_step1_plan_graph,
     )
     conv = NLIntent(

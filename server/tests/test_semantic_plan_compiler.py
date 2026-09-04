@@ -1,6 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from server.agent.excel.core.pipeline.semantic_plan import (
+from agent.excel.core.pipeline.semantic_plan import (
     compile_semantic_plan_to_intents,
     compile_semantic_plan_to_operation_items,
 )
