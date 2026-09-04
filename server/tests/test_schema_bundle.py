@@ -1,4 +1,4 @@
-"""schema_bundle 单测（§2.2 lazy schema 拉取 + data_getter 构造器）。
+﻿"""schema_bundle 单测（§2.2 lazy schema 拉取 + data_getter 构造器）。
 
 测试 build_data_getter + helpers（_stem_to_path/_read_existing_values/_rows_to_dicts）。
 mock agent + cli（不依赖真实表文件）。
@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.excel.parser.nl_parser import NLIntent
-from agent.excel.schema_bundle import (
+from agent.excel.core.schema_bundle import (
     _read_existing_values, _rows_to_dicts, _stem_to_path, build_data_getter,
 )
 
@@ -254,7 +254,7 @@ class TestSchemaBundleHttpPending:
     """
 
     def test_module_docstring_documents_http_pending(self):
-        from agent.excel import schema_bundle
+        from agent.excel.core import schema_bundle
         doc = schema_bundle.__doc__ or ""
         assert "HTTP" in doc
         assert "独立服务" in doc or "同进程" in doc

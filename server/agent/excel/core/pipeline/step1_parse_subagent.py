@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from typing import Any
 
-from ...parse_agent import ParseAgent
+from ...subagent.parse_agent import ParseAgent
 from .contracts import STEP1_PARSE, StepContext, StepError, StepHardError, StepResult
 from .semantic_plan import compile_semantic_plan_to_intents
 from .plan_completeness import audit_plan_completeness

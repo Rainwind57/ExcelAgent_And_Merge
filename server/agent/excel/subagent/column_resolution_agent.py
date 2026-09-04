@@ -33,7 +33,7 @@ MIN_CONFIDENCE = float(
 
 def _norm(s) -> str:
     try:
-        from ..schema_bundle import _norm_col_name
+        from ..core.schema_bundle import _norm_col_name
         return _norm_col_name(s)
     except Exception:
         return str(s or "").strip()

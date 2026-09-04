@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Step1 单独评测：planner_style_inputs.json → ParseAgent.parse → 与 expected_answer 比对。
 
 用途：
@@ -543,7 +543,7 @@ def main() -> None:
     from agent.excel.parser.codemaker_parser import CodemakerNLParser
     from agent.excel.subagent.locator_agent import LocatorAgent
     from agent.excel.subagent.decompose_agent import DecomposeAgent
-    from agent.excel.parse_agent import ParseAgent
+    from agent.excel.subagent.parse_agent import ParseAgent
 
     cli = RealCodeMakerCLI(workspace=_RES)
     parser = CodemakerNLParser(directory=str(_RES), enable_skill=True)

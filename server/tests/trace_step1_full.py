@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Step1 全流程 trace：一条输入跑完 Step1ParseSubAgent.execute，逐阶段打印中间产物。
 
@@ -390,7 +390,7 @@ def _wrap(trace: Trace, cls: Any, name: str, *,
 
 
 def install_hooks(trace: Trace) -> None:
-    from agent.excel.parse_agent import ParseAgent
+    from agent.excel.subagent.parse_agent import ParseAgent
     from agent.excel.subagent.decompose_agent import DecomposeAgent
     from agent.excel.subagent.locator_agent import LocatorAgent
 

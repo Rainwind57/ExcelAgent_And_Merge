@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -14,7 +14,7 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.excel.cli_interface import StubCodeMakerCLI
-from agent.excel.parse_agent import ParseAgent
+from agent.excel.subagent.parse_agent import ParseAgent
 from agent.excel.subagent.decompose_agent import DecomposeAgent
 from agent.excel.subagent.locator_agent import CandidateTable, FKEdge, LocatorResult
 

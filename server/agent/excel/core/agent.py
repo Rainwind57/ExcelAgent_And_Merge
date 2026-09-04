@@ -5472,7 +5472,7 @@ class TableAgent:
         if self._validator_agent is None or not intents:
             return intents
         try:
-            from ..schema_bundle import (
+            from .schema_bundle import (
                 build_data_getter, _stem_to_path, _resolve_sheet, _resolve_path)
 
             def _sg(intent):
@@ -5763,7 +5763,7 @@ class TableAgent:
                                 logger.warning("段重跑失败(seg=%s)", seg_text[:30],
                                                exc_info=True)
                         if re_split:
-                            from ..parse_agent import ParseAgent as _PA
+                            from ..subagent.parse_agent import ParseAgent as _PA
                             _pa = _PA(parser=self.parser,
                                       thinking_sink=self._agent_thinking_sink,
                                       cli=self.cli, locator_agent=self._locator_agent,
@@ -6147,7 +6147,7 @@ class TableAgent:
             if _4step_parsed:
                 _4step_nl = cross_intents_nl
             else:
-                from ..parse_agent import ParseAgent as _ParseAgent
+                from ..subagent.parse_agent import ParseAgent as _ParseAgent
                 _pa = _ParseAgent(
                     parser=self.parser, thinking_sink=self._agent_thinking_sink,
                     cli=self.cli, locator_agent=self._locator_agent,
@@ -6355,7 +6355,7 @@ class TableAgent:
                 and self._validator_agent is not None
                 and len(intents) > 1):
             try:
-                from ..schema_bundle import build_data_getter, _stem_to_path
+                from .schema_bundle import build_data_getter, _stem_to_path
                 def _6step_sg(intent):
                     stem = getattr(intent, "table_hint", "") or ""
                     path = _stem_to_path(self, stem)

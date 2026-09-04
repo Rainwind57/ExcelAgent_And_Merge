@@ -33,12 +33,12 @@ import os
 import re
 from typing import Optional
 
-from .core.produces_inference import infer_produces_consumes
-from .parser.multi_intent_splitter import SplitSegment
-from .parser.nl_parser import NLIntent
-from .subagent.decompose_agent import DecomposeAgent
-from .subagent.locator_agent import CandidateTable, FKEdge, LocatorAgent, LocatorResult
-from .subagent.column_extractor import ColumnExtractor
+from ..core.produces_inference import infer_produces_consumes
+from ..parser.multi_intent_splitter import SplitSegment
+from ..parser.nl_parser import NLIntent
+from .decompose_agent import DecomposeAgent
+from .locator_agent import CandidateTable, FKEdge, LocatorAgent, LocatorResult
+from .column_extractor import ColumnExtractor
 
 logger = logging.getLogger(__name__)
 

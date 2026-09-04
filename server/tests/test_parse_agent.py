@@ -1,4 +1,4 @@
-"""ParseAgent 单测（§2.11）。
+﻿"""ParseAgent 单测（§2.11）。
 
 mock LocatorAgent.loc.decompose + infer_produces_consumes，
 验证 ParseAgent 整合逻辑（不依赖 codemaker serve）：
@@ -21,9 +21,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import agent.excel.parse_agent as pa_mod
+import agent.excel.subagent.parse_agent as pa_mod
 from agent.excel.core.cross_table_splitter import SplitIntent
-from agent.excel.parse_agent import ParseAgent
+from agent.excel.subagent.parse_agent import ParseAgent
 from agent.excel.parser.nl_parser import NLIntent
 from agent.excel.subagent.locator_agent import CandidateTable, LocatorResult
 

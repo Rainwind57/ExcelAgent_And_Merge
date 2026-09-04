@@ -1,4 +1,4 @@
-"""复合主键唯一性单测（rules primary_key + Step2 field_layer + Step3 _do_append）。
+﻿"""复合主键唯一性单测（rules primary_key + Step2 field_layer + Step3 _do_append）。
 
 覆盖缺口：FabaoLevel 这类"(法宝id, 法宝等级)"联合键被单列唯一性误判冲突，
 导致合法多行被拦。验证三层一致：
@@ -58,7 +58,7 @@ def test_get_primary_key_overlay(tmp_path, monkeypatch):
 
 def test_composite_existing_from_rows():
     """schema_bundle 组合值集合构造。"""
-    from agent.excel.schema_bundle import _composite_existing_from_rows
+    from agent.excel.core.schema_bundle import _composite_existing_from_rows
     headers = ["法宝id", "法宝等级", "技能id"]
     rows = [[1, 1, 100001], [1, 2, 100008], [2, 1, 100009]]
     s = _composite_existing_from_rows(headers, rows, ["法宝id".lower(), "法宝等级".lower()])

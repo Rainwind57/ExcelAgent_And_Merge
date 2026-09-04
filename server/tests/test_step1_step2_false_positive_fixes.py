@@ -1,4 +1,4 @@
-"""Step1/Step2 误报修复回归测试（太虚剑宗复合指令实证用例）。
+﻿"""Step1/Step2 误报修复回归测试（太虚剑宗复合指令实证用例）。
 
 覆盖 8 个缺陷，判据全部来自**真实 resources 数据**或**纯文本规则**，不绑业务词：
 
@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import openpyxl  # noqa: E402
 
-from agent.excel.parse_agent import ParseAgent  # noqa: E402
-from agent.excel.schema_bundle import (  # noqa: E402
+from agent.excel.subagent.parse_agent import ParseAgent  # noqa: E402
+from agent.excel.core.schema_bundle import (  # noqa: E402
     _existing_values_from_rows, _rows_to_dicts,
 )
 from agent.excel.subagent.validator_agent import (  # noqa: E402

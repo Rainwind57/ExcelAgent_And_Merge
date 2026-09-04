@@ -977,7 +977,7 @@ class ValidatorAgent(LLMSubAgent):
             {subtask_id: list[Issue]}。subtask_id 取 id(intent)。
             调用方经 assemble_tips() 序列化为前端 ask-card tips。
         """
-        from ..semantic_gate import _check_enum_whitelist, run_semantic_gate
+        from ..core.semantic_gate import _check_enum_whitelist, run_semantic_gate
         issues_map: dict = {}
         for it in intents:
             sid = id(it)

@@ -104,7 +104,7 @@ def _push_telemetry(sink_cb, phase: str, payload: dict) -> None:
 # 复用 cross_table_splitter.SplitIntent 结构(不重新定义,保兼容)
 def _SplitIntent():
     """延迟导入避免循环 import。"""
-    from ..cross_table_splitter import SplitIntent
+    from ..core.cross_table_splitter import SplitIntent
     return SplitIntent
 
 

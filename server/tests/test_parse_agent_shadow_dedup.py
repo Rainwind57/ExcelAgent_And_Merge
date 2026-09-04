@@ -1,4 +1,4 @@
-"""Step1 同 sheet 稀疏影子去重（月华邮件类 4 条→2 条）回归测试。
+﻿"""Step1 同 sheet 稀疏影子去重（月华邮件类 4 条→2 条）回归测试。
 
 覆盖 ParseAgent._dedupe_same_sheet_shadows + _field_canon_map 中英桥：
 - MailTemplate/GlobalMail 稀疏影子 vs canonical 版 → 去影子留 canonical
@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.excel.parse_agent import ParseAgent
+from agent.excel.subagent.parse_agent import ParseAgent
 from agent.excel.parser.nl_parser import NLIntent
 from agent.excel.subagent.locator_agent import FKEdge
 

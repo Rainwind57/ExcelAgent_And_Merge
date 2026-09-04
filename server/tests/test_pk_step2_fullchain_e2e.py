@@ -1,4 +1,4 @@
-"""核心4 PK 冲突前移 Step2 全链路 e2e（输入→输出）。
+﻿"""核心4 PK 冲突前移 Step2 全链路 e2e（输入→输出）。
 
 复现用户场景：新增 reward_id=99001（已占用）奖励包。
 改动前：Step2 漏检 → 落 Step3 _do_append 才抓 pk_conflict → id_reallocate
@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.cli_interface import StubCodeMakerCLI
 from agent.agent import TableAgent, AgentResult
 from agent.nl_parser import NLIntent
-from agent.excel.schema_bundle import build_data_getter
+from agent.excel.core.schema_bundle import build_data_getter
 from agent.excel.subagent.validator_agent import ValidatorAgent
 
 
@@ -84,7 +84,7 @@ def _make_validator() -> ValidatorAgent:
 
 
 def _schema_getter(agent):
-    from agent.excel.schema_bundle import _stem_to_path, _resolve_sheet, _resolve_path
+    from agent.excel.core.schema_bundle import _stem_to_path, _resolve_sheet, _resolve_path
     def _sg(intent):
         stem = getattr(intent, "table_hint", "") or ""
         sheet = getattr(intent, "sheet_hint", "") or ""
